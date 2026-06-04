@@ -1,0 +1,62 @@
+# ----------------------------------------------------------------------------
+# Secrets — NEVER commit. The backend reads these at boot via
+# `set -a && source backend/.env && set +a`. They include DEEPSEEK_API_KEY,
+# the shared app password, and Twilio creds.
+# ----------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+backend/.env
+backend/.env.*
+!backend/.env.example
+
+# ----------------------------------------------------------------------------
+# Local SQLite data — user accounts, sessions, bookmarks, annotations,
+# notes, room state. Recreatable from seed scripts.
+# ----------------------------------------------------------------------------
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+backend/data/bible-iu.sqlite*
+
+# ----------------------------------------------------------------------------
+# Python
+# ----------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ----------------------------------------------------------------------------
+# Node / Vite / TypeScript build artifacts
+# ----------------------------------------------------------------------------
+node_modules/
+dist/
+.vite/
+*.tsbuildinfo
+
+# ----------------------------------------------------------------------------
+# Editor + OS noise
+# ----------------------------------------------------------------------------
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# ----------------------------------------------------------------------------
+# Logs, temp files, captures
+# ----------------------------------------------------------------------------
+*.log
+/tmp/
+_probe*.mjs
+_check*.mjs

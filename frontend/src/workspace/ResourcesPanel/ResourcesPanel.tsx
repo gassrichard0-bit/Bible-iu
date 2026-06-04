@@ -1,0 +1,220 @@
+/**
+ * Left panel — Resources (CLAUDE.md §4.3, §4.4, §4.5).
+ *
+ * Room scope: the whole study library (placeholder until commentary +
+ * cross-references are seeded).
+ *
+ * Verse focus: "resources used for this verse" — lighting up exactly
+ * what the citation engine pulled (CLAUDE.md §4.5 step 4, citation-engine.MD §8).
+ * That data comes straight from the last reasoning response's verified
+ * claims, so what you see here was actually used.
+ */
+import { useEffect, useState } from "react";
+import type {
+  CitationOut,
+  ClaimOut,
+  CrossRefOut,
+} from "../../lib/api";
+import { api, parseVerseRef } from "../../lib/api";
+
+interface Props {
+  scopedToVerse: boolean;
+  citationsUsed: ClaimOut[];
+  /** Focused verse — drives the cross-references fetch (CLAUDE.md §7.4). */
+  focusVerseId?: string | null;
+  /** Mobile-only: when provided, renders a close button in the header. */
+  onCloseMobile?: () => void;
+  /** When provided, clicking a source jumps focus there. */
+  onJumpToCitation?: (source_id: string) => void;
+}
+
+/**
+ * Turn a citation source_id like "trans:KJV:GEN.1.1" into:
+ *   { display, sub, kind }   where display = "KJV", sub = "GEN.1.1"
+ * Falls back gracefully for unknown formats.
+ */
+function describeSource(ct: CitationOut): {
+  display: string;
+  sub: string;
+  kind: "translation" | "resource" | "other";
+} {
+  const id = ct.source_id;
+  if (id.startsWith("trans:")) {
+    const rest = id.slice("trans:".length);
+    // rest is like "KJV:GEN.1.1" — split on the LAST occurrence of a
+    // verse_id pattern. The translation name can contain colons.
+    const m = rest.match(/^(.+?):([A-Z0-9]+\.\d+\.\d+)$/);
+    if (m) return { display: m[1], sub: m[2], kind: "translation" };
+    return { display: rest, sub: "", kind: "translation" };
+  }
+  if (id.startsWith("res:")) {
+    return {
+      display: id.slice("res:".length),
+      sub: ct.tradition ?? "",
+      kind: "resource",
+    };
+  }
+  const parsed = parseVerseRef(id);
+  if (parsed) return { display: parsed.ref, sub: "", kind: "translation" };
+  return { display: id, sub: "", kind: "other" };
+}
+
+export function ResourcesPanel({
+  scopedToVerse,
+  citationsUsed,
+  focusVerseId,
+  onCloseMobile,
+  onJumpToCitation,
+}: Props) {
+  // Unique sources actually pulled, in first-seen order.
+  const seen = new Map<string, CitationOut>();
+  for (const claim of citationsUsed) {
+    for (const ct of claim.citations) {
+      if (!seen.has(ct.source_id)) seen.set(ct.source_id, ct);
+    }
+  }
+  const used = Array.from(seen.values());
+
+  // Cross-references for the focused verse (CLAUDE.md §7.4).
+  const [xrefs, setXrefs] = useState<CrossRefOut[]>([]);
+  const [xrefsLoading, setXrefsLoading] = useState(false);
+  useEffect(() => {
+    if (!focusVerseId) {
+      setXrefs([]);
+      return;
+    }
+    let alive = true;
+    setXrefsLoading(true);
+    api
+      .bibleXrefs(focusVerseId, 25)
+      .then((rs) => alive && setXrefs(rs))
+      .catch(() => alive && setXrefs([]))
+      .finally(() => alive && setXrefsLoading(false));
+    return () => {
+      alive = false;
+    };
+  }, [focusVerseId]);
+
+  return (
+    <div className="flex h-full flex-col bg-paper dark:bg-neutral-900">
+      <div className="flex items-center justify-between border-b border-neutral-200 px-3 py-2 dark:border-neutral-800">
+        <div className="flex items-center gap-2">
+          {onCloseMobile && (
+            <button
+              onClick={onCloseMobile}
+              className="rounded p-1 text-neutral-500 hover:bg-paper-soft dark:text-neutral-400 dark:hover:bg-neutral-800"
+              aria-label="Close resources"
+            >
+              ✕
+            </button>
+          )}
+          <div className="text-xs font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
+            Sources used
+          </div>
+        </div>
+        <span className="rounded bg-paper-soft px-1.5 py-0.5 text-[10px] text-neutral-500 dark:bg-neutral-800 dark:text-neutral-300">
+          {scopedToVerse ? "verse" : "room"}
+        </span>
+      </div>
+
+      <ul className="flex-1 overflow-y-auto p-2 text-sm">
+        {used.length === 0 && (
+          <li className="px-2 py-1.5 text-xs text-neutral-500 dark:text-neutral-400">
+            None yet. Ask a question and the sources the agent pulled will
+            appear here.
+          </li>
+        )}
+        {used.map((ct) => {
+          const d = describeSource(ct);
+          const verified = ct.verification_result === "supported";
+          return (
+            <li key={ct.source_id}>
+              <button
+                onClick={() => onJumpToCitation?.(ct.source_id)}
+                disabled={!onJumpToCitation}
+                className={`group flex w-full items-start gap-2 rounded px-2 py-1.5 text-left ${
+                  verified
+                    ? "bg-yellow-50 dark:bg-amber-950/40"
+                    : "hover:bg-paper-soft dark:hover:bg-neutral-800/60"
+                } ${
+                  onJumpToCitation
+                    ? "cursor-pointer"
+                    : "cursor-default"
+                }`}
+                title={`Jump to ${ct.source_id}`}
+              >
+                <span
+                  className={`mt-1 inline-block h-2 w-2 rounded-full ${
+                    verified ? "bg-amber-500" : "bg-neutral-400"
+                  }`}
+                />
+                <div className="min-w-0 flex-1">
+                  <div className="truncate font-medium">{d.display}</div>
+                  <div className="text-[11px] text-neutral-500 dark:text-neutral-400">
+                    {d.sub || d.kind}
+                    {ct.tradition ? ` · ${ct.tradition}` : ""}
+                  </div>
+                </div>
+                <span
+                  className={`mt-0.5 shrink-0 rounded px-1 text-[9px] uppercase tracking-wide ${
+                    verified
+                      ? "bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-200"
+                      : "bg-neutral-100 text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400"
+                  }`}
+                >
+                  {ct.verification_result}
+                </span>
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+
+      {focusVerseId && (
+        <div className="border-t border-neutral-200 dark:border-neutral-800">
+          <div className="flex items-center justify-between px-3 py-2">
+            <div className="text-xs font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
+              Cross-references
+            </div>
+            <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
+              {xrefsLoading ? "loading…" : `${xrefs.length}`}
+            </span>
+          </div>
+          <ul className="max-h-64 overflow-y-auto px-2 pb-2 text-sm">
+            {!xrefsLoading && xrefs.length === 0 && (
+              <li className="px-2 py-1.5 text-[11px] text-neutral-500 dark:text-neutral-400">
+                None linked.
+              </li>
+            )}
+            {xrefs.map((x) => (
+              <li key={x.to_verse_id}>
+                <button
+                  onClick={() => onJumpToCitation?.(x.to_verse_id)}
+                  disabled={!onJumpToCitation}
+                  className={`group w-full rounded px-2 py-1.5 text-left hover:bg-paper-soft dark:hover:bg-neutral-800/60 ${
+                    onJumpToCitation ? "cursor-pointer" : "cursor-default"
+                  }`}
+                  title={`Jump to ${x.to_verse_id}`}
+                >
+                  <div className="text-[11px] font-medium text-neutral-700 dark:text-neutral-300">
+                    {x.to_verse_id}
+                  </div>
+                  {x.text && (
+                    <div className="line-clamp-2 text-[12px] text-neutral-600 dark:text-neutral-400">
+                      {x.text}
+                    </div>
+                  )}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      <div className="border-t border-neutral-200 px-3 py-2 text-[11px] text-neutral-500 dark:border-neutral-800 dark:text-neutral-400">
+        Cross-refs: CC-BY OpenBible.info. Sources verified per
+        rule-guide.MD §4.
+      </div>
+    </div>
+  );
+}

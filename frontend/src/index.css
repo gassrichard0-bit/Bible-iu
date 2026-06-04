@@ -1,0 +1,31 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Workspace shell — VS Code-feel scrollbars and panel grips. */
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+      "Helvetica Neue", Arial, sans-serif;
+  }
+
+  /* iOS Safari auto-zooms any editable surface whose font-size is
+     below 16px and then leaves the page stuck at that scale, which
+     hides the floating composer on the left. Pinning every editable
+     surface to 16px on touch viewports keeps the keyboard from
+     triggering that zoom. Desktop is unaffected because the media
+     query targets coarse pointers only. */
+  @media (pointer: coarse) {
+    input,
+    textarea,
+    select,
+    [contenteditable="true"] {
+      font-size: 16px;
+    }
+  }
+}
