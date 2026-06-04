@@ -20,10 +20,7 @@ import type { NotesApi } from "../NotesSidebar/notesStore";
 import { NoteSocialBlock } from "../NotesSidebar/NoteSocialBlock";
 import { RichNoteField } from "../NotesSidebar/RichNoteField";
 import { bookColor } from "../../lib/testament";
-import {
-  AnnotationToolbar,
-  type AnnotationTarget,
-} from "./AnnotationToolbar";
+import { type AnnotationTarget } from "./AnnotationToolbar";
 import {
   BOLD_TEXT,
   BOX_BORDER,
@@ -97,6 +94,17 @@ interface Props {
   ) => void;
   onClearAnnotationKind?: (verseId: string, kind: AnnotationKind) => void;
   onClearAnnotations?: (verseId: string) => void;
+  /** Lifted from BibleView so the shell's bottom panel can render
+   *  the tool strip when a verse is long-pressed. BibleView itself
+   *  no longer renders the toolbar; it just reports the target. */
+  annotationTarget?: { verseId: string; label?: string } | null;
+  onAnnotationTargetChange?: (
+    t: { verseId: string; label?: string } | null,
+  ) => void;
+  /** When true the scripture scroller pads its bottom to clear the
+   *  floating glass composer + AI pill in MobileShell. Otherwise
+   *  the last verse hides behind the bar. */
+  bottomInset?: boolean;
 }
 
 export function BibleView({
@@ -123,8 +131,8 @@ export function BibleView({
   socialNotesEnabled,
   annotations,
   onApplyAnnotation,
-  onClearAnnotationKind,
-  onClearAnnotations,
+  annotationTarget,
+  onAnnotationTargetChange,
 }: Props) {
   const [books, setBooks] = useState<BibleBookOut[]>([]);
   const [verses, setVerses] = useState<BibleVerseMulti[]>([]);
@@ -161,11 +169,13 @@ export function BibleView({
   };
 
   // Apple-style long-press → annotation toolbar. Holding a verse text
-  // for ~400ms fires the haptic + opens the glass banner; releasing
-  // before then is treated as a normal tap (handled by the existing
-  // onPointerUp/click path elsewhere on the verse).
-  const [annotationTarget, setAnnotationTarget] =
-    useState<AnnotationTarget | null>(null);
+  // for ~400ms fires the haptic + flips the shell's bottom panel from
+  // tab bar to the annotation tool strip; releasing before then is
+  // treated as a normal tap (handled by the existing onPointerUp/click
+  // path elsewhere on the verse).
+  const setAnnotationTarget = (t: AnnotationTarget | null) => {
+    onAnnotationTargetChange?.(t);
+  };
   const longPressTimerRef = useRef<number | null>(null);
   const longPressStartRef = useRef<{
     verseId: string;
@@ -226,6 +236,18 @@ export function BibleView({
       else next.add(verseId);
       return next;
     });
+
+  // Chapter-level note panel — collapsed by default, toggles via the
+  // pill next to the chapter title. The anchor format is `BOOK.CHAPTER`
+  // (two segments) which the NotesApi treats as a distinct bucket
+  // from verse anchors (`BOOK.CHAPTER.VERSE`, three segments).
+  const [chapterNotesOpen, setChapterNotesOpen] = useState(false);
+  // Auto-collapse when the user navigates to a different chapter so
+  // the panel doesn't follow them with stale state.
+  useEffect(() => {
+    setChapterNotesOpen(false);
+  }, [book, chapter]);
+  const chapterNotes = notes.forChapter(book, chapter);
 
   const openForNewNote = (verseId: string) => {
     setExpanded((s) => {
@@ -288,6 +310,72 @@ export function BibleView({
   const chapterCount = currentBook?.chapters ?? 1;
   const bookName = currentBook?.name ?? book;
 
+  // Horizontal swipe = previous / next chapter. Wraps across books at
+  // the boundaries (Gen 1 ↤ stays put; Rev 22 ↦ stays put). The
+  // touch handler lives on the verses scroller so vertical reading
+  // scroll is unaffected; we only commit on horizontal moves that
+  // beat both a distance threshold and a vertical-drift cap.
+  const swipeStartRef = useRef<{ x: number; y: number } | null>(null);
+  const SWIPE_DX_MIN = 60;
+  const SWIPE_DY_MAX = 50;
+  const advanceChapter = (dir: 1 | -1) => {
+    const target = chapter + dir;
+    if (target >= 1 && target <= chapterCount) {
+      onPickChapter(target);
+      return;
+    }
+    // Past the edge — hop to the adjacent book's first/last chapter.
+    const idx = books.findIndex((b) => b.code === book);
+    if (idx < 0) return;
+    if (dir === 1 && idx + 1 < books.length) {
+      const next = books[idx + 1];
+      onPickBook(next.code);
+      onPickChapter(1);
+    } else if (dir === -1 && idx > 0) {
+      const prev = books[idx - 1];
+      onPickBook(prev.code);
+      onPickChapter(prev.chapters ?? 1);
+    }
+  };
+  const onChapterSwipeStart = (e: React.TouchEvent) => {
+    if (e.touches.length !== 1) return;
+    const t = e.touches[0];
+    swipeStartRef.current = { x: t.clientX, y: t.clientY };
+  };
+  const onChapterSwipeEnd = (e: React.TouchEvent) => {
+    const start = swipeStartRef.current;
+    swipeStartRef.current = null;
+    if (!start) return;
+    const t = e.changedTouches[0];
+    const dx = t.clientX - start.x;
+    const dy = t.clientY - start.y;
+    if (Math.abs(dy) > SWIPE_DY_MAX) return;
+    if (Math.abs(dx) < SWIPE_DX_MIN) return;
+    // Drag left → next chapter; drag right → previous chapter. Mirrors
+    // the natural "page turn" direction of a book in LTR languages.
+    advanceChapter(dx < 0 ? 1 : -1);
+  };
+
+  // Double-tap on the verses scroller (away from any verse-number /
+  // ribbon button) → dismiss the annotation strip. The user asked
+  // for "double tap the screen above the panel anywhere where the
+  // Bible is" to return the bottom panel to its tabs view.
+  const lastScrollerTapRef = useRef<{ t: number; x: number; y: number } | null>(
+    null,
+  );
+  const onScrollerDoubleTapDismiss = (e: React.PointerEvent) => {
+    if (!annotationTarget) return;
+    const now = Date.now();
+    const last = lastScrollerTapRef.current;
+    lastScrollerTapRef.current = { t: now, x: e.clientX, y: e.clientY };
+    if (!last || now - last.t > 400) return;
+    const ddx = e.clientX - last.x;
+    const ddy = e.clientY - last.y;
+    if (ddx * ddx + ddy * ddy > 900) return; // taps must be near each other
+    onAnnotationTargetChange?.(null);
+    lastScrollerTapRef.current = null;
+  };
+
   return (
     <>
     <div className="flex h-full flex-col bg-paper dark:bg-neutral-900">
@@ -349,10 +437,49 @@ export function BibleView({
         </div>
       )}
 
-      <div className="flex-1 overflow-y-auto px-6 py-4">
-        <h2 className="mb-3 text-lg font-semibold">
-          {bookName} {chapter}
-        </h2>
+      <div
+        onTouchStart={onChapterSwipeStart}
+        onTouchEnd={onChapterSwipeEnd}
+        onPointerUp={onScrollerDoubleTapDismiss}
+        className="flex-1 overflow-y-auto px-6 py-4"
+      >
+        <div className="mb-3 flex items-center gap-2">
+          <h2 className="text-lg font-semibold">
+            {bookName} {chapter}
+          </h2>
+          <button
+            onClick={() => setChapterNotesOpen((v) => !v)}
+            className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium transition ${
+              chapterNotesOpen
+                ? "border-violet-300 bg-violet-100 text-violet-800 dark:border-violet-700 dark:bg-violet-900/40 dark:text-violet-200"
+                : "border-neutral-200 bg-paper text-neutral-600 hover:bg-paper-soft dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 dark:hover:bg-neutral-800"
+            }`}
+            title={
+              chapterNotesOpen
+                ? "Hide chapter notes"
+                : "Notes on this whole chapter"
+            }
+            aria-expanded={chapterNotesOpen}
+          >
+            <span>✎ Chapter</span>
+            {chapterNotes.length > 0 && (
+              <span className="rounded-full bg-violet-500 px-1 text-[9px] text-white">
+                {chapterNotes.length}
+              </span>
+            )}
+          </button>
+        </div>
+        {chapterNotesOpen && (
+          <ChapterNotePanel
+            book={book}
+            chapter={chapter}
+            chapterNotes={chapterNotes}
+            notes={notes}
+            roomId={roomId}
+            selfUserId={selfUserId}
+            socialNotesEnabled={socialNotesEnabled}
+          />
+        )}
         {error && (
           <p className="text-sm text-red-600 dark:text-red-300">
             Failed to load: {error}
@@ -641,20 +768,6 @@ export function BibleView({
         })()}
       </div>
     </div>
-    <AnnotationToolbar
-      target={annotationTarget}
-      annotations={annotations}
-      onApply={(verseId, kind, color) => {
-        onApplyAnnotation?.(verseId, kind, color);
-      }}
-      onClearKind={(verseId, kind) => {
-        onClearAnnotationKind?.(verseId, kind);
-      }}
-      onClearAll={(verseId) => {
-        onClearAnnotations?.(verseId);
-      }}
-      onClose={() => setAnnotationTarget(null)}
-    />
     </>
   );
 }
@@ -814,6 +927,147 @@ function InlineNotePanel({
   );
 }
 
+
+/**
+ * Notes pinned to the whole chapter (no verse anchor). Renders one
+ * card per existing chapter note + a composer to add another. Lives
+ * directly under the chapter heading so it reads as a header for the
+ * passage.
+ */
+function ChapterNotePanel({
+  book,
+  chapter,
+  chapterNotes,
+  notes,
+  roomId,
+  selfUserId,
+  socialNotesEnabled,
+}: {
+  book: string;
+  chapter: number;
+  chapterNotes: ReturnType<NotesApi["forChapter"]>;
+  notes: NotesApi;
+  roomId?: string;
+  selfUserId?: string;
+  socialNotesEnabled?: boolean;
+}) {
+  const anchor = `${book}.${chapter}`;
+  const [draft, setDraft] = useState("");
+  const [draftScope, setDraftScope] = useState<"personal" | "group">(
+    "personal",
+  );
+
+  return (
+    <div
+      className={`mb-3 p-2 text-sm ring-1 ring-violet-300/50 dark:ring-violet-600/30 ${GLASS_CARD_INLINE}`}
+    >
+      <div className="mb-1 text-[10px] uppercase tracking-wide text-violet-700 dark:text-violet-300">
+        Notes on {book} {chapter}
+      </div>
+      <ul className="space-y-1.5">
+        {chapterNotes.map((n) => (
+          <li
+            key={n.id}
+            className={`group px-2 py-1.5 ${GLASS_CARD_INLINE} ${
+              n.by_agent
+                ? "ring-1 ring-violet-300/40 dark:ring-violet-700/30"
+                : ""
+            }`}
+          >
+            <div className="flex items-center justify-between text-[10px] text-neutral-500 dark:text-neutral-400">
+              <span>{n.by_agent ? "Agent" : "You"}</span>
+              <div className="flex items-center gap-1">
+                <span>{n.scope}</span>
+                <button
+                  onClick={() => {
+                    if (confirm("Delete this note?")) notes.remove(n.id);
+                  }}
+                  className="rounded px-1 text-neutral-400 opacity-0 hover:bg-red-50 hover:text-red-600 group-hover:opacity-100 dark:hover:bg-red-900/40 dark:hover:text-red-300"
+                  title="Delete note (notes-system.MD §5.9)"
+                  aria-label="Delete note"
+                >
+                  ×
+                </button>
+              </div>
+            </div>
+            <RichNoteField
+              value={n.body}
+              onChange={(html) => notes.update(n.id, html)}
+              ariaLabel={`Edit ${n.scope} note on ${book} ${chapter}`}
+              compact
+            />
+            {socialNotesEnabled &&
+              roomId &&
+              n.scope === "group" &&
+              !n.by_agent && (
+                <NoteSocialBlock
+                  roomId={roomId}
+                  noteId={n.id}
+                  selfUserId={selfUserId}
+                />
+              )}
+          </li>
+        ))}
+      </ul>
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          const trimmed = draft.replace(/<br\s*\/?>/g, "").trim();
+          if (!trimmed) return;
+          notes.add({
+            scope: draftScope,
+            body: draft,
+            verse_anchor: anchor,
+          });
+          setDraft("");
+        }}
+        className="mt-2 flex items-end gap-2"
+      >
+        <div className={`flex-1 px-2.5 py-1.5 ${GLASS_CARD_INLINE}`}>
+          <RichNoteField
+            value={draft}
+            onChange={setDraft}
+            placeholder={`Add a ${draftScope} note on ${book} ${chapter}…`}
+            ariaLabel={`New ${draftScope} note on ${book} ${chapter}`}
+          />
+        </div>
+        <div className="flex flex-col gap-1">
+          <div
+            role="radiogroup"
+            aria-label="Note scope"
+            className={`flex items-stretch p-0.5 text-[10px] ${GLASS_CARD_INLINE}`}
+          >
+            {(["personal", "group"] as const).map((s) => {
+              const on = draftScope === s;
+              return (
+                <button
+                  key={s}
+                  type="button"
+                  role="radio"
+                  aria-checked={on}
+                  onClick={() => setDraftScope(s)}
+                  className={`flex-1 rounded-full px-2 py-1 font-medium capitalize transition ${
+                    on
+                      ? "bg-neutral-900 text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.18)] dark:bg-neutral-100 dark:text-neutral-900"
+                      : "text-neutral-600 hover:text-neutral-900 dark:text-neutral-300 dark:hover:text-neutral-50"
+                  }`}
+                >
+                  {s}
+                </button>
+              );
+            })}
+          </div>
+          <button
+            type="submit"
+            className="rounded-full bg-neutral-900 px-3 py-1.5 text-[11px] font-medium text-white dark:bg-neutral-100 dark:text-neutral-900"
+          >
+            Add
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
 
 function formatBookmarkStamp(iso: string, timezone?: string): string {
   const d = new Date(iso);

@@ -10,7 +10,7 @@
  * The sidebar is a *view* over the shared `NotesApi` (notes-system.MD
  * §5.6) — editing inline at a verse and editing here update the same row.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { VerseFocus } from "../Workspace";
 import type { NotesApi } from "./notesStore";
 import { NoteSocialBlock } from "./NoteSocialBlock";
@@ -54,6 +54,7 @@ export function NotesSidebar({
 }: Props) {
   const [tab, setTab] = useState<"personal" | "group">("personal");
   const [draft, setDraft] = useState("");
+  const listRef = useRef<HTMLUListElement | null>(null);
   const [tipsDismissed, setTipsDismissed] = useState<boolean>(() => {
     if (typeof window === "undefined" || !roomId) return false;
     return localStorage.getItem(`bible-iu:welcome-tips-dismissed:${roomId}`) === "1";
@@ -68,6 +69,14 @@ export function NotesSidebar({
   }, [roomId]);
 
   const visible = notes.notes.filter((n) => n.scope === tab);
+  // Default-to-bottom, matching ChatPanel. Snap to the newest note
+  // on first paint, when notes are added, and when the user switches
+  // between Personal ↔ Group (each list has its own anchor).
+  useEffect(() => {
+    const el = listRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [visible.length, tab]);
   const isWelcomeRoom = !!roomName && roomName.startsWith("Welcome to Bible IU");
   const showTips = isWelcomeRoom && !tipsDismissed && notes.notes.length === 0;
 
@@ -141,7 +150,21 @@ export function NotesSidebar({
           : "Shared. Agent may append with attribution."}
       </div>
 
-      <ul className="flex-1 space-y-2 overflow-y-auto p-2">
+      <ul
+        ref={listRef}
+        className="flex-1 space-y-2 overflow-y-auto p-2"
+        // When the inline composer is hidden, the floating glass
+        // composer + AI pill in MobileShell sit on top of this list.
+        // Mirror the chat panel's fix so the last note isn't tucked
+        // permanently under the bar.
+        style={
+          hideComposer
+            ? {
+                paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 96px)",
+              }
+            : undefined
+        }
+      >
         {visible.length === 0 && showTips && (
           <WelcomeTips onDismiss={dismissTips} />
         )}

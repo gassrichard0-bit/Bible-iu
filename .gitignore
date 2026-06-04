@@ -19,6 +19,7 @@ backend/.env.*
 *.sqlite-wal
 *.sqlite-shm
 backend/data/bible-iu.sqlite*
+backend/data/yjs/
 
 # ----------------------------------------------------------------------------
 # Python

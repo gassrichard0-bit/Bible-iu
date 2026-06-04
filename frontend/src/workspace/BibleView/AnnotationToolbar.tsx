@@ -1,24 +1,17 @@
 /**
- * Glass annotation toolbar — pops up when the user long-presses a
- * verse. iOS-style "select-and-hold": nothing visible until selection,
- * then a frosted column slides in on the right with a scrollable list
- * of tool sections.
+ * Annotation tool strip — occupies the bottom-panel slot when the
+ * user long-presses a verse. Same outer geometry as the tab bar
+ * (h-[64px], rounded-[28px], same border/surface/shadow recipe) so
+ * the strip reads as the same panel re-rendering its contents.
  *
- * Layout (top → bottom inside the scrolling column):
- *   header (verse ref + ✕)
- *   ─ Highlight ─ [5 color swatches in a row]
- *   ─ Underline ─ [5 swatches]
- *   ─ Double underline ─
- *   ─ Wavy underline ─
- *   ─ Box ─
- *   ─ Bold ─
- *   [Erase all]
- * Six tool kinds — strikethrough was dropped at the user's request.
+ * Layout: [✕] [verse-label] · horizontally scrollable tool row · [⌫ Erase]
+ * Tool row = highlight × 5 colors · underline × 5 · double × 5 ·
+ * wavy × 5 · box × 5 · bold × 5 (with small kind-label chips between
+ * groups so the user can find a kind at a glance).
  *
- * Sits above the 64px AI pill (bottom-right) so the thumb can reach
- * without dodging.
+ * Triggered + dismissed by the shell; this component is purely the
+ * presentation of the active target. Pass `target = null` to hide.
  */
-import { useEffect, useRef, useState } from "react";
 import type {
   AnnotationColor,
   AnnotationKind,
@@ -40,8 +33,6 @@ export interface AnnotationTarget {
 
 interface Props {
   target: AnnotationTarget | null;
-  /** All of the user's annotations — used to render the "active" ring
-   *  on whichever swatch currently applies to this verse. */
   annotations?: AnnotationOut[];
   onApply: (
     verseId: string,
@@ -59,49 +50,13 @@ interface ToolSection {
 }
 
 const SECTIONS: ToolSection[] = [
-  { kind: "highlight", label: "Highlight" },
-  { kind: "underline", label: "Underline" },
-  { kind: "double_underline", label: "Double" },
+  { kind: "highlight", label: "High" },
+  { kind: "underline", label: "Und" },
+  { kind: "double_underline", label: "Dbl" },
   { kind: "wavy", label: "Wavy" },
   { kind: "box", label: "Box" },
   { kind: "bold", label: "Bold" },
 ];
-
-/** Persisted between sessions so the user finds the toolbar where they
- *  parked it last. Stored as offsets from the right and bottom edges
- *  so a viewport resize keeps the panel roughly in the same corner. */
-const POS_STORAGE_KEY = "bible-iu:annotation-toolbar-pos";
-
-interface ToolbarPos {
-  right: number;
-  bottom: number;
-}
-
-const DEFAULT_POS: ToolbarPos = { right: 10, bottom: 96 };
-const PANEL_W = 200;
-const SAFE_MARGIN = 6;
-
-function readSavedPos(): ToolbarPos {
-  if (typeof localStorage === "undefined") return DEFAULT_POS;
-  try {
-    const raw = localStorage.getItem(POS_STORAGE_KEY);
-    if (!raw) return DEFAULT_POS;
-    const parsed = JSON.parse(raw) as Partial<ToolbarPos>;
-    if (
-      typeof parsed.right !== "number" ||
-      typeof parsed.bottom !== "number"
-    ) {
-      return DEFAULT_POS;
-    }
-    return parsed as ToolbarPos;
-  } catch {
-    return DEFAULT_POS;
-  }
-}
-
-function clamp(n: number, lo: number, hi: number): number {
-  return Math.max(lo, Math.min(hi, n));
-}
 
 export function AnnotationToolbar({
   target,
@@ -111,67 +66,6 @@ export function AnnotationToolbar({
   onClearAll,
   onClose,
 }: Props) {
-  const [pos, setPos] = useState<ToolbarPos>(() => readSavedPos());
-  const dragRef = useRef<{
-    pointerId: number;
-    startX: number;
-    startY: number;
-    startRight: number;
-    startBottom: number;
-    moved: boolean;
-  } | null>(null);
-
-  // Esc to dismiss on desktop.
-  useEffect(() => {
-    if (!target) return;
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [target, onClose]);
-
-  // Pointer-based drag from the top handle. Stores offsets from right
-  // and bottom so the toolbar stays anchored in its corner if the
-  // viewport resizes between sessions.
-  const onHandleDown = (e: React.PointerEvent) => {
-    if (e.button !== 0 && e.pointerType === "mouse") return;
-    (e.currentTarget as Element).setPointerCapture(e.pointerId);
-    dragRef.current = {
-      pointerId: e.pointerId,
-      startX: e.clientX,
-      startY: e.clientY,
-      startRight: pos.right,
-      startBottom: pos.bottom,
-      moved: false,
-    };
-  };
-  const onHandleMove = (e: React.PointerEvent) => {
-    const d = dragRef.current;
-    if (!d || e.pointerId !== d.pointerId) return;
-    const dx = e.clientX - d.startX;
-    const dy = e.clientY - d.startY;
-    if (!d.moved && dx * dx + dy * dy < 16) return; // ignore micro-jitter
-    d.moved = true;
-    const vw = window.innerWidth;
-    const vh = window.innerHeight;
-    const next: ToolbarPos = {
-      right: clamp(d.startRight - dx, SAFE_MARGIN, vw - PANEL_W - SAFE_MARGIN),
-      bottom: clamp(d.startBottom - dy, SAFE_MARGIN, vh - 80 - SAFE_MARGIN),
-    };
-    setPos(next);
-  };
-  const onHandleUp = (e: React.PointerEvent) => {
-    const d = dragRef.current;
-    if (!d || e.pointerId !== d.pointerId) return;
-    dragRef.current = null;
-    try {
-      localStorage.setItem(POS_STORAGE_KEY, JSON.stringify(pos));
-    } catch {
-      // Ignore — private mode etc.
-    }
-  };
-
   if (!target) return null;
 
   const current = (annotations || []).filter(
@@ -181,99 +75,103 @@ export function AnnotationToolbar({
     current.find((a) => a.kind === kind)?.color;
 
   return (
-    <>
-      {/* Tap-outside scrim — transparent, dismisses on tap. */}
+    <div
+      role="toolbar"
+      aria-label={`Annotation tools for ${target.label ?? target.verseId}`}
+      // Same glass recipe + outer dimensions as the bottom tab bar in
+      // MobileShell — the strip lives in the same slot, so visually
+      // it should read as the same panel switching modes.
+      // The outer panel ALSO needs `min-w-0` — its `flex-1` only
+      // expands toward the parent's bounds when the item is allowed
+      // to shrink below its content size, otherwise iOS Safari lets
+      // the strip grow past the viewport pl-/pr- gutters.
+      className="pointer-events-auto flex h-[64px] min-w-0 max-w-full flex-1 items-center gap-1 rounded-[28px] border border-white/40 bg-paper/55 pl-1.5 pr-1 shadow-[0_8px_28px_rgba(0,0,0,0.18),inset_0_1px_0_rgba(255,255,255,0.55)] backdrop-blur-2xl backdrop-saturate-200 dark:border-white/10 dark:bg-neutral-900/45 dark:shadow-[0_8px_28px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.10)]"
+    >
       <button
         onClick={onClose}
-        aria-label="Close annotation toolbar"
-        className="fixed inset-0 z-40 cursor-default"
-      />
-      <div
-        role="toolbar"
-        aria-label={`Annotation tools for ${target.label ?? target.verseId}`}
-        style={{ right: pos.right, bottom: pos.bottom }}
-        className="fixed z-50 flex h-[min(42vh,320px)] w-[200px] flex-col rounded-[28px] border border-white/40 bg-paper/55 px-3 pt-2 pb-2 shadow-[0_8px_28px_rgba(0,0,0,0.18),inset_0_1px_0_rgba(255,255,255,0.55)] backdrop-blur-2xl backdrop-saturate-200 dark:border-white/10 dark:bg-neutral-900/45 dark:shadow-[0_8px_28px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.10)]"
+        className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-neutral-500 hover:bg-neutral-200/70 dark:text-neutral-300 dark:hover:bg-neutral-700/60"
+        aria-label="Close annotation tools"
+        title="Close"
       >
-        {/* Drag handle — grab anywhere on this strip and move the
-            panel. The grip pill in the middle makes the affordance
-            visible without a chunky title bar. */}
-        <div
-          onPointerDown={onHandleDown}
-          onPointerMove={onHandleMove}
-          onPointerUp={onHandleUp}
-          onPointerCancel={onHandleUp}
-          className="-mt-1 mb-1 flex cursor-grab items-center justify-between px-1 pt-1 pb-0.5 touch-none active:cursor-grabbing"
-          aria-label="Drag to move toolbar"
-          role="separator"
-        >
-          <span className="max-w-[120px] truncate text-[10px] uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
-            {target.label ?? target.verseId}
-          </span>
-          <span
-            className="mx-2 inline-block h-1 w-8 shrink-0 rounded-full bg-neutral-400/60 dark:bg-neutral-500/60"
-            aria-hidden
+        ✕
+      </button>
+      <span className="hidden shrink-0 truncate pr-1 text-[10px] font-semibold uppercase tracking-wide text-neutral-500 sm:inline dark:text-neutral-400">
+        {target.label ?? target.verseId}
+      </span>
+      <div
+        // `min-w-0` is the load-bearing class: without it, a flex
+        // item won't shrink below its content's natural width, so
+        // the tool row would push the panel wider than the tab bar
+        // instead of scrolling inside it.
+        className="flex h-full min-w-0 flex-1 items-center gap-2 overflow-x-auto overscroll-contain pr-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        style={{
+          WebkitMaskImage:
+            "linear-gradient(90deg, transparent 0, #000 12px, #000 calc(100% - 12px), transparent 100%)",
+          maskImage:
+            "linear-gradient(90deg, transparent 0, #000 12px, #000 calc(100% - 12px), transparent 100%)",
+        }}
+      >
+        {SECTIONS.map((s, i) => (
+          <ToolGroup
+            key={s.kind}
+            label={s.label}
+            divider={i > 0}
+            section={s}
+            activeColor={activeColorFor(s.kind)}
+            onTap={(color) => {
+              activeColorFor(s.kind) === color
+                ? onClearKind(target.verseId, s.kind)
+                : onApply(target.verseId, s.kind, color);
+            }}
           />
-          <button
-            onClick={onClose}
-            onPointerDown={(e) => e.stopPropagation()}
-            className="rounded text-[11px] leading-none text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200"
-            aria-label="Close annotation toolbar"
-            title="Close"
-          >
-            ✕
-          </button>
-        </div>
-        <div
-          className="flex-1 overflow-y-auto overscroll-contain pr-0.5 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
-          // Soft fade at top + bottom signals "more to scroll" without
-          // a visible scrollbar.
-          style={{
-            WebkitMaskImage:
-              "linear-gradient(180deg, transparent 0, #000 12px, #000 calc(100% - 12px), transparent 100%)",
-            maskImage:
-              "linear-gradient(180deg, transparent 0, #000 12px, #000 calc(100% - 12px), transparent 100%)",
-          }}
-        >
-          {SECTIONS.map((s, i) => (
-            <div
-              key={s.kind}
-              className={i > 0 ? "mt-1.5 border-t border-neutral-300/50 pt-1.5 dark:border-neutral-700/50" : ""}
-            >
-              <div className="mb-1 text-[9px] font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
-                {s.label}
-              </div>
-              <div className="flex items-center justify-between gap-1">
-                {ANNOTATION_COLORS.map((c) => (
-                  <Swatch
-                    key={`${s.kind}-${c}`}
-                    color={c}
-                    kind={s.kind}
-                    active={activeColorFor(s.kind) === c}
-                    onTap={() =>
-                      activeColorFor(s.kind) === c
-                        ? onClearKind(target.verseId, s.kind)
-                        : onApply(target.verseId, s.kind, c)
-                    }
-                  />
-                ))}
-              </div>
-            </div>
-          ))}
-        </div>
-        <button
-          onClick={() => {
-            onClearAll(target.verseId);
-            onClose();
-          }}
-          className="mt-2 flex h-8 shrink-0 items-center justify-center gap-1 rounded-full border border-neutral-300 bg-white text-[11px] font-medium text-neutral-700 shadow-sm hover:bg-neutral-100 dark:border-neutral-600 dark:bg-neutral-800 dark:text-neutral-200 dark:hover:bg-neutral-700"
-          aria-label="Erase all marks on this verse"
-          title="Erase all"
-        >
-          <EraserIcon />
-          <span>Erase all</span>
-        </button>
+        ))}
       </div>
-    </>
+      <button
+        onClick={() => {
+          onClearAll(target.verseId);
+          onClose();
+        }}
+        className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-neutral-900/5 text-neutral-700 hover:bg-neutral-900/10 dark:bg-white/10 dark:text-neutral-200 dark:hover:bg-white/15"
+        aria-label="Erase all marks on this verse"
+        title="Erase all"
+      >
+        <EraserIcon />
+      </button>
+    </div>
+  );
+}
+
+function ToolGroup({
+  label,
+  divider,
+  section,
+  activeColor,
+  onTap,
+}: {
+  label: string;
+  divider: boolean;
+  section: ToolSection;
+  activeColor: AnnotationColor | undefined;
+  onTap: (color: AnnotationColor) => void;
+}) {
+  return (
+    <div className="flex h-full shrink-0 items-center gap-1.5">
+      {divider && (
+        <div className="mx-0.5 h-7 w-px shrink-0 bg-neutral-300/70 dark:bg-neutral-700/70" />
+      )}
+      <span className="shrink-0 text-[9px] font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
+        {label}
+      </span>
+      {ANNOTATION_COLORS.map((c) => (
+        <Swatch
+          key={`${section.kind}-${c}`}
+          color={c}
+          kind={section.kind}
+          active={activeColor === c}
+          onTap={() => onTap(c)}
+        />
+      ))}
+    </div>
   );
 }
 
@@ -289,7 +187,7 @@ function Swatch({
   onTap: () => void;
 }) {
   const ring = active
-    ? "ring-2 ring-offset-2 ring-neutral-900 dark:ring-neutral-100 ring-offset-white/60 dark:ring-offset-neutral-900/60"
+    ? "ring-2 ring-offset-2 ring-neutral-900 dark:ring-neutral-100 ring-offset-paper/55 dark:ring-offset-neutral-900/45"
     : "";
   if (kind === "highlight") {
     return (
@@ -297,7 +195,7 @@ function Swatch({
         onClick={onTap}
         aria-pressed={active}
         title={`Highlight ${color}`}
-        className={`h-7 w-7 rounded-full ${SWATCH_FILL[color]} shadow-sm ${ring}`}
+        className={`h-8 w-8 shrink-0 rounded-full ${SWATCH_FILL[color]} shadow-sm ${ring}`}
       />
     );
   }
@@ -340,7 +238,7 @@ function Swatch({
         onClick={onTap}
         aria-pressed={active}
         title={`Box ${color}`}
-        className={`h-7 w-7 rounded-md border-2 bg-white shadow-sm dark:bg-neutral-800 ${BOX_BORDER[color]} ${ring}`}
+        className={`h-8 w-8 shrink-0 rounded-md border-2 bg-white shadow-sm dark:bg-neutral-800 ${BOX_BORDER[color]} ${ring}`}
       />
     );
   }
@@ -367,7 +265,7 @@ function SampleSwatch({
     <button
       onClick={onTap}
       title={title}
-      className={`flex h-7 w-7 items-end justify-center rounded-md bg-white text-[11px] font-bold text-neutral-700 shadow-sm dark:bg-neutral-800 dark:text-neutral-200 ${ring}`}
+      className={`flex h-8 w-8 shrink-0 items-end justify-center rounded-md bg-white text-[11px] font-bold text-neutral-700 shadow-sm dark:bg-neutral-800 dark:text-neutral-200 ${ring}`}
     >
       {children}
     </button>
@@ -377,8 +275,8 @@ function SampleSwatch({
 function EraserIcon() {
   return (
     <svg
-      width="14"
-      height="14"
+      width="16"
+      height="16"
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"

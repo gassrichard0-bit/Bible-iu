@@ -125,6 +125,10 @@ export function useYjsNotes(roomId: string): NotesApi {
     update: (id, body) => handle.api.update(id, body),
     remove: (id) => handle.api.remove(id),
     forVerse: (verseId) => rows.filter((r) => r.verse_anchor === verseId),
+    forChapter: (book, chapter) => {
+      const anchor = `${book}.${chapter}`;
+      return rows.filter((r) => r.verse_anchor === anchor);
+    },
   };
 }
 
@@ -145,6 +149,7 @@ function buildHandle(roomId: string): YjsRoomHandle {
         update: () => {},
         remove: () => {},
         forVerse: () => [],
+      forChapter: () => [],
       },
       cleanup: () => doc.destroy(),
     };
@@ -214,6 +219,7 @@ function buildHandle(roomId: string): YjsRoomHandle {
       });
     },
     forVerse: () => [],
+    forChapter: () => [],
   };
 
   return {

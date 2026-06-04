@@ -23,4 +23,8 @@ export interface NotesApi {
   update: (id: string, body: string) => void;
   remove: (id: string) => void;
   forVerse: (verseId: string) => NoteRow[];
+  /** Notes anchored to a whole chapter (no verse). The anchor format
+   *  is `BOOK.CHAPTER` — same backbone as verse anchors but two
+   *  dot-segments instead of three. */
+  forChapter: (book: string, chapter: number) => NoteRow[];
 }

@@ -22,6 +22,10 @@ import {
   type RoomOut,
 } from "../lib/api";
 import { GLASS_CARD_INLINE } from "../lib/glass";
+import {
+  AnnotationToolbar,
+  type AnnotationTarget,
+} from "../workspace/BibleView/AnnotationToolbar";
 import { bookColor } from "../lib/testament";
 import { useYjsNotes } from "../workspace/NotesSidebar/yjsNotes";
 import { NotesSidebar } from "../workspace/NotesSidebar/NotesSidebar";
@@ -162,6 +166,12 @@ export function MobileShell({
       setAnnotations((as) => as.filter((a) => a.verse_id !== verseId));
     } catch {}
   };
+  // The active annotation target lives at the shell level so the
+  // bottom panel can swap from tab bar → annotation tool strip when
+  // the user long-presses a verse. Setting this back to null restores
+  // the normal tab bar.
+  const [annotationTarget, setAnnotationTarget] =
+    useState<AnnotationTarget | null>(null);
   /**
    * Single-tap ribbon at verse V:
    *   - V already has an entry → remove it (toggle off).
@@ -372,6 +382,10 @@ export function MobileShell({
     const start = touchStart.current;
     touchStart.current = null;
     if (!start) return;
+    // On the Bible tab, horizontal swipe means "next chapter / prev
+    // chapter" — owned by BibleView itself. The tab-switching
+    // gesture only applies on Notes/Chat/Marks.
+    if (tab === "bible") return;
     const t = e.changedTouches[0];
     const dx = t.clientX - start.x;
     const dy = t.clientY - start.y;
@@ -481,6 +495,8 @@ export function MobileShell({
                 onApplyAnnotation={applyAnnotation}
                 onClearAnnotationKind={clearAnnotationKind}
                 onClearAnnotations={clearAnnotations}
+                annotationTarget={annotationTarget}
+                onAnnotationTargetChange={setAnnotationTarget}
               />
             )}
             {tab === "notes" && (
@@ -598,7 +614,19 @@ export function MobileShell({
         className="pointer-events-none fixed inset-x-0 bottom-0 z-40 flex justify-start pl-[20px] pr-[88px] pt-2"
         style={{ paddingBottom: "calc(env(safe-area-inset-bottom) + 10px)" }}
       >
-        {composerOpen ? (
+        {annotationTarget ? (
+          // Long-press on a verse hands the bottom panel to the
+          // annotation tool strip. Same h-[64px] / rounded-[28px]
+          // outer geometry as the tab bar so the swap is seamless.
+          <AnnotationToolbar
+            target={annotationTarget}
+            annotations={annotations}
+            onApply={applyAnnotation}
+            onClearKind={clearAnnotationKind}
+            onClearAll={clearAnnotations}
+            onClose={() => setAnnotationTarget(null)}
+          />
+        ) : composerOpen ? (
           // Composer open on the current tab → the floating bar
           // becomes a contextual input. The bottom-right pill
           // (rendered above) toggles it back to the tabs view.

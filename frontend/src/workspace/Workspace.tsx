@@ -110,6 +110,12 @@ interface Props {
   ) => void;
   onClearAnnotationKind?: (verseId: string, kind: AnnotationKind) => void;
   onClearAnnotations?: (verseId: string) => void;
+  /** Lifted from BibleView so the bottom panel can render the
+   *  annotation tool strip when a verse is long-pressed. */
+  annotationTarget?: { verseId: string; label?: string } | null;
+  onAnnotationTargetChange?: (
+    t: { verseId: string; label?: string } | null,
+  ) => void;
 }
 
 export interface VerseFocus {
@@ -153,6 +159,8 @@ export const Workspace = forwardRef<WorkspaceHandle, Props>(function Workspace(
     onApplyAnnotation,
     onClearAnnotationKind,
     onClearAnnotations,
+    annotationTarget,
+    onAnnotationTargetChange,
   },
   workspaceRef,
 ) {
@@ -431,6 +439,8 @@ export const Workspace = forwardRef<WorkspaceHandle, Props>(function Workspace(
               onApplyAnnotation={onApplyAnnotation}
               onClearAnnotationKind={onClearAnnotationKind}
               onClearAnnotations={onClearAnnotations}
+              annotationTarget={annotationTarget}
+              onAnnotationTargetChange={onAnnotationTargetChange}
             />
           </Panel>
         </PanelGroup>
@@ -481,6 +491,8 @@ export const Workspace = forwardRef<WorkspaceHandle, Props>(function Workspace(
               onApplyAnnotation={onApplyAnnotation}
               onClearAnnotationKind={onClearAnnotationKind}
               onClearAnnotations={onClearAnnotations}
+              annotationTarget={annotationTarget}
+              onAnnotationTargetChange={onAnnotationTargetChange}
           />
           {/* Mobile slide-over for Resources */}
           {resourcesOpen && (
@@ -559,6 +571,10 @@ function CenterColumn(props: {
   ) => void;
   onClearAnnotationKind?: (verseId: string, kind: AnnotationKind) => void;
   onClearAnnotations?: (verseId: string) => void;
+  annotationTarget?: { verseId: string; label?: string } | null;
+  onAnnotationTargetChange?: (
+    t: { verseId: string; label?: string } | null,
+  ) => void;
 }) {
   const {
     book,
@@ -598,6 +614,8 @@ function CenterColumn(props: {
     onApplyAnnotation,
     onClearAnnotationKind,
     onClearAnnotations,
+    annotationTarget,
+    onAnnotationTargetChange,
   } = props;
 
   // The Bible panel renders one of three views depending on zoom:
@@ -643,6 +661,8 @@ function CenterColumn(props: {
       onApplyAnnotation={onApplyAnnotation}
       onClearAnnotationKind={onClearAnnotationKind}
       onClearAnnotations={onClearAnnotations}
+      annotationTarget={annotationTarget}
+      onAnnotationTargetChange={onAnnotationTargetChange}
     />
   );
 
