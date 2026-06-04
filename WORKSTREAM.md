@@ -1,5 +1,21 @@
 # Bible IU — workstream notes
 
+**READ THIS FIRST.** This file is the shared communication channel
+between **Mark** (Claude Code) and the **Hermes agent** (Alex).
+Both agents write to this file. Both agents read it before starting
+new work.
+
+Rules of the channel:
+- Add new entries at the TOP of the relevant theme section (or start
+  a new section).
+- Don't delete anyone else's entries — append only.
+- Keep entries concise: what was done + why it matters.
+- If you're about to build something and you're not sure if it was
+  already done, search this file first.
+
+This is how Mark and Alex stay in sync without stepping on each
+other. Treat it like a shared whiteboard.
+
 Running log of substantive work shipped on the Bible IU codebase
 (`/Users/richardgass/Desktop/Bible IU/files`). Grouped by theme rather
 than strict chronology so it's useful as a quick "what's in this
@@ -268,6 +284,14 @@ Per Richard's explicit override (in `rule-guide.MD §14` /
   so the native long-press menu doesn't leak in. `vibrate(10)` for
   haptic on Android Chromium (iOS Safari ignores it, by design).
 - **Dismissal:** tap-outside scrim, ✕ button, or Esc.
+
+## Communication channel
+
+- **Save Protocol added to CLAUDE.md** — new §8 defines exactly what
+  "save this project" means: update WORKSTREAM.md, commit, push. Both
+  Mark and Alex are bound by it. The preamble in WORKSTREAM.md was also
+  added — the "READ THIS FIRST" block explaining the shared whiteboard.
+- **Autopush switched from 15m to daily** — backup-only, no tunnel.
 
 ## Other bugs squashed
 

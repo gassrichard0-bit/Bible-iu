@@ -472,3 +472,15 @@ before its area is built:
   commentary set and their licenses (§7.6).
 - **SyncMeta vs Yjs** — simplify the §10 `SyncMeta` entity once Yjs is committed; Yjs
   carries its own version clocks, so manual clocks are largely redundant.
+
+---
+
+## 8. Save Protocol — how Richard says "commit and sync"
+
+When Richard says **"save this project"** (or any variant — "save it", "commit it", "push it"), both Mark and the Hermes agent **must**:
+
+1. **Update WORKSTREAM.md** — add a concise entry in the relevant theme section (or start a new one). Format: one bullet per change, what was done + why.
+2. **Commit and push** — `git add -A && git commit -m "..." && git push origin main`
+3. **Say what was saved** — a quick summary of what went into WORKSTREAM.md and what was pushed.
+
+This is not optional. WORKSTREAM.md is how the two agents stay in sync. If you skip it, the other agent won't know what was done and WILL rebuild or break something. Treat "save this project" as synonymous with "update WORKSTREAM.md, commit, push."
