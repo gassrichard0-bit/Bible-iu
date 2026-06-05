@@ -497,6 +497,7 @@ export function MobileShell({
                 onClearAnnotations={clearAnnotations}
                 annotationTarget={annotationTarget}
                 onAnnotationTargetChange={setAnnotationTarget}
+                bottomInset
               />
             )}
             {tab === "notes" && (

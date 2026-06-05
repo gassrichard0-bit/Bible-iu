@@ -133,6 +133,7 @@ export function BibleView({
   onApplyAnnotation,
   annotationTarget,
   onAnnotationTargetChange,
+  bottomInset,
 }: Props) {
   const [books, setBooks] = useState<BibleBookOut[]>([]);
   const [verses, setVerses] = useState<BibleVerseMulti[]>([]);
@@ -442,6 +443,16 @@ export function BibleView({
         onTouchEnd={onChapterSwipeEnd}
         onPointerUp={onScrollerDoubleTapDismiss}
         className="flex-1 overflow-y-auto px-6 py-4"
+        // Mirror ChatPanel + the notes list: when the floating glass
+        // composer + 64px AI pill sit on top of this scroller, lift
+        // the last verse above them so reading isn't cut off.
+        style={
+          bottomInset
+            ? {
+                paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 96px)",
+              }
+            : undefined
+        }
       >
         <div className="mb-3 flex items-center gap-2">
           <h2 className="text-lg font-semibold">

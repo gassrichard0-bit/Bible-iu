@@ -116,6 +116,9 @@ interface Props {
   onAnnotationTargetChange?: (
     t: { verseId: string; label?: string } | null,
   ) => void;
+  /** Tells BibleView's scroller to leave room at the bottom for the
+   *  floating composer + AI pill (mobile only). */
+  bottomInset?: boolean;
 }
 
 export interface VerseFocus {
@@ -161,6 +164,7 @@ export const Workspace = forwardRef<WorkspaceHandle, Props>(function Workspace(
     onClearAnnotations,
     annotationTarget,
     onAnnotationTargetChange,
+    bottomInset,
   },
   workspaceRef,
 ) {
@@ -441,6 +445,7 @@ export const Workspace = forwardRef<WorkspaceHandle, Props>(function Workspace(
               onClearAnnotations={onClearAnnotations}
               annotationTarget={annotationTarget}
               onAnnotationTargetChange={onAnnotationTargetChange}
+              bottomInset={bottomInset}
             />
           </Panel>
         </PanelGroup>
@@ -575,6 +580,7 @@ function CenterColumn(props: {
   onAnnotationTargetChange?: (
     t: { verseId: string; label?: string } | null,
   ) => void;
+  bottomInset?: boolean;
 }) {
   const {
     book,
@@ -616,6 +622,7 @@ function CenterColumn(props: {
     onClearAnnotations,
     annotationTarget,
     onAnnotationTargetChange,
+    bottomInset,
   } = props;
 
   // The Bible panel renders one of three views depending on zoom:
@@ -663,6 +670,7 @@ function CenterColumn(props: {
       onClearAnnotations={onClearAnnotations}
       annotationTarget={annotationTarget}
       onAnnotationTargetChange={onAnnotationTargetChange}
+      bottomInset={bottomInset}
     />
   );
 
