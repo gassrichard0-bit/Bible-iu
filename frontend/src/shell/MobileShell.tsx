@@ -26,7 +26,6 @@ import {
   type ChatMessageOut,
   type RoomOut,
 } from "../lib/api";
-import { GLASS_CARD_INLINE } from "../lib/glass";
 import { shareVerseCard } from "../lib/shareVerse";
 import { AdminPanel } from "./AdminPanel";
 import {
@@ -47,6 +46,7 @@ import { SettingsModal } from "./Settings";
 import { NewRoomModal, type NewRoomValues } from "./NewRoomModal";
 import { ShareRoomModal } from "./ShareRoomModal";
 import { RoomAvatar } from "./RoomAvatar";
+import { Pill } from "./SettingsButtons";
 
 interface RoomItem {
   id: string;
@@ -762,6 +762,7 @@ export function MobileShell({
               <BookmarksPanel
                 bookmarks={pickLatestPerBook(bookmarks)}
                 timezone={settings.timezone}
+                dark={theme === "dark"}
                 onPick={(b) => {
                   setFocus({
                     book: b.book,
@@ -1496,11 +1497,13 @@ function BookmarksPanel({
   onPick,
   onReset,
   timezone,
+  dark,
 }: {
   bookmarks: BookmarkOut[];
   onPick: (b: BookmarkOut) => void;
   onReset: (book: string) => void;
   timezone?: string;
+  dark: boolean;
 }) {
   const [editing, setEditing] = useState<string | null>(null);
   return (
@@ -1513,30 +1516,67 @@ function BookmarksPanel({
           double-tap a flag there to walk up the stack or remove it.
         </p>
       </div>
-      <ul className="flex-1 space-y-2 overflow-y-auto p-3">
+      <ul className="flex-1 space-y-2.5 overflow-y-auto p-3">
         {bookmarks.length === 0 && (
-          <li className="px-2 py-6 text-center text-xs text-neutral-500 dark:text-neutral-400">
-            No bookmarks yet. Tap the ribbon next to any verse to mark
-            where you left off in that book.
+          <li className="mx-auto mt-4 max-w-xs rounded-2xl border border-neutral-200 bg-paper px-4 py-6 text-center shadow-[0_1px_2px_rgba(0,0,0,0.04),inset_0_1px_0_rgba(255,255,255,0.6)] dark:border-neutral-800 dark:bg-neutral-900 dark:shadow-[0_1px_2px_rgba(0,0,0,0.2),inset_0_1px_0_rgba(255,255,255,0.04)]">
+            <span
+              className="mx-auto mb-2 grid h-10 w-10 place-items-center rounded-full bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-200"
+              aria-hidden
+            >
+              <BookmarkFilled />
+            </span>
+            <div className="text-[13px] font-semibold text-neutral-700 dark:text-neutral-200">
+              No bookmarks yet
+            </div>
+            <p className="mt-1 text-[11px] text-neutral-500 dark:text-neutral-400">
+              Tap the ribbon next to any verse to mark where you left
+              off in that book.
+            </p>
           </li>
         )}
-        {bookmarks.map((b) => (
-          <li key={b.book} className={GLASS_CARD_INLINE}>
-            <div className="flex items-center gap-2 px-3 py-2">
-              <button
-                onClick={() => onPick(b)}
-                className="flex-1 text-left"
-                aria-label={`Jump to ${b.book} ${b.chapter}:${b.verse}`}
-              >
-                <div className="flex items-center gap-2">
-                  <span className={bookColor(b.book).text}>
+        {bookmarks.map((b) => {
+          const tone = bookColor(b.book);
+          // Same 3D recipe used in chat bubbles + Settings cards:
+          // vertical gradient for the lit-from-above feel, deep drop
+          // shadow + inset top highlight + crisp outline ring.
+          const cardStyle: React.CSSProperties = {
+            backgroundImage: dark
+              ? "linear-gradient(to bottom, #3a3a44, #1f1f25)"
+              : "linear-gradient(to bottom, #ffffff, #e9ecf2)",
+            boxShadow: [
+              "0 6px 18px rgba(0,0,0,0.22)",
+              "inset 0 1.5px 0 rgba(255,255,255,0.45)",
+              dark
+                ? "0 0 0 1px rgba(255,255,255,0.08)"
+                : "0 0 0 1px rgba(0,0,0,0.06)",
+            ].join(", "),
+          };
+          return (
+            <li
+              key={b.book}
+              className="rounded-2xl"
+              style={cardStyle}
+            >
+              <div className="flex items-center gap-2 px-3 py-2.5">
+                <button
+                  onClick={() => onPick(b)}
+                  className="flex flex-1 items-center gap-3 text-left"
+                  aria-label={`Jump to ${b.book} ${b.chapter}:${b.verse}`}
+                >
+                  <span
+                    className={`grid h-10 w-10 place-items-center rounded-full ${tone.text} shadow-[0_2px_6px_rgba(0,0,0,0.18),inset_0_1px_0_rgba(255,255,255,0.45)]`}
+                    style={{
+                      background:
+                        "linear-gradient(135deg, rgba(255,255,255,0.85), rgba(0,0,0,0.06))",
+                    }}
+                  >
                     <BookmarkFilled />
                   </span>
                   <div className="min-w-0">
-                    <div className="truncate text-sm font-semibold">
+                    <div className="truncate text-[15px] font-semibold text-neutral-900 dark:text-neutral-50">
                       {b.book} {b.chapter}:{b.verse}
                     </div>
-                    <div className="truncate text-[10px] text-neutral-500 dark:text-neutral-400">
+                    <div className="truncate text-[11px] text-neutral-500 dark:text-neutral-400">
                       {b.updated_at
                         ? new Date(b.updated_at).toLocaleString(undefined, {
                             timeZone: timezone || undefined,
@@ -1544,57 +1584,52 @@ function BookmarksPanel({
                         : ""}
                     </div>
                   </div>
-                </div>
-              </button>
-              <button
-                onClick={() =>
-                  setEditing((cur) => (cur === b.book ? null : b.book))
-                }
-                className={`grid h-9 w-9 place-items-center rounded transition ${
-                  editing === b.book
-                    ? "bg-neutral-200 text-neutral-900 dark:bg-neutral-700 dark:text-neutral-100"
-                    : "text-neutral-400 hover:bg-paper-soft hover:text-neutral-700 dark:hover:bg-neutral-800 dark:hover:text-neutral-200"
-                }`}
-                aria-label={`Edit ${b.book} bookmark`}
-                title={`Edit ${b.book} bookmark`}
-                aria-expanded={editing === b.book}
-              >
-                <PencilIcon />
-              </button>
-            </div>
-            {editing === b.book && (
-              <div className="space-y-2 border-t border-neutral-200 px-3 py-2 dark:border-neutral-800">
-                <p className="text-[11px] text-neutral-500 dark:text-neutral-400">
-                  Reset clears the active bookmark AND every past flag
-                  for this book.
-                </p>
-                <div className="flex justify-end gap-2">
-                  <button
-                    onClick={() => setEditing(null)}
-                    className="rounded border border-neutral-300 px-2 py-1 text-[11px] hover:bg-paper-soft dark:border-neutral-700 dark:hover:bg-neutral-800"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    onClick={() => {
-                      if (
-                        confirm(
-                          `Reset ${b.book}? This removes the active bookmark and every past flag in ${b.book}.`,
-                        )
-                      ) {
-                        onReset(b.book);
-                        setEditing(null);
-                      }
-                    }}
-                    className="rounded bg-red-600 px-2 py-1 text-[11px] text-white hover:bg-red-700"
-                  >
-                    Reset {b.book}
-                  </button>
-                </div>
+                </button>
+                <button
+                  onClick={() =>
+                    setEditing((cur) => (cur === b.book ? null : b.book))
+                  }
+                  className={`grid h-9 w-9 place-items-center rounded-full transition ${
+                    editing === b.book
+                      ? "bg-neutral-900 text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.2)] dark:bg-neutral-50 dark:text-neutral-900"
+                      : "text-neutral-400 hover:bg-paper-soft hover:text-neutral-700 dark:hover:bg-neutral-800 dark:hover:text-neutral-200"
+                  }`}
+                  aria-label={`Edit ${b.book} bookmark`}
+                  title={`Edit ${b.book} bookmark`}
+                  aria-expanded={editing === b.book}
+                >
+                  <PencilIcon />
+                </button>
               </div>
-            )}
-          </li>
-        ))}
+              {editing === b.book && (
+                <div className="space-y-2 border-t border-neutral-200/70 px-3 py-2.5 dark:border-neutral-800/70">
+                  <p className="text-[11px] text-neutral-500 dark:text-neutral-400">
+                    Reset clears the active bookmark AND every past flag
+                    for this book.
+                  </p>
+                  <div className="flex justify-end gap-2">
+                    <Pill onClick={() => setEditing(null)}>Cancel</Pill>
+                    <Pill
+                      variant="destructive"
+                      onClick={() => {
+                        if (
+                          confirm(
+                            `Reset ${b.book}? This removes the active bookmark and every past flag in ${b.book}.`,
+                          )
+                        ) {
+                          onReset(b.book);
+                          setEditing(null);
+                        }
+                      }}
+                    >
+                      Reset {b.book}
+                    </Pill>
+                  </div>
+                </div>
+              )}
+            </li>
+          );
+        })}
       </ul>
     </div>
   );

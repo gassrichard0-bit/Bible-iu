@@ -32,6 +32,7 @@ import {
   annotationsForVerse,
 } from "./annotations";
 import { GLASS_CARD_INLINE } from "../../lib/glass";
+import { readSettings, SETTINGS_CHANGED } from "../../lib/settings";
 
 interface Props {
   book: string;
@@ -459,6 +460,8 @@ export function BibleView({
         }
       >
         <TodaysReadingBanner
+          currentBook={book}
+          currentChapter={chapter}
           onJump={(b, c) => {
             onPickBook(b);
             onPickChapter(c);
@@ -1155,19 +1158,63 @@ function UpArrow() {
 /**
  * Banner shown at the top of the Bible scroller when the viewer is
  * enrolled in any reading plan. Picks the first enrolled plan, fetches
- * `today`, and renders a tap-to-jump pill for each ref. Stays silent
- * (renders nothing) when there's no enrolled plan, when the request
- * fails, or when today is already complete.
+ * `today`, and renders a tap-to-jump pill for each ref.
+ *
+ * Tracks which of today's refs the user has visited in this session
+ * (current book/chapter passed in via props). Once all refs are
+ * covered, the **Mark done** button highlights and a single tap
+ * completes the day via `api.readingPlanComplete`. The user can also
+ * mark done early — the auto-detection is a hint, not a gate.
+ *
+ * On completion: brief "✓ Done!" confirmation, then the banner hides
+ * for the rest of the session. (Returns next render cycle for the
+ * next day's reading because `today.completed` flips server-side.)
  */
 function TodaysReadingBanner({
+  currentBook,
+  currentChapter,
   onJump,
 }: {
+  currentBook: string;
+  currentChapter: number;
   onJump: (book: string, chapter: number) => void;
 }) {
   const [plan, setPlan] = useState<ReadingPlanSummary | null>(null);
   const [today, setToday] = useState<ReadingPlanDayOut | null>(null);
   const [hidden, setHidden] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [justDone, setJustDone] = useState(false);
+  const [visited, setVisited] = useState<Set<string>>(() => new Set());
+
+  // User toggle from Settings → Reading plans. Reading once at mount
+  // is fine — flipping the toggle while viewing the Bible doesn't
+  // need to retro-hide the banner; the next page load will. localStorage
+  // also propagates across tabs via the `storage` event below.
+  const [enabled, setEnabled] = useState(() => {
+    try {
+      return readSettings().todaysReadingBanner;
+    } catch {
+      return true;
+    }
+  });
   useEffect(() => {
+    const refresh = () => {
+      try {
+        setEnabled(readSettings().todaysReadingBanner);
+      } catch {
+        // ignore — fall back to default true
+      }
+    };
+    window.addEventListener("storage", refresh);
+    window.addEventListener(SETTINGS_CHANGED, refresh);
+    return () => {
+      window.removeEventListener("storage", refresh);
+      window.removeEventListener(SETTINGS_CHANGED, refresh);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!enabled) return;
     let cancelled = false;
     (async () => {
       try {
@@ -1185,9 +1232,23 @@ function TodaysReadingBanner({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [enabled]);
 
-  if (hidden || !plan || !today || today.completed) return null;
+  // Whenever the user navigates to a new chapter (via tap-jump,
+  // dropdown, or swipe), remember it so we can auto-detect when all
+  // of today's refs have been read.
+  useEffect(() => {
+    if (!currentBook || !currentChapter) return;
+    setVisited((s) => {
+      const next = new Set(s);
+      next.add(`${currentBook}.${currentChapter}`);
+      return next;
+    });
+  }, [currentBook, currentChapter]);
+
+  if (!enabled) return null;
+  if (hidden || !plan || !today) return null;
+  if (today.completed && !justDone) return null;
   const refs = today.refs ?? [];
   if (refs.length === 0) return null;
 
@@ -1201,39 +1262,80 @@ function TodaysReadingBanner({
     const label = verseFragment
       ? `${bookName} ${chapter}:${verseFragment}`
       : `${bookName} ${chapter}`;
-    return { ref, book, chapter, label };
+    const visitedRef = visited.has(`${book}.${chapter}`);
+    return { ref, book, chapter, label, visited: visitedRef };
   });
+
+  const allVisited = parsed.every((p) => p.visited);
+
+  async function markDone() {
+    if (!plan || !today || busy) return;
+    setBusy(true);
+    try {
+      await api.readingPlanComplete(plan.id, today.day_index);
+      setJustDone(true);
+      // Give the user a beat to see "✓ Done!" before fading out.
+      setTimeout(() => setHidden(true), 1500);
+    } catch {
+      // Best-effort — failed completes can be retried next render.
+    } finally {
+      setBusy(false);
+    }
+  }
 
   return (
     <div className="mb-3 rounded-2xl border border-amber-200 bg-amber-50/70 px-3 py-2 text-[12px] text-amber-900 shadow-sm backdrop-blur-md dark:border-amber-800/60 dark:bg-amber-900/30 dark:text-amber-100">
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2">
-          <span aria-hidden>📖</span>
-          <span className="font-semibold">Today's reading</span>
+          <span aria-hidden>{justDone ? "✓" : "📖"}</span>
+          <span className="font-semibold">
+            {justDone ? "Done!" : "Today's reading"}
+          </span>
           <span className="text-amber-700/80 dark:text-amber-200/70">
             {plan.name} · Day {today.day_index}
           </span>
         </div>
-        <button
-          onClick={() => setHidden(true)}
-          aria-label="Dismiss for now"
-          title="Dismiss for now"
-          className="rounded-full px-1.5 text-amber-700/70 hover:bg-amber-100 dark:text-amber-200/70 dark:hover:bg-amber-800/40"
-        >
-          ×
-        </button>
-      </div>
-      <div className="mt-1.5 flex flex-wrap gap-1.5">
-        {parsed.map(({ ref, book, chapter, label }) => (
+        {!justDone && (
           <button
-            key={ref}
-            onClick={() => onJump(book, chapter)}
-            className="rounded-full border border-amber-300 bg-paper px-2 py-0.5 text-[11px] text-amber-900 transition hover:bg-amber-100 dark:border-amber-700 dark:bg-neutral-900 dark:text-amber-100 dark:hover:bg-amber-900/40"
+            onClick={() => setHidden(true)}
+            aria-label="Dismiss for now"
+            title="Dismiss for now"
+            className="rounded-full px-1.5 text-amber-700/70 hover:bg-amber-100 dark:text-amber-200/70 dark:hover:bg-amber-800/40"
           >
-            {label}
+            ×
           </button>
-        ))}
+        )}
       </div>
+      {!justDone && (
+        <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+          {parsed.map(({ ref, book, chapter, label, visited: v }) => (
+            <button
+              key={ref}
+              onClick={() => onJump(book, chapter)}
+              className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] transition ${
+                v
+                  ? "border-emerald-400 bg-emerald-100/80 text-emerald-900 dark:border-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-100"
+                  : "border-amber-300 bg-paper text-amber-900 hover:bg-amber-100 dark:border-amber-700 dark:bg-neutral-900 dark:text-amber-100 dark:hover:bg-amber-900/40"
+              }`}
+            >
+              {v && <span aria-hidden>✓</span>}
+              {label}
+            </button>
+          ))}
+          <button
+            onClick={() => void markDone()}
+            disabled={busy}
+            aria-label="Mark today's reading as done"
+            className={`ml-auto inline-flex items-center gap-1 rounded-full px-3 py-1 text-[11px] font-semibold transition disabled:opacity-60 ${
+              allVisited
+                ? "bg-emerald-600 text-white shadow-sm hover:bg-emerald-500"
+                : "border border-amber-400 bg-paper text-amber-900 hover:bg-amber-100 dark:border-amber-600 dark:bg-neutral-900 dark:text-amber-100 dark:hover:bg-amber-900/40"
+            }`}
+          >
+            {busy ? "Saving…" : "Mark done"}
+          </button>
+        </div>
+      )}
     </div>
   );
 }

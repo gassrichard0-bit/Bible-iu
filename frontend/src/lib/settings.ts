@@ -30,6 +30,10 @@ export interface Settings {
    *  — other members still see the gate. Dev-mode escape hatch for
    *  shell-level access. */
   bypassAgentGate: boolean;
+  /** When true (default), the "Today's reading" banner shows at the
+   *  top of the Bible scroller whenever the user is enrolled in a
+   *  reading plan. Toggle off to read in peace without the prompt. */
+  todaysReadingBanner: boolean;
 }
 
 const KEY = "bible-iu:settings";
@@ -40,6 +44,7 @@ export const defaultSettings: Settings = {
   timezone: "",
   socialNotesEnabled: false,
   bypassAgentGate: false,
+  todaysReadingBanner: true,
 };
 
 export function readSettings(): Settings {
@@ -53,8 +58,19 @@ export function readSettings(): Settings {
   }
 }
 
+/** Dispatched on `window` after every successful `writeSettings()`.
+ *  `storage` only fires across tabs; this fills the same-tab gap so
+ *  subscribers (e.g. the Today's-reading banner) react immediately. */
+export const SETTINGS_CHANGED = "bible-iu:settings-changed";
+
 export function writeSettings(s: Settings): void {
   localStorage.setItem(KEY, JSON.stringify(s));
+  try {
+    window.dispatchEvent(new Event(SETTINGS_CHANGED));
+  } catch {
+    // Older browsers / non-DOM contexts: subscribers will catch the
+    // next storage event or the next mount.
+  }
 }
 
 /** Project the settings shape into the server's `preferences` JSON,
@@ -68,6 +84,7 @@ export function settingsToPreferences(s: Settings): { ui: Partial<Settings> } {
       timezone: s.timezone,
       socialNotesEnabled: s.socialNotesEnabled,
       bypassAgentGate: s.bypassAgentGate,
+      todaysReadingBanner: s.todaysReadingBanner,
     },
   };
 }
@@ -98,5 +115,9 @@ export function settingsFromPreferences(
       typeof ui.bypassAgentGate === "boolean"
         ? ui.bypassAgentGate
         : base.bypassAgentGate,
+    todaysReadingBanner:
+      typeof ui.todaysReadingBanner === "boolean"
+        ? ui.todaysReadingBanner
+        : base.todaysReadingBanner,
   };
 }

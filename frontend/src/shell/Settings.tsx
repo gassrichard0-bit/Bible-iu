@@ -245,44 +245,24 @@ export function SettingsModal({
                   </button>
                 )}
                 {isAdminHere && onOpenRoomAdmin && (
-                  <>
-                    <button
-                      onClick={() => {
-                        onClose();
-                        onOpenRoomAdmin(activeRoom.id);
-                      }}
-                      className={`flex w-full items-center gap-2 px-2.5 py-2 text-left text-sm transition hover:ring-1 hover:ring-neutral-400/40 dark:hover:ring-neutral-500/40 ${GLASS_CARD_INLINE}`}
-                    >
-                      <span className="text-neutral-500 dark:text-neutral-400" aria-hidden>
-                        ◉
-                      </span>
-                      <span className="flex-1">Group photo</span>
-                      <span className="rounded-full bg-amber-200/70 px-1.5 text-[9px] font-semibold uppercase text-amber-900 dark:bg-amber-500/30 dark:text-amber-100">
-                        admin
-                      </span>
-                      <span className="text-neutral-400" aria-hidden>
-                        ›
-                      </span>
-                    </button>
-                    <button
-                      onClick={() => {
-                        onClose();
-                        onOpenRoomAdmin(activeRoom.id);
-                      }}
-                      className={`flex w-full items-center gap-2 px-2.5 py-2 text-left text-sm transition hover:ring-1 hover:ring-neutral-400/40 dark:hover:ring-neutral-500/40 ${GLASS_CARD_INLINE}`}
-                    >
-                      <span className="text-neutral-500 dark:text-neutral-400" aria-hidden>
-                        ⚙
-                      </span>
-                      <span className="flex-1">Members + agent settings</span>
-                      <span className="rounded-full bg-amber-200/70 px-1.5 text-[9px] font-semibold uppercase text-amber-900 dark:bg-amber-500/30 dark:text-amber-100">
-                        admin
-                      </span>
-                      <span className="text-neutral-400" aria-hidden>
-                        ›
-                      </span>
-                    </button>
-                  </>
+                  <button
+                    onClick={() => {
+                      onClose();
+                      onOpenRoomAdmin(activeRoom.id);
+                    }}
+                    className={`flex w-full items-center gap-2 px-2.5 py-2 text-left text-sm transition hover:ring-1 hover:ring-neutral-400/40 dark:hover:ring-neutral-500/40 ${GLASS_CARD_INLINE}`}
+                  >
+                    <span className="text-neutral-500 dark:text-neutral-400" aria-hidden>
+                      ⚙
+                    </span>
+                    <span className="flex-1">Members + agent settings</span>
+                    <span className="rounded-full bg-amber-200/70 px-1.5 text-[9px] font-semibold uppercase text-amber-900 dark:bg-amber-500/30 dark:text-amber-100">
+                      admin
+                    </span>
+                    <span className="text-neutral-400" aria-hidden>
+                      ›
+                    </span>
+                  </button>
                 )}
               </div>
             </Section>
@@ -475,11 +455,35 @@ export function SettingsModal({
           )}
 
           {page === "plans" && (
-          <Section title="Reading plans">
-            <div className="p-1">
-              <ReadingPlansSection />
-            </div>
-          </Section>
+          <>
+            <Section title="Reading plans">
+              <div className="p-1">
+                <ReadingPlansSection />
+              </div>
+            </Section>
+            <Section title="Banner">
+              <Row>
+                <div className="flex-1">
+                  <div>Show "Today's reading" banner</div>
+                  <div className="text-[11px] text-neutral-500 dark:text-neutral-400">
+                    Pinned to the top of the Bible scroller while you're
+                    enrolled. Toggle off to read in peace.
+                  </div>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={settings.todaysReadingBanner}
+                  onChange={(e) =>
+                    onChange({
+                      ...settings,
+                      todaysReadingBanner: e.target.checked,
+                    })
+                  }
+                  className="ml-3 h-4 w-4 accent-amber-600"
+                />
+              </Row>
+            </Section>
+          </>
           )}
 
           {page === "account" && (
