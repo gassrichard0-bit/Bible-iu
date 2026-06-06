@@ -268,7 +268,7 @@ function ClaimList({
                   <button
                     key={j}
                     onClick={() => onJumpToCitation(ct.source_id)}
-                    className="rounded border border-neutral-300 bg-paper px-1.5 py-0.5 hover:bg-paper-soft hover:text-neutral-800 dark:border-neutral-700 dark:bg-neutral-900 dark:hover:bg-neutral-800 dark:hover:text-neutral-100"
+                    className="rounded-full border border-neutral-200 bg-paper px-2 py-0.5 font-mono shadow-[inset_0_1px_0_rgba(255,255,255,0.4)] transition hover:border-amber-300 hover:bg-amber-50 hover:text-amber-900 dark:border-neutral-700 dark:bg-neutral-900 dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] dark:hover:border-amber-700 dark:hover:bg-amber-950/40 dark:hover:text-amber-200"
                     title={`Jump to ${ct.source_id}`}
                   >
                     [{ct.source_id}

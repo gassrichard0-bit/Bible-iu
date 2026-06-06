@@ -128,16 +128,18 @@ export function ResourcesPanel({
             Sources used
           </div>
         </div>
-        <span className="rounded bg-paper-soft px-1.5 py-0.5 text-[10px] text-neutral-500 dark:bg-neutral-800 dark:text-neutral-300">
+        <span className="rounded-full border border-neutral-200 bg-paper-soft px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-neutral-500 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-300">
           {scopedToVerse ? "verse" : "room"}
         </span>
       </div>
 
-      <ul className="flex-1 overflow-y-auto p-2 text-sm">
+      <ul className="flex-1 space-y-1.5 overflow-y-auto p-2.5 text-sm">
         {used.length === 0 && (
-          <li className="px-2 py-1.5 text-xs text-neutral-500 dark:text-neutral-400">
-            None yet. Ask a question and the sources the agent pulled will
-            appear here.
+          <li className="mx-auto mt-3 max-w-xs rounded-2xl border border-neutral-200 bg-paper px-4 py-5 text-center shadow-[0_1px_2px_rgba(0,0,0,0.04),inset_0_1px_0_rgba(255,255,255,0.6)] dark:border-neutral-800 dark:bg-neutral-900 dark:shadow-[0_1px_2px_rgba(0,0,0,0.2),inset_0_1px_0_rgba(255,255,255,0.04)]">
+            <div className="text-[12px] text-neutral-500 dark:text-neutral-400">
+              No sources yet. Ask a question and the sources the agent
+              pulled will land here.
+            </div>
           </li>
         )}
         {used.map((ct) => {
@@ -148,31 +150,31 @@ export function ResourcesPanel({
               <button
                 onClick={() => onJumpToCitation?.(ct.source_id)}
                 disabled={!onJumpToCitation}
-                className={`group flex w-full items-start gap-2 rounded px-2 py-1.5 text-left ${
+                className={`group flex w-full items-center gap-2 rounded-xl border px-3 py-2 text-left shadow-[inset_0_1px_0_rgba(255,255,255,0.4)] transition dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] ${
                   verified
-                    ? "bg-yellow-50 dark:bg-amber-950/40"
-                    : "hover:bg-paper-soft dark:hover:bg-neutral-800/60"
+                    ? "border-amber-200 bg-amber-50/80 hover:border-amber-300 dark:border-amber-900/50 dark:bg-amber-950/40 dark:hover:border-amber-700"
+                    : "border-neutral-200 bg-paper hover:border-neutral-300 hover:bg-paper-soft dark:border-neutral-800 dark:bg-neutral-900 dark:hover:bg-neutral-800/60"
                 } ${
-                  onJumpToCitation
-                    ? "cursor-pointer"
-                    : "cursor-default"
+                  onJumpToCitation ? "cursor-pointer" : "cursor-default"
                 }`}
                 title={`Jump to ${ct.source_id}`}
               >
                 <span
-                  className={`mt-1 inline-block h-2 w-2 rounded-full ${
+                  className={`inline-block h-2.5 w-2.5 shrink-0 rounded-full ${
                     verified ? "bg-amber-500" : "bg-neutral-400"
                   }`}
                 />
                 <div className="min-w-0 flex-1">
-                  <div className="truncate font-medium">{d.display}</div>
+                  <div className="truncate text-[13px] font-semibold text-neutral-900 dark:text-neutral-50">
+                    {d.display}
+                  </div>
                   <div className="text-[11px] text-neutral-500 dark:text-neutral-400">
                     {d.sub || d.kind}
                     {ct.tradition ? ` · ${ct.tradition}` : ""}
                   </div>
                 </div>
                 <span
-                  className={`mt-0.5 shrink-0 rounded px-1 text-[9px] uppercase tracking-wide ${
+                  className={`shrink-0 rounded-full px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide ${
                     verified
                       ? "bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-200"
                       : "bg-neutral-100 text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400"
@@ -196,7 +198,7 @@ export function ResourcesPanel({
               {xrefsLoading ? "loading…" : `${xrefs.length}`}
             </span>
           </div>
-          <ul className="max-h-64 overflow-y-auto px-2 pb-2 text-sm">
+          <ul className="max-h-64 space-y-1.5 overflow-y-auto px-2.5 pb-2.5 text-sm">
             {!xrefsLoading && xrefs.length === 0 && (
               <li className="px-2 py-1.5 text-[11px] text-neutral-500 dark:text-neutral-400">
                 None linked.
@@ -207,14 +209,14 @@ export function ResourcesPanel({
                 <button
                   onClick={() => onJumpToCitation?.(x.to_verse_id)}
                   disabled={!onJumpToCitation}
-                  className={`group w-full rounded px-2 py-1.5 text-left hover:bg-paper-soft dark:hover:bg-neutral-800/60 ${
+                  className={`group flex w-full items-start gap-2 rounded-xl border border-neutral-200 bg-paper px-3 py-2 text-left shadow-[inset_0_1px_0_rgba(255,255,255,0.4)] transition hover:border-neutral-300 hover:bg-paper-soft dark:border-neutral-800 dark:bg-neutral-900 dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] dark:hover:bg-neutral-800/60 ${
                     onJumpToCitation ? "cursor-pointer" : "cursor-default"
                   }`}
                   title={`Jump to ${x.to_verse_id}`}
                 >
-                  <div className="text-[11px] font-medium text-neutral-700 dark:text-neutral-300">
+                  <span className="shrink-0 rounded-full bg-amber-100 px-1.5 py-0.5 font-mono text-[10px] text-amber-900 dark:bg-amber-900/50 dark:text-amber-200">
                     {x.to_verse_id}
-                  </div>
+                  </span>
                   {x.text && (
                     <div className="line-clamp-2 text-[12px] text-neutral-600 dark:text-neutral-400">
                       {x.text}

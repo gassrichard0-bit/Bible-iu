@@ -593,7 +593,7 @@ export function MobileShell({
       >
         <button
           onClick={() => setRailOpen(true)}
-          className="inline-flex h-10 items-center gap-1.5 rounded-full border border-neutral-200 bg-paper-soft px-3 text-[12px] font-medium text-neutral-700 hover:bg-neutral-100 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-200 dark:hover:bg-neutral-700"
+          className="group inline-flex h-10 items-center gap-1.5 rounded-full border border-neutral-200 bg-paper px-3 text-[12px] font-semibold text-neutral-700 shadow-[0_2px_6px_rgba(0,0,0,0.10),inset_0_1px_0_rgba(255,255,255,0.55)] transition-transform active:scale-[0.96] dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-200 dark:shadow-[0_2px_6px_rgba(0,0,0,0.45),inset_0_1px_0_rgba(255,255,255,0.08)]"
           aria-label="Open groups"
           title="Switch groups"
         >
@@ -650,7 +650,7 @@ export function MobileShell({
               setSettingsMode("menu");
               setSettingsOpen(true);
             }}
-            className="grid h-10 w-10 place-items-center rounded text-neutral-700 hover:bg-paper-soft dark:text-neutral-200 dark:hover:bg-neutral-800"
+            className="grid h-11 w-11 place-items-center rounded-full border border-neutral-200 bg-paper text-neutral-700 shadow-[0_2px_6px_rgba(0,0,0,0.10),inset_0_1px_0_rgba(255,255,255,0.55)] transition-transform active:scale-[0.96] dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-200 dark:shadow-[0_2px_6px_rgba(0,0,0,0.45),inset_0_1px_0_rgba(255,255,255,0.08)]"
             aria-label="Open settings"
             title="Settings"
           >

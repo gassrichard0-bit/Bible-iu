@@ -392,7 +392,7 @@ export function BibleView({
             onPickBook(e.target.value);
             onPickChapter(1);
           }}
-          className="rounded border border-neutral-200 bg-paper px-2 py-1.5 text-sm md:px-1.5 md:py-1 md:text-xs dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100"
+          className="rounded-full border border-neutral-200 bg-paper px-3 py-2 text-[14px] font-medium shadow-[0_1px_2px_rgba(0,0,0,0.05),inset_0_1px_0_rgba(255,255,255,0.5)] outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-200/40 dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100 dark:shadow-[0_1px_2px_rgba(0,0,0,0.4),inset_0_1px_0_rgba(255,255,255,0.05)] dark:focus:border-amber-700 dark:focus:ring-amber-800/40"
         >
           {books.length === 0 ? (
             <option value={book}>{book}</option>
@@ -407,7 +407,7 @@ export function BibleView({
         <select
           value={chapter}
           onChange={(e) => onPickChapter(Number(e.target.value))}
-          className="rounded border border-neutral-200 bg-paper px-2 py-1.5 text-sm md:px-1.5 md:py-1 md:text-xs dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100"
+          className="rounded-full border border-neutral-200 bg-paper px-3 py-2 text-[14px] font-medium shadow-[0_1px_2px_rgba(0,0,0,0.05),inset_0_1px_0_rgba(255,255,255,0.5)] outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-200/40 dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100 dark:shadow-[0_1px_2px_rgba(0,0,0,0.4),inset_0_1px_0_rgba(255,255,255,0.05)] dark:focus:border-amber-700 dark:focus:ring-amber-800/40"
         >
           {Array.from({ length: chapterCount }, (_, i) => i + 1).map((n) => (
             <option key={n}>{n}</option>
@@ -416,7 +416,7 @@ export function BibleView({
         <select
           value={translation}
           onChange={(e) => onPickTranslation(e.target.value)}
-          className="rounded border border-neutral-200 bg-paper px-2 py-1.5 text-sm md:px-1.5 md:py-1 md:text-xs dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100"
+          className="rounded-full border border-neutral-200 bg-paper px-3 py-2 text-[14px] font-medium shadow-[0_1px_2px_rgba(0,0,0,0.05),inset_0_1px_0_rgba(255,255,255,0.5)] outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-200/40 dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100 dark:shadow-[0_1px_2px_rgba(0,0,0,0.4),inset_0_1px_0_rgba(255,255,255,0.05)] dark:focus:border-amber-700 dark:focus:ring-amber-800/40"
           title="Public-domain translations only until commercial licenses are wired (CLAUDE.md §7.6)."
         >
           <option value="King James Version">KJV (1611)</option>
@@ -707,7 +707,7 @@ export function BibleView({
                             userSelect: "none",
                             touchAction: "manipulation",
                           }}
-                          className="rounded border border-neutral-200 bg-paper-soft px-2 py-1 text-[15px] text-neutral-800 dark:border-neutral-800 dark:bg-neutral-950/50 dark:text-neutral-100"
+                          className="rounded-xl border border-neutral-200 bg-paper-soft px-3 py-2 text-[15px] text-neutral-800 shadow-[inset_0_1px_0_rgba(255,255,255,0.5)] dark:border-neutral-800 dark:bg-neutral-950/50 dark:text-neutral-100 dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]"
                         >
                           <div
                             dir="ltr"

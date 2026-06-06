@@ -887,7 +887,7 @@ function Breadcrumb({
     <div className="flex items-center gap-1 overflow-x-auto border-b border-neutral-200 bg-paper px-3 py-1.5 text-xs text-neutral-500 dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-400">
       <button
         onClick={onToggleResources}
-        className="mr-1 shrink-0 rounded border border-neutral-200 px-1.5 py-0.5 text-[10px] text-neutral-500 hover:bg-paper-soft dark:border-neutral-700 dark:text-neutral-400 dark:hover:bg-neutral-800"
+        className="mr-1 shrink-0 rounded-full border border-neutral-200 bg-paper px-2.5 py-1 text-[11px] font-semibold text-neutral-600 shadow-[inset_0_1px_0_rgba(255,255,255,0.5)] transition hover:bg-paper-soft dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] dark:hover:bg-neutral-800"
         title={resourcesOpen ? "Hide resources panel" : "Show resources panel"}
         aria-label="Toggle resources panel"
       >
@@ -928,7 +928,7 @@ function Breadcrumb({
       )}
       {canZoomOut && (
         <button
-          className="ml-2 shrink-0 rounded border border-neutral-200 px-1.5 py-0.5 text-[10px] text-neutral-500 hover:bg-paper-soft dark:border-neutral-700 dark:text-neutral-400 dark:hover:bg-neutral-800"
+          className="ml-2 shrink-0 rounded-full border border-neutral-200 bg-paper px-2.5 py-1 text-[11px] font-semibold text-neutral-600 shadow-[inset_0_1px_0_rgba(255,255,255,0.5)] transition hover:bg-paper-soft dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] dark:hover:bg-neutral-800"
           onClick={onZoomOut}
           title={
             focus
@@ -1050,7 +1050,7 @@ function PromptBar({
                   ? `Ask about ${focus.book}.${focus.chapter}.${focus.verse}… or jot a note`
                   : `Ask about ${book} ${chapter}… or jot a note`
         }
-        className="flex-1 rounded border border-neutral-200 bg-paper px-3 py-2 text-base md:text-sm dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100 dark:placeholder:text-neutral-500"
+        className="flex-1 rounded-2xl border border-neutral-200 bg-paper px-3.5 py-2.5 text-[15px] shadow-[inset_0_1px_0_rgba(255,255,255,0.4)] outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-200/40 dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100 dark:placeholder:text-neutral-500 dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] dark:focus:border-amber-700 dark:focus:ring-amber-800/40"
       />
       <button
         type="button"

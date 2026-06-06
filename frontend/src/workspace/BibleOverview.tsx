@@ -58,15 +58,21 @@ function TestamentCard({
   return (
     <button
       onClick={onClick}
-      className={`flex h-full min-h-32 flex-col items-center justify-center p-6 text-center transition ${GLASS_CARD} ${
+      className={`flex h-full min-h-32 flex-col items-center justify-center p-6 text-center transition active:scale-[0.99] ${GLASS_CARD} ${
         highlight
-          ? "ring-2 ring-neutral-900/70 dark:ring-neutral-100/70"
-          : "hover:ring-1 hover:ring-neutral-400/60 dark:hover:ring-neutral-500/60"
+          ? "ring-2 ring-amber-300 dark:ring-amber-700"
+          : "hover:ring-1 hover:ring-amber-200/60 dark:hover:ring-amber-800/60"
       }`}
       aria-label={`Open ${label}`}
       aria-current={highlight ? "true" : undefined}
     >
-      <span className="text-lg font-semibold">{label}</span>
+      <span className="grid h-12 w-12 place-items-center rounded-full bg-amber-100/80 text-amber-800 shadow-[inset_0_1px_0_rgba(255,255,255,0.55),0_2px_6px_rgba(0,0,0,0.12)] dark:bg-amber-900/40 dark:text-amber-200">
+        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+          <path d="M5 4.5a1.5 1.5 0 0 1 1.5-1.5H18v16H6.5A1.5 1.5 0 0 0 5 20.5V4.5Z" />
+          <path d="M5 20.5A1.5 1.5 0 0 1 6.5 22H18" />
+        </svg>
+      </span>
+      <span className="mt-3 text-lg font-semibold">{label}</span>
       <span className="mt-1 text-xs text-neutral-500 dark:text-neutral-400">
         {books} books
       </span>

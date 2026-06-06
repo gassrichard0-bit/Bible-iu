@@ -37,10 +37,10 @@ export function TestamentGrid({
               <button
                 key={b.code}
                 onClick={() => onPickBook(b.code)}
-                className={`flex h-14 items-center justify-center rounded border px-2 text-sm transition ${
+                className={`flex min-h-[52px] items-center justify-center rounded-2xl border px-3 text-[14px] font-medium shadow-[0_1px_2px_rgba(0,0,0,0.04),inset_0_1px_0_rgba(255,255,255,0.45)] transition active:scale-[0.98] dark:shadow-[0_1px_2px_rgba(0,0,0,0.2),inset_0_1px_0_rgba(255,255,255,0.04)] ${
                   isCurrent
-                    ? "border-neutral-900 bg-paper-soft font-semibold text-neutral-900 dark:border-neutral-100 dark:bg-neutral-800 dark:text-neutral-100"
-                    : "border-neutral-200 bg-paper text-neutral-700 hover:border-neutral-400 hover:bg-paper-soft dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-200 dark:hover:border-neutral-500 dark:hover:bg-neutral-800"
+                    ? "border-amber-300 bg-amber-50/80 font-semibold text-amber-900 ring-2 ring-amber-200/50 dark:border-amber-700 dark:bg-amber-900/30 dark:text-amber-100 dark:ring-amber-800/40"
+                    : "border-neutral-200 bg-paper text-neutral-800 hover:border-neutral-300 hover:bg-paper-soft dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200 dark:hover:bg-neutral-800"
                 }`}
                 aria-label={`Open ${b.name}`}
                 aria-current={isCurrent ? "true" : undefined}

@@ -91,7 +91,7 @@ export function NotesSidebar({
           {onToggleChat && (
             <button
               onClick={onToggleChat}
-              className="rounded border border-neutral-200 px-1.5 py-0.5 text-[10px] text-neutral-500 hover:bg-paper-soft dark:border-neutral-700 dark:text-neutral-400 dark:hover:bg-neutral-800"
+              className="inline-flex min-h-[32px] items-center rounded-full border border-neutral-200 bg-paper px-3 py-1.5 text-[12px] font-semibold text-neutral-700 transition hover:bg-paper-soft dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200 dark:hover:bg-neutral-800"
               title="Toggle chat panel below"
             >
               {chatOpen ? "Hide chat" : "Chat"}
@@ -163,7 +163,7 @@ export function NotesSidebar({
             onChange={(e) => setQuery(e.target.value)}
             placeholder={`Search ${tab} notes…`}
             aria-label={`Search ${tab} notes`}
-            className="w-full rounded-full border border-neutral-200 bg-paper px-3 py-1 pl-7 text-[12px] text-neutral-800 placeholder:text-neutral-400 focus:border-neutral-400 focus:outline-none dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100 dark:placeholder:text-neutral-500"
+            className="w-full rounded-full border border-neutral-200 bg-paper px-3 py-2 pl-8 text-[14px] text-neutral-800 placeholder:text-neutral-400 outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-200/40 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100 dark:placeholder:text-neutral-500 dark:focus:border-amber-700 dark:focus:ring-amber-800/40"
           />
           <span
             className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-[11px] text-neutral-400"
