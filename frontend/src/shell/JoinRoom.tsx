@@ -75,9 +75,9 @@ export function JoinRoom({
         )}
         {preview && (
           <>
-            <div className="mb-4 rounded border border-neutral-200 bg-paper-soft p-3 dark:border-neutral-800 dark:bg-neutral-950">
+            <div className="mb-4 rounded-2xl border border-neutral-200 bg-paper-soft p-4 shadow-[0_1px_2px_rgba(0,0,0,0.04),inset_0_1px_0_rgba(255,255,255,0.6)] dark:border-neutral-800 dark:bg-neutral-950 dark:shadow-[0_1px_2px_rgba(0,0,0,0.2),inset_0_1px_0_rgba(255,255,255,0.04)]">
               <div className="text-xs uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
-                Room
+                Group
               </div>
               <div className="text-base font-medium">
                 {preview.room_name || "(unnamed room)"}
@@ -97,21 +97,21 @@ export function JoinRoom({
               )}
             </div>
             {!preview.can_join ? (
-              <p className="mb-3 rounded border border-amber-300 bg-amber-50 px-2 py-1 text-xs text-amber-800 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-200">
+              <p className="mb-3 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-200">
                 This link is no longer valid: {preview.reason}
               </p>
             ) : signedIn ? (
               <button
                 onClick={join}
                 disabled={busy}
-                className="w-full rounded bg-neutral-900 px-3 py-2 text-sm text-white disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900"
+                className="inline-flex min-h-[44px] w-full items-center justify-center rounded-2xl bg-neutral-900 px-4 py-3 text-[14px] font-semibold text-white shadow-sm transition hover:bg-neutral-800 disabled:opacity-50 dark:bg-neutral-50 dark:text-neutral-900 dark:hover:bg-neutral-200"
               >
-                {busy ? "Joining…" : "Join room"}
+                {busy ? "Joining…" : "Join group"}
               </button>
             ) : (
               <button
                 onClick={onSignInNeeded}
-                className="w-full rounded bg-neutral-900 px-3 py-2 text-sm text-white dark:bg-neutral-100 dark:text-neutral-900"
+                className="inline-flex min-h-[44px] w-full items-center justify-center rounded-2xl bg-neutral-900 px-4 py-3 text-[14px] font-semibold text-white shadow-sm transition hover:bg-neutral-800 dark:bg-neutral-50 dark:text-neutral-900 dark:hover:bg-neutral-200"
               >
                 Sign in to join
               </button>
@@ -120,7 +120,7 @@ export function JoinRoom({
         )}
         <button
           onClick={onCancel}
-          className="mt-3 w-full rounded border border-neutral-300 px-3 py-1.5 text-xs hover:bg-paper-soft dark:border-neutral-700 dark:hover:bg-neutral-800"
+          className="mt-3 inline-flex w-full items-center justify-center rounded-2xl border border-neutral-200 bg-paper px-3 py-2.5 text-[12px] font-semibold text-neutral-600 shadow-[inset_0_1px_0_rgba(255,255,255,0.5)] transition hover:bg-paper-soft dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] dark:hover:bg-neutral-800"
         >
           Skip — go to home
         </button>

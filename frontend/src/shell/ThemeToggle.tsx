@@ -13,7 +13,7 @@ export function ThemeToggle({ theme, onToggle, compact }: Props) {
     return (
       <button
         onClick={onToggle}
-        className="flex h-8 items-center justify-center rounded border border-neutral-200 bg-paper px-2 text-xs text-neutral-600 hover:bg-paper-soft dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 dark:hover:bg-neutral-800"
+        className="inline-flex min-h-[36px] items-center justify-center rounded-full border border-neutral-200 bg-paper px-3 text-[12px] font-semibold text-neutral-700 shadow-[inset_0_1px_0_rgba(255,255,255,0.5)] transition hover:bg-paper-soft dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200 dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] dark:hover:bg-neutral-800"
         title={`Switch to ${isDark ? "light" : "dark"} mode`}
         aria-label="Toggle theme"
       >
@@ -27,7 +27,7 @@ export function ThemeToggle({ theme, onToggle, compact }: Props) {
   return (
     <button
       onClick={onToggle}
-      className="rounded border border-neutral-200 bg-paper px-2 py-1 text-xs text-neutral-600 hover:bg-paper-soft dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 dark:hover:bg-neutral-800"
+      className="inline-flex min-h-[36px] items-center rounded-full border border-neutral-200 bg-paper px-3 text-[12px] font-semibold text-neutral-700 shadow-[inset_0_1px_0_rgba(255,255,255,0.5)] transition hover:bg-paper-soft dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200 dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] dark:hover:bg-neutral-800"
       title={`Switch to ${isDark ? "light" : "dark"} mode`}
       aria-label="Toggle theme"
     >

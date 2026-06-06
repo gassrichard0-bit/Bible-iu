@@ -331,7 +331,7 @@ export function SocialShell({
         </button>
         <input
           placeholder="Search"
-          className="mx-3 mb-2 rounded border border-neutral-200 bg-paper px-2 py-1.5 text-xs dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100 dark:placeholder:text-neutral-500"
+          className="mx-3 mb-2 rounded-full border border-neutral-200 bg-paper px-3 py-2 text-[12px] shadow-[inset_0_1px_0_rgba(255,255,255,0.4)] outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-200/40 dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100 dark:placeholder:text-neutral-500 dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] dark:focus:border-amber-700 dark:focus:ring-amber-800/40"
         />
         <nav className="flex-1 overflow-y-auto">
           {rooms.map((r) => (
@@ -388,22 +388,22 @@ export function SocialShell({
             {active && active.type === "group" && !active.id.startsWith("local-") && (
               <button
                 onClick={() => setShareOpen(true)}
-                className="shrink-0 rounded border border-neutral-200 px-1.5 py-0.5 text-[10px] text-neutral-600 hover:bg-paper-soft dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
-                title="Share this room"
-                aria-label="Share room"
+                className="inline-flex shrink-0 items-center gap-1 rounded-full border border-neutral-200 bg-paper px-2.5 py-1 text-[11px] font-semibold text-neutral-700 shadow-[inset_0_1px_0_rgba(255,255,255,0.45)] transition hover:bg-paper-soft dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200 dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] dark:hover:bg-neutral-800"
+                title="Share this group"
+                aria-label="Share group"
               >
                 ↗ Share
               </button>
             )}
           </div>
           <div className="flex shrink-0 items-center gap-1 md:gap-1.5">
-            <div className="flex rounded border border-neutral-200 text-xs dark:border-neutral-700">
+            <div className="flex rounded-full border border-neutral-200 bg-neutral-100/60 p-0.5 text-[11px] shadow-[inset_0_1px_0_rgba(255,255,255,0.5)] dark:border-neutral-700 dark:bg-neutral-800/60 dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]">
               <button
                 onClick={() => setView("chat")}
-                className={`flex h-8 items-center justify-center px-2 md:px-2.5 ${
+                className={`flex h-7 items-center justify-center rounded-full px-3 font-semibold transition ${
                   view === "chat"
-                    ? "bg-paper-soft dark:bg-neutral-800"
-                    : ""
+                    ? "bg-paper text-neutral-900 shadow-[0_1px_2px_rgba(0,0,0,0.08)] dark:bg-neutral-900 dark:text-neutral-50"
+                    : "text-neutral-500 dark:text-neutral-400"
                 }`}
                 title="Chat view"
                 aria-label="Chat view"
@@ -414,10 +414,10 @@ export function SocialShell({
               </button>
               <button
                 onClick={() => setView("study")}
-                className={`flex h-8 items-center justify-center px-2 md:px-2.5 ${
+                className={`flex h-7 items-center justify-center rounded-full px-3 font-semibold transition ${
                   view === "study"
-                    ? "bg-paper-soft dark:bg-neutral-800"
-                    : ""
+                    ? "bg-paper text-neutral-900 shadow-[0_1px_2px_rgba(0,0,0,0.08)] dark:bg-neutral-900 dark:text-neutral-50"
+                    : "text-neutral-500 dark:text-neutral-400"
                 }`}
                 title="Study view"
                 aria-label="Study view"
@@ -429,7 +429,7 @@ export function SocialShell({
             </div>
             <button
               onClick={() => setNotesOpen((v) => !v)}
-              className="flex h-8 items-center justify-center rounded border border-neutral-200 px-2 text-xs text-neutral-600 hover:bg-paper-soft dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
+              className="inline-flex min-h-[36px] items-center rounded-full border border-neutral-200 bg-paper px-3 text-[12px] font-semibold text-neutral-700 shadow-[inset_0_1px_0_rgba(255,255,255,0.5)] transition hover:bg-paper-soft dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200 dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] dark:hover:bg-neutral-800"
               title="Toggle notes (CLAUDE.md §4.6)"
               aria-label="Toggle notes"
             >
@@ -661,9 +661,9 @@ function ChatPlaceholder({ roomName }: { roomName: string }) {
       <div className="flex items-center gap-2 border-t border-neutral-200 bg-paper p-2 dark:border-neutral-800 dark:bg-neutral-900">
         <input
           placeholder="Message…"
-          className="flex-1 rounded border border-neutral-200 bg-paper px-3 py-2 text-sm dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100 dark:placeholder:text-neutral-500"
+          className="flex-1 rounded-2xl border border-neutral-200 bg-paper px-3.5 py-2.5 text-[15px] shadow-[inset_0_1px_0_rgba(255,255,255,0.4)] outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-200/40 dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100 dark:placeholder:text-neutral-500 dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] dark:focus:border-amber-700 dark:focus:ring-amber-800/40"
         />
-        <button className="rounded bg-neutral-900 px-3 py-2 text-sm text-white dark:bg-neutral-100 dark:text-neutral-900">
+        <button className="inline-flex min-h-[44px] items-center rounded-2xl bg-neutral-900 px-4 text-[14px] font-semibold text-white shadow-sm transition hover:bg-neutral-800 dark:bg-neutral-50 dark:text-neutral-900 dark:hover:bg-neutral-200">
           Send
         </button>
       </div>

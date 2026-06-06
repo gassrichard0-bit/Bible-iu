@@ -281,7 +281,7 @@ function SampleSwatch({
     <button
       onClick={onTap}
       title={title}
-      className={`flex h-8 w-8 shrink-0 items-end justify-center rounded-md bg-white text-[11px] font-bold text-neutral-700 shadow-sm dark:bg-neutral-800 dark:text-neutral-200 ${ring}`}
+      className={`flex h-8 w-8 shrink-0 items-end justify-center rounded-xl bg-white text-[11px] font-bold text-neutral-700 shadow-sm dark:bg-neutral-800 dark:text-neutral-200 ${ring}`}
     >
       {children}
     </button>
