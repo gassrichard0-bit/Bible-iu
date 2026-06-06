@@ -29,6 +29,18 @@ interface Props {
 }
 
 /**
+ * Friendly display names for the upper-cased getbible.net abbreviations
+ * the seed script bakes into translation citation_ids. Without this map
+ * a Hebrew row reads "CODEX · GEN.1.1" — true to the API origin, useless
+ * to the reader. Anything not in the map falls back to the raw prefix.
+ */
+const TRANSLATION_LABELS: Record<string, string> = {
+  CODEX: "Hebrew (WLC)",
+  TEXTUSRECEPTUS: "Greek (TR)",
+  ARABICSV: "Arabic (SVD)",
+};
+
+/**
  * Turn a citation source_id like "trans:KJV:GEN.1.1" into:
  *   { display, sub, kind }   where display = "KJV", sub = "GEN.1.1"
  * Falls back gracefully for unknown formats.
@@ -44,7 +56,11 @@ function describeSource(ct: CitationOut): {
     // rest is like "KJV:GEN.1.1" — split on the LAST occurrence of a
     // verse_id pattern. The translation name can contain colons.
     const m = rest.match(/^(.+?):([A-Z0-9]+\.\d+\.\d+)$/);
-    if (m) return { display: m[1], sub: m[2], kind: "translation" };
+    if (m) {
+      const rawPrefix = m[1];
+      const display = TRANSLATION_LABELS[rawPrefix] ?? rawPrefix;
+      return { display, sub: m[2], kind: "translation" };
+    }
     return { display: rest, sub: "", kind: "translation" };
   }
   if (id.startsWith("res:")) {

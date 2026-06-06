@@ -1,0 +1,41 @@
+# Fly.io deploy config for Bible IU. Single-machine deployment with a
+# persistent 1GB volume holding SQLite + Y.Doc ystore + provenance
+# ledger. Scale-out requires migrating to Postgres + Redis (see
+# WORKSTREAM.md). Adjust `app` and `primary_region` on first deploy.
+
+app = "bible-iu"           # `fly apps create bible-iu` before deploying
+primary_region = "iad"     # change to your nearest region
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "8080"
+  # BIBLE_IU_STATIC_DIR + DATABASE_URL + YSTORE_PATH are baked into
+  # the Dockerfile (point at /app/frontend_dist and /data respectively).
+  # Secrets (DEEPSEEK_API_KEY, BIBLE_IU_PASSWORD, SENTRY_DSN, Twilio)
+  # are set via `fly secrets set` — never put them in this file.
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 1   # keep 1 hot so /ws/yjs reconnects don't cold-start
+  processes = ["app"]
+
+  [[http_service.checks]]
+    grace_period = "10s"
+    interval = "30s"
+    method = "GET"
+    timeout = "5s"
+    path = "/healthz"
+
+[mounts]
+  source = "bible_iu_data"
+  destination = "/data"
+  initial_size = "1gb"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

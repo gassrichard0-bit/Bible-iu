@@ -82,6 +82,7 @@ class CitationEngine:
         events: Optional[StreamingEvents] = None,
         history: Optional[list] = None,
         bypass: bool = False,
+        scope_kind: str = "verse",
     ) -> GroundedAnswer:
         """`bypass=True` (user-toggled in Settings, overriding the spec
         in rule-guide.MD §14 / citation-engine.MD §10): run retrieve +
@@ -91,7 +92,9 @@ class CitationEngine:
         ev = events or StreamingEvents()
         history = history or []
         ev.on_stage("retrieving", None)
-        retrieval = self.retriever.retrieve(verse_ref, question, room_id=room_id)
+        retrieval = self.retriever.retrieve(
+            verse_ref, question, room_id=room_id, scope_kind=scope_kind,
+        )
         ev.on_stage("generating", len(retrieval))
 
         # Prefer the streaming generate path if both the generator and
@@ -104,10 +107,12 @@ class CitationEngine:
                 verse_ref, question, retrieval, ev.on_reasoning_chunk,
                 history=history,
                 bypass=bypass,
+                scope_kind=scope_kind,
             )
         else:
             gen_out = self.generator.generate(
-                verse_ref, question, retrieval, history=history, bypass=bypass,
+                verse_ref, question, retrieval,
+                history=history, bypass=bypass, scope_kind=scope_kind,
             )
         # Generators may return 3-tuple (back-compat) or 4-tuple with
         # an optional NoteSuggestion as the 4th element.

@@ -141,6 +141,22 @@ export function RichNoteField({
         onFocus={() => setFocused(true)}
         onBlur={handleBlur}
         onInput={handleInput}
+        onKeyDown={(e) => {
+          // Standard rich-editor shortcuts. Cmd on macOS, Ctrl
+          // elsewhere — both are honored by checking either modifier.
+          if (!(e.metaKey || e.ctrlKey)) return;
+          const k = e.key.toLowerCase();
+          if (k === "b") {
+            e.preventDefault();
+            run("bold");
+          } else if (k === "i") {
+            e.preventDefault();
+            run("italic");
+          } else if (k === "u") {
+            e.preventDefault();
+            run("underline");
+          }
+        }}
         className={`w-full bg-transparent outline-none ${compact ? "min-h-[28px] text-sm" : "min-h-[44px] text-sm"} ${empty ? "before:pointer-events-none before:text-neutral-400 before:content-[attr(data-placeholder)] dark:before:text-neutral-500" : ""}`}
       />
       {focused && (

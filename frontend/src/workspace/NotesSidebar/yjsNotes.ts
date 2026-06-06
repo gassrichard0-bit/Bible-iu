@@ -1,28 +1,34 @@
 /**
  * Yjs-backed `NotesApi` (CLAUDE.md §8, notes-system.MD §3.1).
  *
- * One Y.Doc per room (mounted at `/ws/yjs/{roomId}`). Each note is a
- * Y.Map entry inside a top-level Y.Array called "notes". CRDT semantics
- * mean concurrent edits across browser tabs / devices merge without
- * conflict.
+ * SCOPING — WhatsApp-group-style isolation:
+ *   • Group notes live in the room's SHARED Y.Doc `{roomId}`. Every
+ *     member sees the same CRDT state; concurrent edits merge.
+ *   • Personal notes live in a per-user PRIVATE Y.Doc
+ *     `notes_private__{userId}__{roomId}`. The backend rejects any
+ *     websocket connection where the session token doesn't match the
+ *     `{userId}` in the doc name, so other room members literally
+ *     cannot subscribe to your private doc.
  *
- * Note bodies are `Y.Text` so two users typing the SAME note merge
- * letter-by-letter via CRDT instead of last-write-wins. Textarea edits
- * are converted to Y.Text ops via a minimal prefix/suffix diff —
- * good enough for plain textareas; TipTap binding is the spec'd
- * upgrade path for the rich editor (notes-system.MD §3.1).
+ * The hook merges both docs for the UI — caller doesn't see the split.
  *
- * Local persistence via y-indexeddb survives tab close / offline.
+ * Note bodies are `Y.Text` so two of the user's own devices typing the
+ * same note merge letter-by-letter.
+ *
+ * Local persistence: y-indexeddb keeps the SHARED doc and the PRIVATE
+ * doc in separate IndexedDB databases, so wiping one doesn't touch
+ * the other.
  */
 import { useEffect, useMemo, useState } from "react";
 import * as Y from "yjs";
 import { WebsocketProvider } from "y-websocket";
 import { IndexeddbPersistence } from "y-indexeddb";
-import type {
-  NoteRow,
-  NotesApi,
-} from "./notesStore";
-import { getPassword, getSessionToken } from "../../lib/api";
+import type { NoteRow, NotesApi } from "./notesStore";
+import {
+  api as serverApi,
+  getPassword,
+  getSessionToken,
+} from "../../lib/api";
 
 interface YNote {
   id: string;
@@ -32,10 +38,8 @@ interface YNote {
   by_agent?: boolean;
 }
 
-/** Snapshot the Y.Array of notes into a plain NoteRow[]. Y.Text bodies
- *  are flattened to plain strings for UI consumption; the underlying
- *  Y.Text still merges concurrent edits internally. */
-function snapshot(arr: Y.Array<Y.Map<unknown>>): NoteRow[] {
+/** Snapshot a single Y.Array of notes into a plain NoteRow[]. */
+function snapshotArray(arr: Y.Array<Y.Map<unknown>>): NoteRow[] {
   const out: NoteRow[] = [];
   for (let i = 0; i < arr.length; i++) {
     const m = arr.get(i) as Y.Map<unknown>;
@@ -59,11 +63,7 @@ function snapshot(arr: Y.Array<Y.Map<unknown>>): NoteRow[] {
   return out;
 }
 
-
-/** Convert a textarea change into incremental Y.Text ops by diffing
- *  the new value against the current Y.Text. Common prefix + suffix
- *  are preserved; only the middle is replaced — so two users typing
- *  in different parts of the same note merge cleanly. */
+/** Convert a textarea change into incremental Y.Text ops. */
 function applyDiffToYText(yText: Y.Text, next: string): void {
   const current = yText.toString();
   if (current === next) return;
@@ -73,7 +73,8 @@ function applyDiffToYText(yText: Y.Text, next: string): void {
     prefix < current.length &&
     prefix < next.length &&
     current.charCodeAt(prefix) === next.charCodeAt(prefix)
-  ) prefix++;
+  )
+    prefix++;
 
   let suffix = 0;
   while (
@@ -81,7 +82,8 @@ function applyDiffToYText(yText: Y.Text, next: string): void {
     suffix < next.length - prefix &&
     current.charCodeAt(current.length - 1 - suffix) ===
       next.charCodeAt(next.length - 1 - suffix)
-  ) suffix++;
+  )
+    suffix++;
 
   const deleteLen = current.length - prefix - suffix;
   const insertText = next.slice(prefix, next.length - suffix);
@@ -92,33 +94,60 @@ function applyDiffToYText(yText: Y.Text, next: string): void {
   });
 }
 
-export interface YjsRoomHandle {
+interface DocBundle {
   doc: Y.Doc;
   notes: Y.Array<Y.Map<unknown>>;
+  provider: WebsocketProvider;
+  persistence: IndexeddbPersistence;
+}
+
+export interface YjsRoomHandle {
+  /** Shared room doc — group notes only. */
+  group: DocBundle;
+  /** Per-user private doc — personal notes only. null if not signed in. */
+  personal: DocBundle | null;
   api: NotesApi;
   cleanup: () => void;
 }
 
-/** Hook: returns a NotesApi backed by the room's Y.Doc, synced via
- *  WebSocket. Reconnects automatically on network drop. */
-export function useYjsNotes(roomId: string): NotesApi {
-  // Build (and tear down) a fresh Y.Doc + provider when the room changes.
-  const handle = useMemo(() => buildHandle(roomId), [roomId]);
+/** Hook: returns a NotesApi backed by two Y.Docs (one shared, one
+ *  private) and a merged in-memory view. */
+export function useYjsNotes(roomId: string, userId?: string): NotesApi {
+  const handle = useMemo(
+    () => buildHandle(roomId, userId),
+    [roomId, userId],
+  );
   useEffect(() => {
     return () => handle.cleanup();
   }, [handle]);
 
+  // Force a re-snapshot when EITHER doc changes — the consumer sees a
+  // unified list.
   const [, force] = useState(0);
   useEffect(() => {
     const observer = () => force((n) => n + 1);
-    handle.notes.observeDeep(observer);
-    return () => handle.notes.unobserveDeep(observer);
+    handle.group.notes.observeDeep(observer);
+    handle.personal?.notes.observeDeep(observer);
+    return () => {
+      handle.group.notes.unobserveDeep(observer);
+      handle.personal?.notes.unobserveDeep(observer);
+    };
   }, [handle]);
 
-  // Recompute the NotesApi each render so the consumer always sees a
-  // fresh `notes` array (otherwise React's reference-equality misses
-  // CRDT mutations even though they came in via observe).
-  const rows = snapshot(handle.notes);
+  // Snapshot strategy:
+  //   group doc → only `scope === "group"` rows are real. Any
+  //     `scope === "personal"` row there is legacy / leaked data from
+  //     before the per-user split; we drop it on read so it can't be
+  //     shown in the UI.
+  //   personal doc → all rows are this user's; surface them as-is.
+  const groupRows = snapshotArray(handle.group.notes).filter(
+    (r) => r.scope === "group",
+  );
+  const personalRows = handle.personal
+    ? snapshotArray(handle.personal.notes)
+    : [];
+  const rows: NoteRow[] = [...personalRows, ...groupRows];
+
   return {
     notes: rows,
     add: (n) => handle.api.add(n),
@@ -132,104 +161,196 @@ export function useYjsNotes(roomId: string): NotesApi {
   };
 }
 
-function buildHandle(roomId: string): YjsRoomHandle {
-  // No active room yet (rail still loading). Return a no-op handle —
-  // calling `connect` with an empty room ID gives the URL
-  // `/ws/yjs/?password=…` which doesn't match the FastAPI route and
-  // floods the console with 403s.
+function noopApi(): NotesApi {
+  return {
+    notes: [],
+    add: () => "",
+    update: () => {},
+    remove: () => {},
+    forVerse: () => [],
+    forChapter: () => [],
+  };
+}
+
+function buildHandle(roomId: string, userId?: string): YjsRoomHandle {
+  // No active room → no-op handle.
   if (!roomId) {
     const doc = new Y.Doc();
-    const notes = doc.getArray<Y.Map<unknown>>("notes");
-    return {
+    const stub: DocBundle = {
       doc,
-      notes,
-      api: {
-        notes: [],
-        add: () => "",
-        update: () => {},
-        remove: () => {},
-        forVerse: () => [],
-      forChapter: () => [],
-      },
+      notes: doc.getArray<Y.Map<unknown>>("notes"),
+      // Dummies so the cleanup() doesn't blow up.
+      provider: undefined as unknown as WebsocketProvider,
+      persistence: undefined as unknown as IndexeddbPersistence,
+    };
+    return {
+      group: stub,
+      personal: null,
+      api: noopApi(),
       cleanup: () => doc.destroy(),
     };
   }
-  const doc = new Y.Doc();
-  const notes = doc.getArray<Y.Map<unknown>>("notes");
-
-  // Offline-first: IndexedDB is the authoritative local store. The
-  // websocket provider is the sync channel to the server (and across
-  // tabs). When offline, edits accumulate in IndexedDB and flush on
-  // reconnect.
-  const persistence = new IndexeddbPersistence(`notes-${roomId}`, doc);
 
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
-  const url = `${proto}//${location.host}/ws/yjs`;
-  const provider = new WebsocketProvider(url, roomId, doc, {
-    params: {
-      password: getPassword(),
-      session: getSessionToken(),
-    },
-    // protocols default ['yjs'] which pycrdt accepts.
+  const wsUrl = `${proto}//${location.host}/ws/yjs`;
+  const wsParams = {
+    password: getPassword(),
+    session: getSessionToken(),
+  };
+
+  // ---------- SHARED doc: group notes ----------
+  const groupDoc = new Y.Doc();
+  const groupNotes = groupDoc.getArray<Y.Map<unknown>>("notes");
+  const groupPersistence = new IndexeddbPersistence(
+    `notes-${roomId}`,
+    groupDoc,
+  );
+  const groupProvider = new WebsocketProvider(wsUrl, roomId, groupDoc, {
+    params: wsParams,
   });
+  const group: DocBundle = {
+    doc: groupDoc,
+    notes: groupNotes,
+    provider: groupProvider,
+    persistence: groupPersistence,
+  };
+
+  // ---------- PRIVATE doc: personal notes ----------
+  // Only built when we know who's signed in — the doc name encodes the
+  // user id so the backend can validate. Without a userId we can't
+  // safely subscribe to a per-user doc.
+  let personal: DocBundle | null = null;
+  if (userId) {
+    const personalDoc = new Y.Doc();
+    const personalNotes = personalDoc.getArray<Y.Map<unknown>>("notes");
+    const personalDocName = `notes_private__${userId}__${roomId}`;
+    const personalPersistence = new IndexeddbPersistence(
+      `notes-private-${userId}-${roomId}`,
+      personalDoc,
+    );
+    const personalProvider = new WebsocketProvider(
+      wsUrl,
+      personalDocName,
+      personalDoc,
+      { params: wsParams },
+    );
+    personal = {
+      doc: personalDoc,
+      notes: personalNotes,
+      provider: personalProvider,
+      persistence: personalPersistence,
+    };
+  }
+
+  // ---------- routed mutations ----------
+  // add: scope decides which doc receives the new note. Personal notes
+  // fall back to the shared doc only if there's no personal doc yet
+  // (not signed in) — but in that case the UI shouldn't be letting the
+  // user create personal notes in the first place.
+  // update/remove: locate by id across both docs.
+  const localId = () =>
+    `local-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+
+  function findInDoc(
+    bundle: DocBundle,
+    id: string,
+  ): { arr: Y.Array<Y.Map<unknown>>; index: number } | null {
+    for (let i = 0; i < bundle.notes.length; i++) {
+      const m = bundle.notes.get(i) as Y.Map<unknown>;
+      if (m.get("id") === id) return { arr: bundle.notes, index: i };
+    }
+    return null;
+  }
 
   const api: NotesApi = {
     notes: [], // consumed via snapshot, not this field
     add: (n) => {
-      const id = `local-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+      const targetBundle =
+        n.scope === "personal" && personal ? personal : group;
+      const id = localId();
       const m = new Y.Map();
       m.set("id", id);
       m.set("scope", n.scope);
-      // Body is a Y.Text so concurrent edits merge per-character.
       const body = new Y.Text();
       if (n.body) body.insert(0, n.body);
       m.set("body", body);
       if (n.verse_anchor) m.set("verse_anchor", n.verse_anchor);
       if (n.by_agent) m.set("by_agent", n.by_agent);
-      notes.push([m]);
+      targetBundle.notes.push([m]);
+      // Register group notes with the server so social endpoints
+      // (likes / comments) can reject any note_id that wasn't
+      // actually added to the shared doc. Personal notes never
+      // touch this — registering them would be a privacy violation.
+      if (n.scope === "group" && !n.by_agent) {
+        void serverApi.noteRegisterGroup(roomId, id).catch(() => {
+          // Quiet on failure: the worst case is that hearts/comments
+          // briefly 404 until the next register attempt. We don't
+          // want to roll back the Yjs add.
+        });
+      }
       return id;
     },
     update: (id, body) => {
-      doc.transact(() => {
-        for (let i = 0; i < notes.length; i++) {
-          const m = notes.get(i) as Y.Map<unknown>;
-          if (m.get("id") !== id) continue;
+      // Try personal first since personal notes are typically the more
+      // common edit target for the signed-in user.
+      const bundles: DocBundle[] = personal ? [personal, group] : [group];
+      for (const bundle of bundles) {
+        const found = findInDoc(bundle, id);
+        if (!found) continue;
+        bundle.doc.transact(() => {
+          const m = found.arr.get(found.index) as Y.Map<unknown>;
           const existing = m.get("body");
           if (existing instanceof Y.Text) {
             applyDiffToYText(existing, body);
           } else {
-            // Legacy string body — upgrade to Y.Text in place.
             const yt = new Y.Text();
             if (body) yt.insert(0, body);
             m.set("body", yt);
           }
-          return;
-        }
-      });
+        });
+        return;
+      }
     },
     remove: (id) => {
-      doc.transact(() => {
-        for (let i = 0; i < notes.length; i++) {
-          const m = notes.get(i) as Y.Map<unknown>;
-          if (m.get("id") === id) {
-            notes.delete(i, 1);
-            return;
-          }
-        }
-      });
+      const bundles: DocBundle[] = personal ? [personal, group] : [group];
+      for (const bundle of bundles) {
+        const found = findInDoc(bundle, id);
+        if (!found) continue;
+        bundle.doc.transact(() => {
+          found.arr.delete(found.index, 1);
+        });
+        return;
+      }
     },
     forVerse: () => [],
     forChapter: () => [],
   };
 
   return {
-    doc,
-    notes,
+    group,
+    personal,
     api,
     cleanup: () => {
-      provider.destroy();
-      persistence.destroy();
-      doc.destroy();
+      try {
+        groupProvider.destroy();
+      } catch {}
+      try {
+        groupPersistence.destroy();
+      } catch {}
+      try {
+        groupDoc.destroy();
+      } catch {}
+      if (personal) {
+        try {
+          personal.provider.destroy();
+        } catch {}
+        try {
+          personal.persistence.destroy();
+        } catch {}
+        try {
+          personal.doc.destroy();
+        } catch {}
+      }
     },
   };
 }

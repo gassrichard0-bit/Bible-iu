@@ -66,89 +66,105 @@ export function NewRoomModal({ open, onClose, onCreate }: Props) {
   }
 
   return (
-    <BottomSheet open={open} onClose={onClose} title="New room">
+    <BottomSheet open={open} onClose={onClose} title="New group" fullPage>
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          void submit();
+        }}
+        className="mx-auto flex h-full max-w-md flex-col gap-5 px-4 py-5"
+      >
+        <label className="block">
+          <span className="mb-1.5 block text-[12px] font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
+            Group name
+          </span>
+          <input
+            ref={nameRef}
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            maxLength={60}
+            placeholder="e.g. Romans 8 study"
+            className="w-full rounded-2xl border border-neutral-200 bg-paper px-3.5 py-3 text-[15px] outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-200/40 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-50 dark:focus:border-amber-700 dark:focus:ring-amber-800/40"
+          />
+          <span className="mt-1 block text-[11px] text-neutral-400 dark:text-neutral-500">
+            {trimmed.length}/60
+          </span>
+        </label>
 
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            void submit();
-          }}
-          className="px-4 py-3"
-        >
-          <label className="mb-3 block">
-            <span className="mb-0.5 block text-[11px] text-neutral-600 dark:text-neutral-300">
-              Name
-            </span>
-            <input
-              ref={nameRef}
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              maxLength={60}
-              placeholder="e.g. Romans 8 study"
-              className="w-full rounded border border-neutral-200 bg-paper px-2 py-1.5 text-sm dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100"
+        <fieldset>
+          <legend className="mb-1.5 text-[12px] font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
+            Type
+          </legend>
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            <TypeOption
+              checked={type === "group"}
+              onClick={() => setType("group")}
+              title="Group"
+              description="Shared study room — multiple people, shared notes."
+              icon={
+                <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                  <circle cx="9" cy="8" r="3.5" />
+                  <circle cx="17" cy="9" r="2.5" />
+                  <path d="M3.5 18.5c.6-2.6 2.9-4.5 5.5-4.5s4.9 1.9 5.5 4.5" />
+                  <path d="M15.5 18c.3-1.6 1.8-2.8 3.5-2.8s3.2 1.2 3.5 2.8" />
+                </svg>
+              }
             />
-            <span className="mt-1 block text-[10px] text-neutral-500 dark:text-neutral-400">
-              {trimmed.length}/60
-            </span>
-          </label>
-
-          <fieldset className="mb-3">
-            <legend className="mb-1 text-[11px] text-neutral-600 dark:text-neutral-300">
-              Type
-            </legend>
-            <div className="grid grid-cols-2 gap-2">
-              <TypeOption
-                checked={type === "group"}
-                onClick={() => setType("group")}
-                title="Group"
-                description="Shared study room — multiple people, shared (group-scope) notes."
-              />
-              <TypeOption
-                checked={type === "direct"}
-                onClick={() => setType("direct")}
-                title="Direct"
-                description="Just you (for now) — useful as a personal scratch space."
-              />
-            </div>
-          </fieldset>
-
-          <label className="mb-3 block">
-            <span className="mb-0.5 block text-[11px] text-neutral-600 dark:text-neutral-300">
-              Description (optional)
-            </span>
-            <textarea
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              maxLength={240}
-              rows={2}
-              placeholder="What's this room for?"
-              className="w-full rounded border border-neutral-200 bg-paper px-2 py-1.5 text-sm dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100"
+            <TypeOption
+              checked={type === "direct"}
+              onClick={() => setType("direct")}
+              title="Direct"
+              description="Just you for now — a personal scratch space."
+              icon={
+                <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                  <circle cx="12" cy="8" r="4" />
+                  <path d="M4 20c.7-3.5 4-6 8-6s7.3 2.5 8 6" />
+                </svg>
+              }
             />
-          </label>
-
-          {error && (
-            <p className="mb-2 text-xs text-red-700 dark:text-red-300">
-              {error}
-            </p>
-          )}
-
-          <div className="flex items-center justify-end gap-2">
-            <button
-              type="button"
-              onClick={onClose}
-              className="rounded border border-neutral-300 px-2 py-1 text-xs hover:bg-paper-soft dark:border-neutral-700 dark:hover:bg-neutral-800"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={!valid || busy}
-              className="rounded bg-neutral-900 px-3 py-1 text-xs text-white disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900"
-            >
-              {busy ? "Creating…" : "Create room"}
-            </button>
           </div>
-        </form>
+        </fieldset>
+
+        <label className="block">
+          <span className="mb-1.5 block text-[12px] font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
+            Description <span className="font-normal normal-case text-neutral-400">(optional)</span>
+          </span>
+          <textarea
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            maxLength={240}
+            rows={3}
+            placeholder="What's this group for?"
+            className="w-full resize-none rounded-2xl border border-neutral-200 bg-paper px-3.5 py-3 text-[14px] outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-200/40 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-50 dark:focus:border-amber-700 dark:focus:ring-amber-800/40"
+          />
+        </label>
+
+        {error && (
+          <p
+            role="alert"
+            className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-[13px] text-red-700 dark:border-red-900/50 dark:bg-red-950/40 dark:text-red-300"
+          >
+            {error}
+          </p>
+        )}
+
+        <div className="mt-auto flex flex-col gap-2 pt-2 sm:flex-row sm:justify-end">
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-2xl border border-neutral-300 bg-paper px-4 py-3 text-[14px] font-medium text-neutral-700 hover:bg-paper-soft dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200 dark:hover:bg-neutral-800"
+          >
+            Cancel
+          </button>
+          <button
+            type="submit"
+            disabled={!valid || busy}
+            className="rounded-2xl bg-neutral-900 px-4 py-3 text-[14px] font-semibold text-white shadow-sm transition disabled:opacity-40 dark:bg-neutral-50 dark:text-neutral-900"
+          >
+            {busy ? "Creating…" : type === "group" ? "Create group" : "Create"}
+          </button>
+        </div>
+      </form>
     </BottomSheet>
   );
 }
@@ -158,27 +174,42 @@ function TypeOption({
   onClick,
   title,
   description,
+  icon,
 }: {
   checked: boolean;
   onClick: () => void;
   title: string;
   description: string;
+  icon?: React.ReactNode;
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
-      className={`rounded border px-2 py-2 text-left text-xs transition ${
-        checked
-          ? "border-neutral-900 bg-paper-soft dark:border-neutral-100 dark:bg-neutral-800"
-          : "border-neutral-200 hover:border-neutral-400 dark:border-neutral-700 dark:hover:border-neutral-500"
-      }`}
       aria-pressed={checked}
+      className={`flex items-start gap-3 rounded-2xl border px-3 py-3 text-left transition ${
+        checked
+          ? "border-amber-300 bg-amber-50/70 shadow-sm ring-2 ring-amber-200/50 dark:border-amber-700 dark:bg-amber-900/30 dark:ring-amber-800/40"
+          : "border-neutral-200 bg-paper hover:border-neutral-300 hover:bg-paper-soft dark:border-neutral-700 dark:bg-neutral-900 dark:hover:bg-neutral-800"
+      }`}
     >
-      <div className="font-medium">{title}</div>
-      <div className="mt-0.5 text-[10px] text-neutral-500 dark:text-neutral-400">
-        {description}
-      </div>
+      <span
+        className={`grid h-9 w-9 shrink-0 place-items-center rounded-full ${
+          checked
+            ? "bg-amber-200 text-amber-900 dark:bg-amber-700/60 dark:text-amber-100"
+            : "bg-neutral-100 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300"
+        }`}
+      >
+        {icon}
+      </span>
+      <span className="flex-1">
+        <span className="block text-[14px] font-semibold text-neutral-900 dark:text-neutral-50">
+          {title}
+        </span>
+        <span className="mt-0.5 block text-[12px] text-neutral-500 dark:text-neutral-400">
+          {description}
+        </span>
+      </span>
     </button>
   );
 }

@@ -10,12 +10,13 @@
  * The sidebar is a *view* over the shared `NotesApi` (notes-system.MD
  * §5.6) — editing inline at a verse and editing here update the same row.
  */
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import type { VerseFocus } from "../Workspace";
 import type { NotesApi } from "./notesStore";
 import { NoteSocialBlock } from "./NoteSocialBlock";
 import { GLASS_CARD_INLINE } from "../../lib/glass";
 import { RichNoteField } from "./RichNoteField";
+import { useStickToBottom } from "../../lib/useStickToBottom";
 
 interface Props {
   focus: VerseFocus | null;
@@ -24,10 +25,9 @@ interface Props {
   onToggleChat?: () => void;
   /** Mobile-only: shown as an "X" in the header when provided. */
   onCloseMobile?: () => void;
-  /** Room metadata used to detect the onboarding "Welcome" room and
-   *  surface tip cards in place of the empty-state. */
+  /** Used as a stable key for switching rooms (re-mounts the per-room
+   *  Yjs doc handle, resets per-room UI state). */
   roomId?: string;
-  roomName?: string;
   /** When true, the inline note-composer at the bottom is suppressed.
    *  MobileShell handles composing via the floating glass panel. */
   hideComposer?: boolean;
@@ -47,44 +47,30 @@ export function NotesSidebar({
   onToggleChat,
   onCloseMobile,
   roomId,
-  roomName,
   hideComposer,
   socialNotesEnabled,
   selfUserId,
 }: Props) {
   const [tab, setTab] = useState<"personal" | "group">("personal");
   const [draft, setDraft] = useState("");
+  const [query, setQuery] = useState("");
   const listRef = useRef<HTMLUListElement | null>(null);
-  const [tipsDismissed, setTipsDismissed] = useState<boolean>(() => {
-    if (typeof window === "undefined" || !roomId) return false;
-    return localStorage.getItem(`bible-iu:welcome-tips-dismissed:${roomId}`) === "1";
-  });
-  // Re-check the dismissed flag when switching rooms, otherwise the
-  // first room's state would stick.
-  useEffect(() => {
-    if (typeof window === "undefined" || !roomId) return;
-    setTipsDismissed(
-      localStorage.getItem(`bible-iu:welcome-tips-dismissed:${roomId}`) === "1",
-    );
-  }, [roomId]);
 
-  const visible = notes.notes.filter((n) => n.scope === tab);
+  // Plain-text search over the merged in-memory view. Note bodies
+  // are sanitized HTML (RichNoteField), so strip tags before matching
+  // so a query like "grace" hits text inside <b>/<u>/<em>. Server
+  // never sees personal note bodies — privacy model preserved.
+  const haystack = (html: string) =>
+    html.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").toLowerCase();
+  const q = query.trim().toLowerCase();
+  const visible = notes.notes
+    .filter((n) => n.scope === tab)
+    .filter((n) => !q || haystack(n.body).includes(q));
   // Default-to-bottom, matching ChatPanel. Snap to the newest note
-  // on first paint, when notes are added, and when the user switches
-  // between Personal ↔ Group (each list has its own anchor).
-  useEffect(() => {
-    const el = listRef.current;
-    if (!el) return;
-    el.scrollTop = el.scrollHeight;
-  }, [visible.length, tab]);
-  const isWelcomeRoom = !!roomName && roomName.startsWith("Welcome to Bible IU");
-  const showTips = isWelcomeRoom && !tipsDismissed && notes.notes.length === 0;
-
-  function dismissTips() {
-    if (typeof window === "undefined" || !roomId) return;
-    localStorage.setItem(`bible-iu:welcome-tips-dismissed:${roomId}`, "1");
-    setTipsDismissed(true);
-  }
+  // on first paint, when notes are added, when the user switches
+  // between Personal ↔ Group, AND when the keyboard opens (so the
+  // newest note stays pinned above the composer).
+  useStickToBottom(listRef, [visible.length, tab]);
 
   return (
     <aside className="flex h-full flex-col border-l border-neutral-200 bg-paper dark:border-neutral-800 dark:bg-neutral-900">
@@ -125,7 +111,22 @@ export function NotesSidebar({
                 type="button"
                 role="radio"
                 aria-checked={on}
+                // Roving tabindex: only the selected radio is in the
+                // tab order. Arrow keys (handled below) move focus
+                // between members — the WAI-ARIA radiogroup pattern.
+                tabIndex={on ? 0 : -1}
                 onClick={() => setTab(s)}
+                onKeyDown={(e) => {
+                  if (
+                    e.key === "ArrowRight" ||
+                    e.key === "ArrowDown" ||
+                    e.key === "ArrowLeft" ||
+                    e.key === "ArrowUp"
+                  ) {
+                    e.preventDefault();
+                    setTab(s === "personal" ? "group" : "personal");
+                  }
+                }}
                 className={`rounded-full px-2.5 py-1 font-medium capitalize transition ${
                   on
                     ? "bg-neutral-900 text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.18)] dark:bg-neutral-100 dark:text-neutral-900"
@@ -150,6 +151,40 @@ export function NotesSidebar({
           : "Shared. Agent may append with attribution."}
       </div>
 
+      {/* Search across the current scope. Plain-text — strips HTML
+          before matching so styled notes still find their words.
+          Search stays in the browser; the server never sees the
+          contents of personal notes. */}
+      <div className="border-b border-neutral-200 bg-paper-soft px-2 py-1.5 dark:border-neutral-800 dark:bg-neutral-950">
+        <div className="relative">
+          <input
+            type="search"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder={`Search ${tab} notes…`}
+            aria-label={`Search ${tab} notes`}
+            className="w-full rounded-full border border-neutral-200 bg-paper px-3 py-1 pl-7 text-[12px] text-neutral-800 placeholder:text-neutral-400 focus:border-neutral-400 focus:outline-none dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100 dark:placeholder:text-neutral-500"
+          />
+          <span
+            className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-[11px] text-neutral-400"
+            aria-hidden
+          >
+            ⌕
+          </span>
+          {query && (
+            <button
+              type="button"
+              onClick={() => setQuery("")}
+              className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full px-1 text-[10px] text-neutral-500 hover:bg-neutral-200/60 dark:text-neutral-400 dark:hover:bg-neutral-700/60"
+              aria-label="Clear search"
+              title="Clear"
+            >
+              ✕
+            </button>
+          )}
+        </div>
+      </div>
+
       <ul
         ref={listRef}
         className="flex-1 space-y-2 overflow-y-auto p-2"
@@ -165,12 +200,11 @@ export function NotesSidebar({
             : undefined
         }
       >
-        {visible.length === 0 && showTips && (
-          <WelcomeTips onDismiss={dismissTips} />
-        )}
-        {visible.length === 0 && !showTips && (
+        {visible.length === 0 && (
           <li className="text-xs text-neutral-500 dark:text-neutral-400">
-            No notes yet.
+            {q
+              ? `No ${tab} notes match “${query.trim()}”.`
+              : "No notes yet."}
           </li>
         )}
         {visible.map((n) => (
@@ -262,51 +296,3 @@ export function NotesSidebar({
   );
 }
 
-const TIPS: { title: string; body: string }[] = [
-  {
-    title: "Ask any question about the verse",
-    body: "Tap a verse number in the Bible, then type a question at the bottom. The agent answers with citations from KJV, Hebrew, Greek, and Arabic — and shows its reasoning.",
-  },
-  {
-    title: "Personal vs Group notes",
-    body: "Personal notes are private — even the agent can't read them. Group notes are shared with everyone in the room, and the agent can reference (or append to) them.",
-  },
-  {
-    title: "Invite a friend",
-    body: "Tap the ↗ Share button next to the room name to mint an invite link. Anyone with the link can join this room.",
-  },
-  {
-    title: "Original languages + cross-refs",
-    body: "Toggle Hebrew/Greek/Arabic in the Bible toolbar to see the source text. Cross-references (TSK) appear when you focus a verse.",
-  },
-];
-
-function WelcomeTips({ onDismiss }: { onDismiss: () => void }) {
-  return (
-    <>
-      <li className="mb-1 flex items-center justify-between">
-        <span className="text-[11px] font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
-          Quick tour
-        </span>
-        <button
-          onClick={onDismiss}
-          className="text-[10px] text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300"
-          title="Hide these tips"
-        >
-          dismiss
-        </button>
-      </li>
-      {TIPS.map((t, i) => (
-        <li
-          key={i}
-          className={`px-2.5 py-2 text-xs ring-1 ring-amber-300/50 dark:ring-amber-600/30 ${GLASS_CARD_INLINE}`}
-        >
-          <div className="mb-0.5 font-semibold text-amber-900 dark:text-amber-100">
-            {i + 1}. {t.title}
-          </div>
-          <div className="text-amber-800 dark:text-amber-200">{t.body}</div>
-        </li>
-      ))}
-    </>
-  );
-}

@@ -51,6 +51,21 @@ Never use profanity. Never give harmful advice. Never assert claims as \
 fact without a citation to one of the provided sources. When sources \
 disagree, present the disagreement rather than picking one as the \
 answer. If you don't know, say so.
+
+SCOPE — the user's message begins with one of these scope markers, \
+which tells you the BREADTH of what they're asking about. Treat the \
+marker as the topic, NOT a single verse to drill into:
+  - VERSE: BOOK.CH.V — answer about that specific verse.
+  - CHAPTER: Book N — answer about the whole chapter; sources cover \
+all of it.
+  - BOOK: Book — answer about the whole book; sources are a sample.
+  - TESTAMENT: Old/New Testament — answer about the testament as a \
+whole; pick representative passages from the sources.
+  - SCOPE: the whole Bible — answer across the entire Bible; cite \
+verses from anywhere in the sources, not just the first one shown.
+At wider scopes the SOURCES list is just a sample, not the whole \
+scope. Use your knowledge of the rest of scripture freely when it \
+helps — but every CITED claim must point to a real source ID provided.
 """
 
 # JSON schema instructions when the citation engine is OFF. We still
@@ -108,6 +123,17 @@ name the disagreement honestly instead of picking sides.
   - You still must not claim divine authority, give harmful advice, or \
 use profanity. You may admit uncertainty, but lean into substance over \
 hedging.
+
+SCOPE — the FIRST line of the user message tells you the breadth of \
+the question:
+  - VERSE: answer about that one verse.
+  - CHAPTER: answer about the whole chapter.
+  - BOOK: answer about the whole book.
+  - TESTAMENT: answer about the OT or NT as a whole.
+  - SCOPE: the whole Bible — answer at the broadest level.
+At wider scopes the REFERENCE PASSAGES are a sample; range freely \
+across all of scripture, using your knowledge of the rest. Don't \
+narrow to a single verse just because one appears in the passages.
 """
 
 
@@ -137,6 +163,12 @@ Pastoral framing/transitions do NOT belong in claims.
 - Every claim MUST cite at least one source id. If you cannot cite, drop \
 the claim.
 - For a paraphrase of the verse itself, cite the translation source id.
+- When you mention a CROSS-REFERENCE verse (a passage that echoes the \
+focused verse), check the SOURCES list for that verse — translation \
+chunks carry their verse_id in the head (e.g. `[S7] (translation, GEN.18.11)`). \
+If the verse you're referencing is in the list, you MUST emit a claim \
+that cites its short id, even if the mention is brief. That's how the \
+UI surfaces it in the Sources panel.
 
 About `note_to_append`:
 - This is an OPTIONAL short group note (≤ 240 chars) that will be saved \
@@ -168,6 +200,23 @@ because the books themselves are bibliographic fact, not a textual \
 claim about meaning. Cite the specific verses you actually have \
 sources for in `claims`. Disputed authorship (Hebrews → Paul, Psalms \
 beyond David, etc.) should be flagged honestly.
+- When the user asks to LIST or FIND verses on a topic or word \
+(e.g. "list all verses about hate", "find verses on love"), the \
+output shape is STRICT:
+    • `answer` MUST be ONE SHORT SENTENCE — a framing line and an \
+      optional count. Example: "Here are 32 verses about hate from \
+      across the canon." Do NOT include the verse list itself in \
+      `answer`. Do NOT print refs like "Gen 24:60: ..." inside \
+      `answer`. The UI renders each claim as a card; a list in the \
+      answer prose defeats that and the user sees a wall of text \
+      instead of cards.
+    • `claims` MUST contain ONE claim per matching retrieved verse. \
+      Claim text quotes (or paraphrases) the verse + its reference, \
+      and `cited_ids` is the SOURCES short id for that verse. \
+      Example claim: \
+      `{"text": "Genesis 24:60 — let thy seed possess the gate of those which hate them", "cited_ids": ["S7"]}`.
+    • Skip retrieved verses that don't actually match the topic — \
+      false matches hurt more than missing ones.
 """
 
 
@@ -201,6 +250,141 @@ def _strip_source_labels(text: str) -> str:
     cleaned = re.sub(r"\(\s*\)", "", cleaned)
     cleaned = re.sub(r"\[\s*\]", "", cleaned)
     return cleaned.strip()
+
+
+_OSIS_BOOK_NAMES: dict[str, str] = {
+    "GEN": "Genesis", "EXO": "Exodus", "LEV": "Leviticus", "NUM": "Numbers",
+    "DEU": "Deuteronomy", "JOS": "Joshua", "JDG": "Judges", "RUT": "Ruth",
+    "1SA": "1 Samuel", "2SA": "2 Samuel", "1KI": "1 Kings", "2KI": "2 Kings",
+    "1CH": "1 Chronicles", "2CH": "2 Chronicles",
+    "EZR": "Ezra", "NEH": "Nehemiah", "EST": "Esther",
+    "JOB": "Job", "PSA": "Psalms", "PRO": "Proverbs",
+    "ECC": "Ecclesiastes", "SNG": "Song of Solomon",
+    "ISA": "Isaiah", "JER": "Jeremiah", "LAM": "Lamentations",
+    "EZK": "Ezekiel", "DAN": "Daniel",
+    "HOS": "Hosea", "JOL": "Joel", "AMO": "Amos",
+    "OBA": "Obadiah", "JON": "Jonah", "MIC": "Micah",
+    "NAM": "Nahum", "HAB": "Habakkuk", "ZEP": "Zephaniah",
+    "HAG": "Haggai", "ZEC": "Zechariah", "MAL": "Malachi",
+    "MAT": "Matthew", "MRK": "Mark", "LUK": "Luke", "JHN": "John",
+    "ACT": "Acts", "ROM": "Romans",
+    "1CO": "1 Corinthians", "2CO": "2 Corinthians",
+    "GAL": "Galatians", "EPH": "Ephesians", "PHP": "Philippians",
+    "COL": "Colossians", "1TH": "1 Thessalonians", "2TH": "2 Thessalonians",
+    "1TI": "1 Timothy", "2TI": "2 Timothy",
+    "TIT": "Titus", "PHM": "Philemon", "HEB": "Hebrews",
+    "JAS": "James", "1PE": "1 Peter", "2PE": "2 Peter",
+    "1JN": "1 John", "2JN": "2 John", "3JN": "3 John",
+    "JUD": "Jude", "REV": "Revelation",
+}
+
+_NT_BOOKS = {
+    "MAT", "MRK", "LUK", "JHN", "ACT", "ROM", "1CO", "2CO", "GAL", "EPH",
+    "PHP", "COL", "1TH", "2TH", "1TI", "2TI", "TIT", "PHM", "HEB", "JAS",
+    "1PE", "2PE", "1JN", "2JN", "3JN", "JUD", "REV",
+}
+
+
+# Build the inverse map once: any case-folded book name (short or full,
+# with common abbreviations) → its OSIS code. Used by
+# `_match_verse_refs_in_text` to find references like "Gen 18:11" or
+# "Genesis 18:11" or "1 Kgs 1:1" inside the model's answer.
+_NAME_TO_OSIS: dict[str, str] = {}
+
+
+def _seed_name_map() -> None:
+    if _NAME_TO_OSIS:
+        return
+    # Common short forms the model is likely to write — we keep this
+    # small + literal rather than trying to be clever. Add to it when a
+    # real-world miss is observed.
+    extras: dict[str, str] = {
+        "Gen": "GEN", "Exo": "EXO", "Ex": "EXO", "Lev": "LEV", "Num": "NUM",
+        "Deut": "DEU", "Dt": "DEU", "Josh": "JOS", "Judg": "JDG", "Ru": "RUT",
+        "1 Sam": "1SA", "2 Sam": "2SA", "1 Kgs": "1KI", "2 Kgs": "2KI",
+        "1 Ki": "1KI", "2 Ki": "2KI", "1 Chr": "1CH", "2 Chr": "2CH",
+        "1 Chron": "1CH", "2 Chron": "2CH",
+        "Neh": "NEH", "Est": "EST", "Ps": "PSA", "Pss": "PSA", "Psa": "PSA",
+        "Prov": "PRO", "Eccl": "ECC", "Qoh": "ECC", "Song": "SNG", "SoS": "SNG",
+        "Isa": "ISA", "Jer": "JER", "Lam": "LAM", "Ezek": "EZK", "Ez": "EZK",
+        "Dan": "DAN", "Hos": "HOS", "Jl": "JOL", "Am": "AMO", "Ob": "OBA",
+        "Jon": "JON", "Mic": "MIC", "Nah": "NAM", "Hab": "HAB", "Zeph": "ZEP",
+        "Hag": "HAG", "Zech": "ZEC", "Zec": "ZEC", "Mal": "MAL",
+        "Mt": "MAT", "Matt": "MAT", "Mk": "MRK", "Mar": "MRK",
+        "Lk": "LUK", "Lu": "LUK", "Jn": "JHN", "Joh": "JHN",
+        "Acts": "ACT", "Rom": "ROM",
+        "1 Cor": "1CO", "2 Cor": "2CO",
+        "Gal": "GAL", "Eph": "EPH", "Phil": "PHP", "Php": "PHP",
+        "Col": "COL", "1 Thess": "1TH", "2 Thess": "2TH",
+        "1 Tim": "1TI", "2 Tim": "2TI", "Tit": "TIT", "Phlm": "PHM",
+        "Heb": "HEB", "Jas": "JAS", "1 Pet": "1PE", "2 Pet": "2PE",
+        "1 Jn": "1JN", "2 Jn": "2JN", "3 Jn": "3JN", "Jud": "JUD", "Rev": "REV",
+    }
+    for code, full in _OSIS_BOOK_NAMES.items():
+        _NAME_TO_OSIS[full.lower()] = code
+        _NAME_TO_OSIS[code.lower()] = code
+    for short, code in extras.items():
+        _NAME_TO_OSIS[short.lower()] = code
+
+
+_OSIS_REF_RE = re.compile(r"\b([1-3]?[A-Z]{2,4})\.(\d+)\.(\d+)\b")
+# Human "Gen 18:11" / "1 Kings 1:1" — captures multi-word book names too.
+# We're permissive on whitespace and accept either a colon or a period.
+_HUMAN_REF_RE = re.compile(
+    r"\b([1-3]\s?)?([A-Z][a-zA-Z]{1,12}(?:\s[A-Z][a-zA-Z]{1,12})?)\s+(\d+)[:.](\d+)"
+)
+
+
+def _match_verse_refs_in_text(text: str) -> set[str]:
+    """Pull every verse_id the model name-drops in `text`. Returns OSIS
+    `BOOK.CH.V` strings — same shape as `RetrievedChunk.verse_refs[0]`
+    so callers can intersect with the retrieval list directly."""
+    _seed_name_map()
+    found: set[str] = set()
+    for m in _OSIS_REF_RE.finditer(text):
+        found.add(f"{m.group(1)}.{m.group(2)}.{m.group(3)}")
+    for m in _HUMAN_REF_RE.finditer(text):
+        prefix = (m.group(1) or "").strip()
+        body = m.group(2).strip()
+        ch, v = m.group(3), m.group(4)
+        candidate = f"{prefix} {body}".strip().lower()
+        # Greedy two-word match can capture a leading sentence word
+        # ("See Gen 18:11" → body="See Gen"). When the full body
+        # doesn't map, fall back to the last whitespace-separated
+        # token, which is the actual book name in practice.
+        words = body.split()
+        last = words[-1].lower() if words else ""
+        code = (
+            _NAME_TO_OSIS.get(candidate)
+            or _NAME_TO_OSIS.get(body.lower())
+            or (_NAME_TO_OSIS.get(last) if len(words) > 1 else None)
+        )
+        if code:
+            found.add(f"{code}.{ch}.{v}")
+    return found
+
+
+def _scope_label(scope_kind: str, verse_ref: str) -> str:
+    """Build the prompt label that announces the scope to the model.
+    The label is the FIRST line of the user message — at non-verse
+    scope, it replaces the misleading `VERSE: BOOK.CH.V` line that
+    would otherwise pin the model to a single verse."""
+    parts = verse_ref.split(".") if verse_ref else []
+    book_code = parts[0] if parts else ""
+    book_name = _OSIS_BOOK_NAMES.get(book_code, book_code)
+    if scope_kind == "chapter" and len(parts) >= 2:
+        return f"CHAPTER: {book_name} {parts[1]}"
+    if scope_kind == "book" and book_code:
+        return f"BOOK: {book_name}"
+    if scope_kind == "testament":
+        # The frontend sends GEN.1.1 for OT and MAT.1.1 for NT; derive
+        # the testament from the anchor book.
+        testament = "New Testament" if book_code in _NT_BOOKS else "Old Testament"
+        return f"TESTAMENT: {testament}"
+    if scope_kind == "bible":
+        return "SCOPE: the whole Bible"
+    # Default = verse scope (or fallback if the kind is missing).
+    return f"VERSE: {verse_ref}"
 
 
 def _format_history(history: list) -> str:
@@ -247,6 +431,13 @@ def _format_sources(
         head = f"[{label}] ({c.source_kind}"
         if c.tradition:
             head += f", {c.tradition}"
+        # Surface the verse anchor when the chunk is one — without it
+        # the model sees a bare snippet of text and can't tell that
+        # `S7` is `GEN.18.11`. The fallout was cross-references
+        # mentioned by name in prose but never tied back to a citation,
+        # so the Sources panel showed nothing for them.
+        if c.verse_refs:
+            head += f", {c.verse_refs[0]}"
         head += ")"
         lines.append(f"{head}\n{c.text.strip()}")
     return "\n\n".join(lines), short_to_real
@@ -273,12 +464,14 @@ class DeepSeekGenerator:
         retrieval: list[RetrievedChunk],
         history: Optional[list] = None,
         bypass: bool = False,
+        scope_kind: str = "verse",
     ) -> tuple[str, str, list[GeneratedStatement], Optional[NoteSuggestion]]:
         """Non-streaming entry point — used by tests and the POST /reason
         path. Internally routes through `generate_streaming` with a no-op
         callback so the two paths can't drift."""
         return self.generate_streaming(
-            verse_ref, question, retrieval, None, history=history, bypass=bypass,
+            verse_ref, question, retrieval, None,
+            history=history, bypass=bypass, scope_kind=scope_kind,
         )
 
     def generate_streaming(
@@ -289,6 +482,7 @@ class DeepSeekGenerator:
         on_reasoning_chunk: Optional[Callable[[str], None]],
         history: Optional[list] = None,
         bypass: bool = False,
+        scope_kind: str = "verse",
     ) -> tuple[str, str, list[GeneratedStatement], Optional[NoteSuggestion]]:
         """Streaming generate: invokes the callback with reasoning chunks
         as they arrive from DeepSeek's `reasoning_content` field. The
@@ -310,13 +504,17 @@ class DeepSeekGenerator:
 
         sources_text, short_to_real = _format_sources(retrieval)
         history_block = _format_history(history or [])
+        # Pick the prompt label so the model doesn't misread a single
+        # verse anchor as the topic when the user is actually asking
+        # at chapter / book / wider zoom.
+        scope_label = _scope_label(scope_kind, verse_ref)
         if bypass:
             # Engine off: looser prompt, no citation discipline, longer
             # answers welcome. Still JSON so the rest of the pipeline
             # round-trips cleanly — but claims/cited_ids stay empty.
             system = _PREAMBLE_BYPASS
             user = (
-                f"VERSE FOCUS: {verse_ref}\n\n"
+                f"{scope_label}\n\n"
                 + (f"PRIOR DISCUSSION:\n{history_block}\n\n" if history_block else "")
                 + f"QUESTION: {question}\n\n"
                 + f"REFERENCE PASSAGES (use freely, no citation IDs required):\n{sources_text}\n\n"
@@ -325,7 +523,7 @@ class DeepSeekGenerator:
         else:
             system = _PREAMBLE
             user = (
-                f"VERSE: {verse_ref}\n\n"
+                f"{scope_label}\n\n"
                 + (f"PRIOR DISCUSSION:\n{history_block}\n\n" if history_block else "")
                 + f"QUESTION: {question}\n\n"
                 + f"SOURCES:\n{sources_text}\n\n"
@@ -365,7 +563,7 @@ class DeepSeekGenerator:
                     [],
                     None,
                 )
-            return _parse_generator_json(content, short_to_real)
+            return _parse_generator_json(content, short_to_real, retrieval)
 
         # Streaming path. Accumulate content + reasoning_content; emit
         # reasoning chunks to the callback as they arrive. The final
@@ -413,12 +611,13 @@ class DeepSeekGenerator:
                 None,
             )
 
-        return _parse_generator_json("".join(content_parts), short_to_real)
+        return _parse_generator_json("".join(content_parts), short_to_real, retrieval)
 
 
 def _parse_generator_json(
     content: str,
     short_to_real: dict[str, str],
+    retrieval: Optional[list[RetrievedChunk]] = None,
 ) -> tuple[str, str, list[GeneratedStatement], Optional[NoteSuggestion]]:
     """Pull reasoning/answer/claims/note_to_append out of the model's
     JSON response.
@@ -426,6 +625,13 @@ def _parse_generator_json(
     Each `cited_ids` entry is mapped back from `S1`-style labels to the
     real citation_id the engine expects. IDs not in the map are dropped.
     `note_to_append` may be null/missing/malformed — return None then.
+
+    When `retrieval` is provided, every claim's text is scanned for verse
+    references; any reference that matches a retrieved translation chunk
+    has its citation_id appended to the claim. This is the safety net
+    for cross-references the model name-drops without explicitly tying
+    back to a SOURCES short id — those used to vanish from the Sources
+    panel even though the user could see them in the prose.
     """
     text = content.strip()
     if text.startswith("```"):
@@ -454,6 +660,27 @@ def _parse_generator_json(
             if real:
                 mapped_ids.append(real)
         statements.append(GeneratedStatement(text=ct, cited_ids=mapped_ids))
+
+    # Post-hoc safety net: scan each claim's text for verse refs the
+    # model didn't bother to tie back to a SOURCES id. For each one we
+    # actually retrieved, attach the chunk's citation_id. This is what
+    # makes "Gen 18:11" appear in the Sources panel even when the model
+    # only mentioned it in prose.
+    if retrieval:
+        verse_to_cid: dict[str, str] = {}
+        for ch in retrieval:
+            if ch.source_kind in ("translation", "scripture", "original_language") and ch.verse_refs:
+                # First chunk wins — prefer the primary translation over
+                # a Hebrew/Greek row when both exist for the same verse.
+                verse_to_cid.setdefault(ch.verse_refs[0], ch.citation_id)
+        if verse_to_cid:
+            for st in statements:
+                already = set(st.cited_ids)
+                for ref in _match_verse_refs_in_text(st.text):
+                    cid = verse_to_cid.get(ref)
+                    if cid and cid not in already:
+                        st.cited_ids.append(cid)
+                        already.add(cid)
 
     note: Optional[NoteSuggestion] = None
     raw_note = data.get("note_to_append")

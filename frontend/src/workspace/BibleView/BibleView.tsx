@@ -9,11 +9,14 @@ import { useEffect, useRef, useState } from "react";
 import {
   api,
   originalForBook,
+  OSIS_TO_BOOK_NAME,
   type AnnotationColor,
   type AnnotationKind,
   type AnnotationOut,
   type BibleBookOut,
   type BibleVerseMulti,
+  type ReadingPlanDayOut,
+  type ReadingPlanSummary,
 } from "../../lib/api";
 import type { VerseFocus } from "../Workspace";
 import type { NotesApi } from "../NotesSidebar/notesStore";
@@ -413,9 +416,10 @@ export function BibleView({
           value={translation}
           onChange={(e) => onPickTranslation(e.target.value)}
           className="rounded border border-neutral-200 bg-paper px-2 py-1.5 text-sm md:px-1.5 md:py-1 md:text-xs dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100"
-          title="Only the KJV is seeded; other translations need licenses (CLAUDE.md §7.6)."
+          title="Public-domain translations only until commercial licenses are wired (CLAUDE.md §7.6)."
         >
-          <option value="King James Version">KJV (public domain)</option>
+          <option value="King James Version">KJV (1611)</option>
+          <option value="World English Bible">WEB (modern)</option>
         </select>
         {loading && (
           <span className="text-neutral-400 dark:text-neutral-500">
@@ -454,6 +458,12 @@ export function BibleView({
             : undefined
         }
       >
+        <TodaysReadingBanner
+          onJump={(b, c) => {
+            onPickBook(b);
+            onPickChapter(c);
+          }}
+        />
         <div className="mb-3 flex items-center gap-2">
           <h2 className="text-lg font-semibold">
             {bookName} {chapter}
@@ -914,7 +924,19 @@ function InlineNotePanel({
                   type="button"
                   role="radio"
                   aria-checked={on}
+                  tabIndex={on ? 0 : -1}
                   onClick={() => setDraftScope(s)}
+                  onKeyDown={(e) => {
+                    if (
+                      e.key === "ArrowRight" ||
+                      e.key === "ArrowDown" ||
+                      e.key === "ArrowLeft" ||
+                      e.key === "ArrowUp"
+                    ) {
+                      e.preventDefault();
+                      setDraftScope(s === "personal" ? "group" : "personal");
+                    }
+                  }}
                   className={`flex-1 rounded-full px-2 py-1 font-medium capitalize transition ${
                     on
                       ? "bg-neutral-900 text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.18)] dark:bg-neutral-100 dark:text-neutral-900"
@@ -1056,7 +1078,19 @@ function ChapterNotePanel({
                   type="button"
                   role="radio"
                   aria-checked={on}
+                  tabIndex={on ? 0 : -1}
                   onClick={() => setDraftScope(s)}
+                  onKeyDown={(e) => {
+                    if (
+                      e.key === "ArrowRight" ||
+                      e.key === "ArrowDown" ||
+                      e.key === "ArrowLeft" ||
+                      e.key === "ArrowUp"
+                    ) {
+                      e.preventDefault();
+                      setDraftScope(s === "personal" ? "group" : "personal");
+                    }
+                  }}
                   className={`flex-1 rounded-full px-2 py-1 font-medium capitalize transition ${
                     on
                       ? "bg-neutral-900 text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.18)] dark:bg-neutral-100 dark:text-neutral-900"
@@ -1115,6 +1149,92 @@ function UpArrow() {
       <path d="M12 18.5V5.5" />
       <path d="M5.5 12 12 5.5l6.5 6.5" />
     </svg>
+  );
+}
+
+/**
+ * Banner shown at the top of the Bible scroller when the viewer is
+ * enrolled in any reading plan. Picks the first enrolled plan, fetches
+ * `today`, and renders a tap-to-jump pill for each ref. Stays silent
+ * (renders nothing) when there's no enrolled plan, when the request
+ * fails, or when today is already complete.
+ */
+function TodaysReadingBanner({
+  onJump,
+}: {
+  onJump: (book: string, chapter: number) => void;
+}) {
+  const [plan, setPlan] = useState<ReadingPlanSummary | null>(null);
+  const [today, setToday] = useState<ReadingPlanDayOut | null>(null);
+  const [hidden, setHidden] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const all = await api.readingPlansList();
+        const enrolled = all.find((p) => p.enrolled);
+        if (!enrolled) return;
+        const day = await api.readingPlanToday(enrolled.id);
+        if (cancelled) return;
+        setPlan(enrolled);
+        setToday(day);
+      } catch {
+        // Endpoint is best-effort; silently hide on failure.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  if (hidden || !plan || !today || today.completed) return null;
+  const refs = today.refs ?? [];
+  if (refs.length === 0) return null;
+
+  // Parse "PSA.23" or "JHN.3.16-21" → { book: "PSA", chapter: 23, label }
+  const parsed = refs.map((ref) => {
+    const segs = ref.split(".");
+    const book = segs[0] ?? "GEN";
+    const chapter = Number(segs[1] ?? "1") || 1;
+    const verseFragment = segs.slice(2).join(".");
+    const bookName = OSIS_TO_BOOK_NAME[book] ?? book;
+    const label = verseFragment
+      ? `${bookName} ${chapter}:${verseFragment}`
+      : `${bookName} ${chapter}`;
+    return { ref, book, chapter, label };
+  });
+
+  return (
+    <div className="mb-3 rounded-2xl border border-amber-200 bg-amber-50/70 px-3 py-2 text-[12px] text-amber-900 shadow-sm backdrop-blur-md dark:border-amber-800/60 dark:bg-amber-900/30 dark:text-amber-100">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <span aria-hidden>📖</span>
+          <span className="font-semibold">Today's reading</span>
+          <span className="text-amber-700/80 dark:text-amber-200/70">
+            {plan.name} · Day {today.day_index}
+          </span>
+        </div>
+        <button
+          onClick={() => setHidden(true)}
+          aria-label="Dismiss for now"
+          title="Dismiss for now"
+          className="rounded-full px-1.5 text-amber-700/70 hover:bg-amber-100 dark:text-amber-200/70 dark:hover:bg-amber-800/40"
+        >
+          ×
+        </button>
+      </div>
+      <div className="mt-1.5 flex flex-wrap gap-1.5">
+        {parsed.map(({ ref, book, chapter, label }) => (
+          <button
+            key={ref}
+            onClick={() => onJump(book, chapter)}
+            className="rounded-full border border-amber-300 bg-paper px-2 py-0.5 text-[11px] text-amber-900 transition hover:bg-amber-100 dark:border-amber-700 dark:bg-neutral-900 dark:text-amber-100 dark:hover:bg-amber-900/40"
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+    </div>
   );
 }
 

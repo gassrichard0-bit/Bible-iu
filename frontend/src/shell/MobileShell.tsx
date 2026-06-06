@@ -15,18 +15,30 @@ import type { Theme } from "../lib/theme";
 import type { Settings } from "../lib/settings";
 import {
   api,
+  getPassword,
+  getSessionToken,
+  OSIS_TO_BOOK_NAME,
+  parseVerseRef,
   type AnnotationColor,
   type AnnotationKind,
   type AnnotationOut,
   type BookmarkOut,
+  type ChatMessageOut,
   type RoomOut,
 } from "../lib/api";
 import { GLASS_CARD_INLINE } from "../lib/glass";
+import { shareVerseCard } from "../lib/shareVerse";
+import { AdminPanel } from "./AdminPanel";
 import {
   AnnotationToolbar,
   type AnnotationTarget,
 } from "../workspace/BibleView/AnnotationToolbar";
+import type { WorkspaceScope } from "../workspace/Workspace";
 import { bookColor } from "../lib/testament";
+import { useRoomQuota } from "../lib/useRoomQuota";
+import { useStickToBottom } from "../lib/useStickToBottom";
+import { useKeyboardInset } from "../lib/useKeyboardInset";
+import { ACCENT_PALETTE, resolveAccent } from "../lib/accentColors";
 import { useYjsNotes } from "../workspace/NotesSidebar/yjsNotes";
 import { NotesSidebar } from "../workspace/NotesSidebar/NotesSidebar";
 import { Workspace, type VerseFocus } from "../workspace/Workspace";
@@ -34,20 +46,24 @@ import { Avatar } from "./Profile";
 import { SettingsModal } from "./Settings";
 import { NewRoomModal, type NewRoomValues } from "./NewRoomModal";
 import { ShareRoomModal } from "./ShareRoomModal";
-
-interface DemoMsg {
-  from: string;
-  mine?: boolean;
-  body: string;
-  /** Display timestamp like "9:14 AM". */
-  time: string;
-}
+import { RoomAvatar } from "./RoomAvatar";
 
 interface RoomItem {
   id: string;
   type: "group" | "direct";
   name: string;
   focusedVerse?: string;
+  /** Caller's role IN THIS ROOM — populated from GET /rooms so the
+   *  Profile UI can flag rooms the user administrates. */
+  role?: "admin" | "member";
+  /** Server-relative URL for the room avatar; null when the admin
+   *  hasn't uploaded one. Fallback is the gradient/initials. */
+  imageUrl?: string | null;
+  /** Admin-picked accent palette key. Null = auto-derive from id. */
+  accent?: string | null;
+  /** In-app unread chat-message count. Drives the badge on the rail
+   *  row and the bottom Chat tab. */
+  unreadCount?: number;
 }
 
 type Tab = "bible" | "notes" | "chat" | "bookmarks";
@@ -87,7 +103,21 @@ export function MobileShell({
   onPendingRoomConsumed,
 }: Props) {
   const [rooms, setRooms] = useState<RoomItem[]>([]);
-  const [activeId, setActiveId] = useState<string>("");
+  // Persist last-selected room per-user. Per-user key (not global)
+  // so signing out + back in as a different person doesn't surface
+  // someone else's last room.
+  const lastRoomKey = handle ? `bible-iu:last-room:${handle}` : "";
+  const [activeId, setActiveIdRaw] = useState<string>("");
+  const setActiveId = (id: string) => {
+    setActiveIdRaw(id);
+    if (id && lastRoomKey && typeof localStorage !== "undefined") {
+      try {
+        localStorage.setItem(lastRoomKey, id);
+      } catch {
+        // Private-mode etc.
+      }
+    }
+  };
   const [tab, setTab] = useState<Tab>("bible");
   // AI/reasoning slider: when true, the Bible tab shows scripture
   // stacked above the reasoning panel. When false, scripture takes the
@@ -172,6 +202,37 @@ export function MobileShell({
   // the normal tab bar.
   const [annotationTarget, setAnnotationTarget] =
     useState<AnnotationTarget | null>(null);
+
+  /** Build a 1080×1080 share card for the verse + the user's marks on
+   *  it, then hand off to navigator.share (with a download fallback).
+   *  Fetches the verse text in KJV since the share card targets a
+   *  permanent record of "this verse, marked like so." */
+  async function shareVerse(verseId: string): Promise<void> {
+    const parsed = parseVerseRef(verseId);
+    if (!parsed) return;
+    try {
+      const translation = "King James Version";
+      const chapter = await api.bibleChapter(
+        parsed.book,
+        parsed.chapter,
+        translation,
+      );
+      const verseRow = chapter.verses.find((v) => v.verse === parsed.verse);
+      if (!verseRow) return;
+      const bookName = OSIS_TO_BOOK_NAME[parsed.book] ?? parsed.book;
+      const label = `${bookName} ${parsed.chapter}:${parsed.verse}`;
+      await shareVerseCard({
+        verseId: parsed.ref,
+        verseLabel: label,
+        translation,
+        text: verseRow.text,
+        annotations,
+      });
+    } catch {
+      // Quiet on failure — share is non-essential. Future: surface a
+      // toast.
+    }
+  }
   /**
    * Single-tap ribbon at verse V:
    *   - V already has an entry → remove it (toggle off).
@@ -267,20 +328,36 @@ export function MobileShell({
   // the keyboard between messages and the user has to re-tap the
   // input every time. Especially noticeable on the chat tab.
   const composerInputRef = useRef<HTMLInputElement | null>(null);
-  // Session-local chat. Per-room so switching rooms doesn't bleed
-  // messages. Goes away on refresh — real chat (POST /rooms/{id}/chat
-  // + ws) replaces this once wired up. The seed thread in
-  // ChatPanel still appears below as the "demo conversation".
-  const [chatByRoom, setChatByRoom] = useState<Record<string, DemoMsg[]>>({});
   const workspaceRef = useRef<WorkspaceHandle | null>(null);
+  // Resolved agent scope — mirrored from Workspace so the chip above
+  // the composer can render "Asking · {scope}" without the user
+  // guessing what scope the next /ask will land at.
+  const [agentScope, setAgentScope] = useState<WorkspaceScope | null>(null);
   function toggleComposer() {
     setComposerOpen((v) => !v);
   }
   function submitComposer() {
     const text = composerDraft.trim();
     if (!text || sending) return;
+    // Slash-command interception — runs only on the Bible tab where
+    // the agent lives. Notes / Chat composers pass `/foo` through as
+    // literal content. Returns true when handled so the caller knows
+    // not to fall through to the regular submit.
+    if (tab === "bible" && text.startsWith("/")) {
+      const handled = handleSlashCommand(text);
+      if (handled) {
+        setComposerDraft("");
+        composerInputRef.current?.focus();
+        return;
+      }
+    }
     if (tab === "bible") {
       workspaceRef.current?.ask(text);
+      // Backend increments the counter inside /reason — wait briefly
+      // for that turn to land then re-pull, so the chip updates.
+      setTimeout(() => {
+        void refreshRoomQuota();
+      }, 800);
     } else if (tab === "notes") {
       notesApi.add({
         body: text,
@@ -288,19 +365,10 @@ export function MobileShell({
         verse_anchor: focus?.ref,
       });
     } else if (tab === "chat" && active) {
-      const msg: DemoMsg = {
-        from: "You",
-        mine: true,
-        body: text,
-        time: new Date().toLocaleTimeString([], {
-          hour: "numeric",
-          minute: "2-digit",
-        }),
-      };
-      setChatByRoom((prev) => ({
-        ...prev,
-        [active.id]: [...(prev[active.id] || []), msg],
-      }));
+      // Real chat — POST to the server. The websocket subscription
+      // in ChatPanel will pick the message back up and render it,
+      // so we don't optimistically prepend here.
+      void api.chatPost(active.id, text).catch(() => {});
     }
     setComposerDraft("");
     setSending(true);
@@ -311,18 +379,91 @@ export function MobileShell({
     // chain so the keyboard never animates away.
     composerInputRef.current?.focus();
   }
+  /** Returns true when the input was consumed as a slash command. */
+  function handleSlashCommand(raw: string): boolean {
+    const [head, ...rest] = raw.slice(1).split(/\s+/);
+    const cmd = head.toLowerCase();
+    const arg = rest.join(" ").trim();
+    switch (cmd) {
+      case "new":
+      case "clear":
+      case "reset":
+        workspaceRef.current?.clear();
+        return true;
+      case "help":
+      case "?":
+        // Compact alert — kept lightweight on purpose. The agent
+        // turns themselves carry the heavy UI, so reusing those for
+        // help would over-engineer the answer.
+        alert(
+          [
+            "Slash commands:",
+            "  /new (or /clear, /reset) — start a fresh agent conversation",
+            "  /help — this message",
+          ].join("\n"),
+        );
+        return true;
+      default:
+        // Unknown command — soft-fail with a hint instead of sending
+        // it to the agent (which would just see /typo and answer it).
+        alert(
+          `Unknown command: /${cmd}\nType /help for the command list.${arg ? `\n\n(args: “${arg}”)` : ""}`,
+        );
+        return true;
+    }
+  }
   const [railOpen, setRailOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // When the user taps the avatar we open Settings on the Profile
+  // detail page; tapping the hamburger opens Settings on its root
+  // list (everything else). One sheet, two entry points.
+  const [settingsMode, setSettingsMode] = useState<"profile" | "menu">("menu");
+  const [adminOpen, setAdminOpen] = useState(false);
   const [newRoomOpen, setNewRoomOpen] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
   const [focus, setFocus] = useState<VerseFocus | null>(null);
   const [seededRoomId, setSeededRoomId] = useState<string | null>(null);
+  // The signed-in user's avatar URL. Fetched on mount and re-pulled
+  // whenever the Profile sheet refreshes the user so the header icon
+  // updates the moment an upload finishes.
+  const [myAvatarUrl, setMyAvatarUrl] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    api
+      .authMe()
+      .then((p) => alive && setMyAvatarUrl(p.avatar_url ?? null))
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   const active = useMemo(
     () => rooms.find((r) => r.id === activeId),
     [rooms, activeId],
   );
-  const notesApi = useYjsNotes(activeId);
+  // Resolve the active room's accent — admin override or auto-derived
+  // from the room id. Falls back to a neutral key when no room is
+  // active so the header still has *some* tint.
+  const accentKey = active
+    ? resolveAccent(active.accent ?? null, active.id)
+    : resolveAccent(null, "default");
+  const accent = ACCENT_PALETTE[accentKey];
+  // How tall the soft keyboard is right now — added to the composer's
+  // bottom anchor so it stays glued to the top of the keyboard on iOS
+  // (where `position: fixed; bottom: 0` would otherwise sit behind it).
+  const keyboardInset = useKeyboardInset();
+  // Per-room daily-question quota. Renders inline next to the scope
+  // chip on the Bible tab so the user can see "3 left today" before
+  // burning their last slot. Best-effort — backend store is
+  // single-instance and the hook silently swallows errors.
+  const { quota: roomQuota, refresh: refreshRoomQuota } = useRoomQuota(
+    active?.id ?? null,
+  );
+  // selfUserId scopes the personal-notes Y.Doc so it can't leak to
+  // other room members. Without it we still get group notes via the
+  // shared doc but the "add personal note" path is a no-op.
+  const notesApi = useYjsNotes(activeId, selfUserId);
 
   // Seed focus from a room's scripture_context exactly once per room.
   useEffect(() => {
@@ -352,13 +493,31 @@ export function MobileShell({
             | "direct",
           name: r.name ?? "(unnamed)",
           focusedVerse: r.scripture_context?.focused_verse,
+          role: r.role,
+          imageUrl: r.image_url ?? null,
+          accent: r.accent_color ?? null,
+          unreadCount: r.unread_count ?? 0,
         }));
         setRooms(mapped);
         if (pendingRoomId && mapped.some((r) => r.id === pendingRoomId)) {
           setActiveId(pendingRoomId);
           onPendingRoomConsumed?.();
         } else if (!activeId && mapped.length > 0) {
-          setActiveId(mapped[0].id);
+          // Restore the last room the user opened (per-user key).
+          // Fall back to the first room when the saved id is stale
+          // (room left, deleted, or this is a new sign-in).
+          let initial = mapped[0].id;
+          if (lastRoomKey && typeof localStorage !== "undefined") {
+            try {
+              const saved = localStorage.getItem(lastRoomKey);
+              if (saved && mapped.some((r) => r.id === saved)) {
+                initial = saved;
+              }
+            } catch {
+              // ignore
+            }
+          }
+          setActiveId(initial);
         }
       })
       .catch(() => {});
@@ -412,35 +571,103 @@ export function MobileShell({
 
   return (
     <div className="flex h-full flex-col bg-paper-soft dark:bg-neutral-950">
-      {/* Top app bar */}
-      <header className="flex items-center justify-between gap-2 border-b border-neutral-200 bg-paper px-2 py-2 dark:border-neutral-800 dark:bg-neutral-900">
+      {/* Top app bar. `pt-[env(safe-area-inset-top)]` keeps the avatar
+       *  + group pill clear of the iOS notch / Dynamic Island and the
+       *  Android status bar when the app is installed as a PWA. The
+       *  `linear-gradient` overlay tints the band with the active
+       *  group's accent color (auto-derived per id, or admin-picked
+       *  via AdminPanel) so each group reads as visually distinct. */}
+      <header
+        className="relative flex items-center justify-between gap-2 border-b border-neutral-200 bg-paper px-2 py-2 dark:border-neutral-800 dark:bg-neutral-900"
+        style={{
+          paddingTop:
+            "calc(env(safe-area-inset-top, 0px) + 0.5rem)",
+          paddingLeft:
+            "calc(env(safe-area-inset-left, 0px) + 0.5rem)",
+          paddingRight:
+            "calc(env(safe-area-inset-right, 0px) + 0.5rem)",
+          backgroundImage: `linear-gradient(to bottom, var(--biu-accent-band), transparent 110%)`,
+          ["--biu-accent-band" as string]:
+            theme === "dark" ? accent.bandDark : accent.band,
+        }}
+      >
         <button
           onClick={() => setRailOpen(true)}
-          className="grid h-10 w-10 place-items-center rounded text-neutral-700 hover:bg-paper-soft dark:text-neutral-200 dark:hover:bg-neutral-800"
-          aria-label="Open rooms"
+          className="inline-flex h-10 items-center gap-1.5 rounded-full border border-neutral-200 bg-paper-soft px-3 text-[12px] font-medium text-neutral-700 hover:bg-neutral-100 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-200 dark:hover:bg-neutral-700"
+          aria-label="Open groups"
+          title="Switch groups"
         >
-          ☰
+          <svg
+            viewBox="0 0 24 24"
+            width="14"
+            height="14"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden
+          >
+            <circle cx="9" cy="8" r="3.5" />
+            <circle cx="17" cy="9" r="2.5" />
+            <path d="M3.5 18.5c.6-2.6 2.9-4.5 5.5-4.5s4.9 1.9 5.5 4.5" />
+            <path d="M15.5 18c.3-1.6 1.8-2.8 3.5-2.8s3.2 1.2 3.5 2.8" />
+          </svg>
+          <span>Groups</span>
         </button>
         <div className="min-w-0 flex-1 truncate text-center text-sm font-semibold">
           {active?.name ?? "Bible IU"}
         </div>
         <div className="flex items-center gap-1">
-          {active && active.type === "group" && !active.id.startsWith("local-") && (
-            <button
-              onClick={() => setShareOpen(true)}
-              className="grid h-10 w-10 place-items-center rounded text-neutral-700 hover:bg-paper-soft dark:text-neutral-200 dark:hover:bg-neutral-800"
-              aria-label="Share"
-              title="Share room"
-            >
-              ↗
-            </button>
-          )}
+          {/* Header is intentionally minimal — Share + Admin both
+              live inside the Profile sheet under "This room". The
+              avatar is the single entry point. */}
           <button
-            onClick={() => setSettingsOpen(true)}
-            className="grid h-10 w-10 place-items-center rounded hover:bg-paper-soft dark:hover:bg-neutral-800"
-            aria-label="Settings"
+            onClick={() => {
+              setSettingsMode("profile");
+              setSettingsOpen(true);
+            }}
+            className="group grid h-11 w-11 place-items-center rounded-full hover:bg-paper-soft dark:hover:bg-neutral-800"
+            aria-label="Profile"
           >
-            <Avatar handle={handle} size={28} />
+            {/* 3D ring: a thin highlight on top + soft drop shadow
+                below + a subtle inner shadow on the image. Reads as a
+                pressed-into-glass coin rather than a flat circle. */}
+            <span
+              className="grid place-items-center rounded-full p-[1.5px] shadow-[0_2px_6px_rgba(0,0,0,0.18),inset_0_1px_0_rgba(255,255,255,0.55)] transition-transform group-active:scale-95 dark:shadow-[0_2px_6px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.10)]"
+              style={{
+                background:
+                  "linear-gradient(135deg, rgba(255,255,255,0.85), rgba(180,180,180,0.35) 45%, rgba(0,0,0,0.18))",
+              }}
+            >
+              <span className="grid place-items-center rounded-full shadow-[inset_0_0_0_1px_rgba(255,255,255,0.45),inset_0_-1px_2px_rgba(0,0,0,0.20)] dark:shadow-[inset_0_0_0_1px_rgba(255,255,255,0.08),inset_0_-1px_2px_rgba(0,0,0,0.55)]">
+                <Avatar handle={handle} url={myAvatarUrl} size={40} />
+              </span>
+            </span>
+          </button>
+          <button
+            onClick={() => {
+              setSettingsMode("menu");
+              setSettingsOpen(true);
+            }}
+            className="grid h-10 w-10 place-items-center rounded text-neutral-700 hover:bg-paper-soft dark:text-neutral-200 dark:hover:bg-neutral-800"
+            aria-label="Open settings"
+            title="Settings"
+          >
+            <svg
+              viewBox="0 0 24 24"
+              width="20"
+              height="20"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              aria-hidden
+            >
+              <line x1="4" y1="7" x2="20" y2="7" />
+              <line x1="4" y1="12" x2="20" y2="12" />
+              <line x1="4" y1="17" x2="20" y2="17" />
+            </svg>
           </button>
         </div>
       </header>
@@ -463,10 +690,16 @@ export function MobileShell({
                 bar overlaying it. All composers live in the bar, so
                 nothing fixed-positioned at the bottom of the content
                 needs reserved space. */}
-            {tab === "bible" && (
-              // Bible tab: when the AI slider is on (default) the
-              // reasoning panel stacks below scripture; when off,
-              // scripture takes the whole tab and the agent is hidden.
+            {/* Workspace stays mounted regardless of which tab is
+                active — unmount/remount would tear down the Yjs
+                conversation doc, which races IndexedDB rehydration
+                and makes the agent "forget" the thread between tab
+                switches. CSS visibility instead of conditional render. */}
+            <div
+              className="h-full"
+              style={{ display: tab === "bible" ? "block" : "none" }}
+              aria-hidden={tab !== "bible"}
+            >
               <Workspace
                 ref={workspaceRef}
                 roomId={active.id}
@@ -481,9 +714,6 @@ export function MobileShell({
                 handle={handle}
                 mobilePanel={aiVisible ? undefined : "bible"}
                 hidePrompt
-                // BibleView gets ALL bookmarks so each past-marked
-                // verse shows a filled ribbon. The divider rendering
-                // is filtered to the latest per book inside BibleView.
                 bookmarks={bookmarks}
                 onSetBookmark={setBookmark}
                 onRemoveBookmarkAt={removeBookmarkAt}
@@ -491,6 +721,7 @@ export function MobileShell({
                 timezone={settings.timezone}
                 selfUserId={selfUserId}
                 socialNotesEnabled={settings.socialNotesEnabled}
+                onScopeChange={setAgentScope}
                 annotations={annotations}
                 onApplyAnnotation={applyAnnotation}
                 onClearAnnotationKind={clearAnnotationKind}
@@ -499,13 +730,13 @@ export function MobileShell({
                 onAnnotationTargetChange={setAnnotationTarget}
                 bottomInset
               />
-            )}
+            </div>
+
             {tab === "notes" && (
               <NotesSidebar
                 focus={focus}
                 notes={notesApi}
                 roomId={active.id}
-                roomName={active.name}
                 hideComposer
                 socialNotesEnabled={settings.socialNotesEnabled}
                 selfUserId={selfUserId}
@@ -513,8 +744,18 @@ export function MobileShell({
             )}
             {tab === "chat" && (
               <ChatPanel
+                roomId={active.id}
                 roomName={active.name}
-                userMessages={chatByRoom[active.id] || []}
+                selfUserId={selfUserId}
+                accentKey={accentKey}
+                dark={theme === "dark"}
+                onRead={() =>
+                  setRooms((prev) =>
+                    prev.map((r) =>
+                      r.id === active.id ? { ...r, unreadCount: 0 } : r,
+                    ),
+                  )
+                }
               />
             )}
             {tab === "bookmarks" && (
@@ -530,12 +771,6 @@ export function MobileShell({
                   });
                   setTab("bible");
                 }}
-                // X = remove just the active bookmark entry. Past
-                // flags in the book survive and the next-deepest one
-                // becomes the new bookmark.
-                onRemoveOne={(book, chapter, verse) =>
-                  removeBookmarkAt(book, chapter, verse)
-                }
                 // Edit → Reset = wipe everything for this book
                 // (active bookmark AND all past flags).
                 onReset={(book) => removeBookmark(book)}
@@ -582,16 +817,26 @@ export function MobileShell({
                   };
         return (
           <div
-            className="pointer-events-none fixed bottom-0 right-3 z-40 pt-2"
-            style={{ paddingBottom: "calc(env(safe-area-inset-bottom) + 10px)" }}
+            className="pointer-events-none fixed right-3 z-40 pt-2"
+            style={{
+              bottom: keyboardInset,
+              paddingBottom: "calc(env(safe-area-inset-bottom) + 10px)",
+            }}
           >
             <button
               onClick={toggleComposer}
               // Square 64x64 pill, squircle corners matching the tab
               // bar (`rounded-[28px]`) so the two glass elements feel
               // like the same material rather than a circle next to a
-              // rounded rectangle.
-              className={`pointer-events-auto grid h-[64px] w-[64px] place-items-center rounded-[28px] border border-white/40 backdrop-blur-2xl backdrop-saturate-200 transition-all dark:border-white/10 ${
+              // rounded rectangle. Border picks up the active group's
+              // accent so the AI surface reads as "yours" (or
+              // "ours" — themed per group).
+              style={{
+                borderColor:
+                  theme === "dark" ? accent.ringDark : accent.ring,
+                borderWidth: "2px",
+              }}
+              className={`pointer-events-auto grid h-[64px] w-[64px] place-items-center rounded-[28px] backdrop-blur-2xl backdrop-saturate-200 transition-all ${
                 open
                   ? "bg-white/60 text-neutral-900 shadow-[0_8px_28px_rgba(0,0,0,0.18),inset_0_1px_0_rgba(255,255,255,0.6)] dark:bg-white/15 dark:text-neutral-50 dark:shadow-[0_8px_28px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.10)]"
                   : "bg-paper/55 text-neutral-700 shadow-[0_8px_28px_rgba(0,0,0,0.10),inset_0_1px_0_rgba(255,255,255,0.45)] dark:bg-neutral-900/45 dark:text-neutral-200 dark:shadow-[0_8px_28px_rgba(0,0,0,0.45),inset_0_1px_0_rgba(255,255,255,0.06)]"
@@ -606,14 +851,61 @@ export function MobileShell({
         );
       })()}
 
+      {/* Floating scope chip — visible only on the Bible tab while
+          the AI composer is open. Spells out what scope the next
+          /ask will use so the user can't be surprised by an answer
+          about a verse when they meant the chapter. Tap to widen
+          one level (verse → chapter → testament → bible). */}
+      {tab === "bible" && composerOpen && agentScope && (
+        <div
+          className="pointer-events-none fixed inset-x-0 z-40 flex justify-center"
+          style={{
+            bottom: "calc(env(safe-area-inset-bottom, 0px) + 86px)",
+          }}
+        >
+          <button
+            onClick={() => workspaceRef.current?.widenScope()}
+            className="pointer-events-auto inline-flex items-center gap-1.5 rounded-full border border-white/40 bg-paper/70 px-3 py-1 text-[11px] font-medium text-neutral-800 shadow-[0_4px_14px_rgba(0,0,0,0.10),inset_0_1px_0_rgba(255,255,255,0.45)] backdrop-blur-2xl backdrop-saturate-200 dark:border-white/10 dark:bg-neutral-900/55 dark:text-neutral-100 dark:shadow-[0_4px_14px_rgba(0,0,0,0.45),inset_0_1px_0_rgba(255,255,255,0.06)]"
+            title="Tap to widen the scope"
+            aria-label={`Agent scope: ${agentScope.label}. Tap to widen.`}
+          >
+            <span className="rounded-full bg-neutral-900/10 px-1.5 text-[9px] font-semibold uppercase tracking-wide text-neutral-600 dark:bg-white/15 dark:text-neutral-300">
+              {agentScope.kind}
+            </span>
+            <span className="truncate">Asking about {agentScope.label}</span>
+            {roomQuota && roomQuota.limit != null && roomQuota.remaining != null && (
+              <span
+                className={`ml-1 rounded-full px-1.5 text-[9px] font-semibold ${
+                  roomQuota.remaining <= 1
+                    ? "bg-amber-200 text-amber-900 dark:bg-amber-700/60 dark:text-amber-100"
+                    : "bg-neutral-900/10 text-neutral-600 dark:bg-white/15 dark:text-neutral-300"
+                }`}
+                aria-label={`${roomQuota.remaining} of ${roomQuota.limit} questions left today`}
+                title={`${roomQuota.remaining} of ${roomQuota.limit} questions left today`}
+              >
+                {roomQuota.remaining} left
+              </span>
+            )}
+            {agentScope.kind !== "bible" && (
+              <span className="text-neutral-400" aria-hidden>
+                ⤺
+              </span>
+            )}
+          </button>
+        </div>
+      )}
+
       {/* Apple "liquid glass" detached tab bar — floats over the
        *  scripture/content rather than bolting to the bottom edge.
        *  Fixed positioning lets the glass blur show through whatever
        *  is behind it. Main content pads its bottom (see <main>) so
        *  scrolled text doesn't tuck permanently behind the bar. */}
       <div
-        className="pointer-events-none fixed inset-x-0 bottom-0 z-40 flex justify-start pl-[20px] pr-[88px] pt-2"
-        style={{ paddingBottom: "calc(env(safe-area-inset-bottom) + 10px)" }}
+        className="pointer-events-none fixed inset-x-0 z-40 flex justify-start pl-[20px] pr-[88px] pt-2"
+        style={{
+          bottom: keyboardInset,
+          paddingBottom: "calc(env(safe-area-inset-bottom) + 10px)",
+        }}
       >
         {annotationTarget ? (
           // Long-press on a verse hands the bottom panel to the
@@ -626,6 +918,9 @@ export function MobileShell({
             onClearKind={clearAnnotationKind}
             onClearAll={clearAnnotations}
             onClose={() => setAnnotationTarget(null)}
+            onShare={(verseId) => {
+              void shareVerse(verseId);
+            }}
           />
         ) : composerOpen ? (
           // Composer open on the current tab → the floating bar
@@ -663,10 +958,14 @@ export function MobileShell({
                     ? "New personal note…"
                     : "Message…"
               }
-              // px-3 inside the px-1 outer keeps the visual gutter
-              // between the glass edge and the typed text similar to
-              // the tab buttons' breathing room.
-              className="min-w-0 flex-1 self-stretch bg-transparent px-3 text-sm text-neutral-900 placeholder:text-neutral-500 focus:outline-none dark:text-neutral-50 dark:placeholder:text-neutral-400"
+              aria-label={
+                tab === "bible"
+                  ? "Ask the agent"
+                  : tab === "notes"
+                    ? "New personal note"
+                    : "Chat message"
+              }
+              className="min-w-0 flex-1 self-stretch bg-transparent px-3 text-[16px] text-neutral-900 placeholder:text-neutral-500 focus:outline-none dark:text-neutral-50 dark:placeholder:text-neutral-400"
               autoComplete="off"
               autoCapitalize="sentences"
             />
@@ -688,6 +987,18 @@ export function MobileShell({
           </form>
         ) : (
           <nav
+            role="tablist"
+            aria-label="Main tabs"
+            onKeyDown={(e) => {
+              // ARIA tablist pattern — arrow keys step through the
+              // tabs without touching the rest of the focus order.
+              if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+              e.preventDefault();
+              const idx = TAB_ORDER.indexOf(tab);
+              const dir = e.key === "ArrowRight" ? 1 : -1;
+              const next = (idx + dir + TAB_ORDER.length) % TAB_ORDER.length;
+              setTab(TAB_ORDER[next]);
+            }}
             className="pointer-events-auto flex h-[64px] flex-1 items-stretch rounded-[28px] border border-white/40 bg-paper/55 px-1 py-1 shadow-[0_8px_28px_rgba(0,0,0,0.18),inset_0_1px_0_rgba(255,255,255,0.55)] backdrop-blur-2xl backdrop-saturate-200 dark:border-white/10 dark:bg-neutral-900/45 dark:shadow-[0_8px_28px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.10)]"
           >
             <IOSTabButton
@@ -711,6 +1022,7 @@ export function MobileShell({
               label="Chat"
               active={tab === "chat"}
               onClick={() => setTab("chat")}
+              badge={active?.unreadCount || undefined}
             />
             <IOSTabButton
               outline={<BookmarkOutline />}
@@ -751,14 +1063,17 @@ export function MobileShell({
               onClick={() => {
                 setNewRoomOpen(true);
               }}
-              className="mx-3 mt-3 rounded border border-dashed border-neutral-300 px-3 py-3 text-sm text-neutral-600 hover:border-neutral-400 dark:border-neutral-700 dark:text-neutral-300 dark:hover:border-neutral-500"
+              className="mx-3 mt-3 inline-flex items-center justify-center gap-2 rounded-2xl border border-amber-200 bg-amber-50/70 px-3 py-3 text-[14px] font-semibold text-amber-900 transition hover:bg-amber-100 dark:border-amber-800/60 dark:bg-amber-900/30 dark:text-amber-100 dark:hover:bg-amber-900/40"
             >
-              + New room
+              <span className="grid h-6 w-6 place-items-center rounded-full bg-amber-200 text-amber-900 dark:bg-amber-700/60 dark:text-amber-100" aria-hidden>
+                +
+              </span>
+              New group
             </button>
             <nav className="mt-2 flex-1 overflow-y-auto">
               {rooms.length === 0 && (
                 <p className="px-3 py-4 text-xs text-neutral-500 dark:text-neutral-400">
-                  No rooms yet. Tap "+ New room" to start one.
+                  No groups yet. Tap "+ New group" to start one.
                 </p>
               )}
               {rooms.map((r) => (
@@ -768,16 +1083,39 @@ export function MobileShell({
                     setActiveId(r.id);
                     setRailOpen(false);
                   }}
-                  className={`flex w-full items-center gap-2 px-3 py-3 text-left text-sm hover:bg-paper-soft dark:hover:bg-neutral-800 ${
+                  className={`flex w-full items-center gap-3 px-3 py-2.5 text-left hover:bg-paper-soft dark:hover:bg-neutral-800 ${
                     r.id === activeId
                       ? "bg-paper-soft dark:bg-neutral-800"
                       : ""
                   }`}
                 >
-                  <span className="text-base">
-                    {r.type === "direct" ? "💬" : "📚"}
+                  <RoomAvatar
+                    id={r.id}
+                    name={r.name}
+                    type={r.type}
+                    imageUrl={r.imageUrl}
+                    size={48}
+                  />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-[15px] font-medium text-neutral-900 dark:text-neutral-50">
+                      {r.name}
+                    </span>
+                    <span className="block truncate text-[12px] text-neutral-500 dark:text-neutral-400">
+                      {r.type === "direct"
+                        ? "Direct chat"
+                        : r.role === "admin"
+                          ? "Group · admin"
+                          : "Group"}
+                    </span>
                   </span>
-                  <span className="truncate">{r.name}</span>
+                  {!!r.unreadCount && r.unreadCount > 0 && (
+                    <span
+                      aria-label={`${r.unreadCount} unread`}
+                      className="ml-2 grid min-h-[22px] min-w-[22px] place-items-center rounded-full bg-red-500 px-1.5 text-[11px] font-bold text-white shadow-[0_2px_6px_rgba(239,68,68,0.45)]"
+                    >
+                      {r.unreadCount > 99 ? "99+" : r.unreadCount}
+                    </span>
+                  )}
                 </button>
               ))}
             </nav>
@@ -786,15 +1124,69 @@ export function MobileShell({
       )}
 
       {/* Modals — TODO: convert to bottom sheets in task #49 */}
+      {/* Admin panel mounts only when the signed-in user is an admin
+          of the active group room. The server still enforces every
+          mutation, but mounting only for admins means the panel never
+          shows up in a non-admin's DOM in the first place. */}
+      {active &&
+        active.type === "group" &&
+        selfUserId &&
+        active.role === "admin" && (
+          <AdminPanel
+            open={adminOpen}
+            onClose={() => setAdminOpen(false)}
+            roomId={active.id}
+            roomName={active.name}
+            roomType={active.type}
+            roomImageUrl={active.imageUrl ?? null}
+            onRoomImageChanged={(url) =>
+              setRooms((prev) =>
+                prev.map((r) =>
+                  r.id === active.id ? { ...r, imageUrl: url } : r,
+                ),
+              )
+            }
+            roomAccentColor={active.accent ?? null}
+            onRoomAccentChanged={(c) =>
+              setRooms((prev) =>
+                prev.map((r) =>
+                  r.id === active.id ? { ...r, accent: c } : r,
+                ),
+              )
+            }
+            selfRole={active.role}
+            selfUserId={selfUserId}
+          />
+        )}
       <SettingsModal
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
+        initialPage={settingsMode === "profile" ? "profile" : null}
         settings={settings}
         onChange={onChangeSettings}
         theme={theme}
         onToggleTheme={onToggleTheme}
         onSignOut={onSignOut}
         onDeleted={onDeleted}
+        rooms={rooms}
+        // "This room" section — Share + Admin are surfaced here
+        // because the room context is the active selection. Skip for
+        // direct rooms (no admin concept) and local-only rooms (not
+        // yet persisted to the server, can't share/admin).
+        activeRoom={
+          active && active.type === "group" && !active.id.startsWith("local-")
+            ? { id: active.id, name: active.name, role: active.role }
+            : null
+        }
+        onShareRoom={() => setShareOpen(true)}
+        onOpenRoomAdmin={(roomId) => {
+          // Switch to the room first (AdminPanel renders inside the
+          // active-room block) then pop the panel open on the next
+          // tick so the switch has settled.
+          setActiveId(roomId);
+          setTimeout(() => setAdminOpen(true), 0);
+        }}
+        onProfile={(p) => setMyAvatarUrl(p.avatar_url ?? null)}
       />
       <NewRoomModal
         open={newRoomOpen}
@@ -836,13 +1228,18 @@ function IOSTabButton({
   return (
     <button
       onClick={onClick}
-      className={`relative flex min-w-[68px] flex-1 flex-col items-center justify-center gap-[3px] rounded-[22px] px-3 pb-1.5 pt-2 text-[10.5px] font-medium tracking-[0.01em] transition-all ${
+      role="tab"
+      // Roving tabindex — only the active tab is in the natural tab
+      // order; arrow keys (handled by the parent <nav role="tablist">)
+      // move focus between the others.
+      tabIndex={active ? 0 : -1}
+      aria-selected={active}
+      aria-label={label}
+      className={`relative flex min-w-[68px] flex-1 flex-col items-center justify-center gap-[3px] rounded-[22px] px-3 pb-1.5 pt-2 text-[10.5px] font-medium tracking-[0.01em] transition-all focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-neutral-900 dark:focus-visible:outline-neutral-100 ${
         active
           ? "bg-white/55 text-neutral-900 shadow-[inset_0_1px_0_rgba(255,255,255,0.6)] dark:bg-white/15 dark:text-neutral-50"
           : "text-neutral-600 dark:text-neutral-300"
       }`}
-      aria-pressed={active}
-      aria-label={label}
     >
       <span className="relative grid h-7 place-items-center">
         {active ? filled : outline}
@@ -1097,13 +1494,11 @@ function pickLatestPerBook(all: BookmarkOut[]): BookmarkOut[] {
 function BookmarksPanel({
   bookmarks,
   onPick,
-  onRemoveOne,
   onReset,
   timezone,
 }: {
   bookmarks: BookmarkOut[];
   onPick: (b: BookmarkOut) => void;
-  onRemoveOne: (book: string, chapter: number, verse: number) => void;
   onReset: (book: string) => void;
   timezone?: string;
 }) {
@@ -1166,21 +1561,12 @@ function BookmarksPanel({
               >
                 <PencilIcon />
               </button>
-              <button
-                onClick={() => onRemoveOne(b.book, b.chapter, b.verse)}
-                className="grid h-9 w-9 place-items-center rounded text-neutral-400 hover:bg-paper-soft hover:text-red-600 dark:hover:bg-neutral-800"
-                aria-label={`Remove ${b.book} bookmark`}
-                title="Remove just the active bookmark"
-              >
-                ✕
-              </button>
             </div>
             {editing === b.book && (
               <div className="space-y-2 border-t border-neutral-200 px-3 py-2 dark:border-neutral-800">
                 <p className="text-[11px] text-neutral-500 dark:text-neutral-400">
                   Reset clears the active bookmark AND every past flag
-                  for this book. Use ✕ above if you only want to drop
-                  the active mark.
+                  for this book.
                 </p>
                 <div className="flex justify-end gap-2">
                   <button
@@ -1214,139 +1600,244 @@ function BookmarksPanel({
   );
 }
 
-/** Static demo conversation so the chat tab has something to look at
- *  before the live `POST /rooms/{id}/chat` ↔ websocket wiring lands.
- *  Strip this `DEMO_THREAD` when the real message list is rendered. */
-const DEMO_THREAD: DemoMsg[] = [
-  {
-    from: "Maya",
-    body: "Anyone else stuck on Romans 9 today? I keep rereading verse 16 and feeling the weight of it.",
-    time: "8:42 AM",
-  },
-  {
-    from: "Daniel",
-    body: "Same. The mercy/works contrast is wild — Paul drives it home so hard.",
-    time: "8:45 AM",
-  },
-  {
-    from: "You",
-    mine: true,
-    body: "I marked v.16 yellow + a wavy underline on “but of God that sheweth mercy.” Felt like the whole chapter pivots there.",
-    time: "8:47 AM",
-  },
-  {
-    from: "Maya",
-    body: "Oh I like that. Going to copy that mark over.",
-    time: "8:48 AM",
-  },
-  {
-    from: "Daniel",
-    body: "Quick Q — how do y’all read v.18? It feels almost dissonant after the mercy line.",
-    time: "9:02 AM",
-  },
-  {
-    from: "You",
-    mine: true,
-    body: "I read it as Paul anticipating the objection. He doesn’t soften it; he leans in.",
-    time: "9:04 AM",
-  },
-  {
-    from: "Maya",
-    body: "Going to drop a group note on this thread later tonight. Want to look at it alongside Exodus 33.",
-    time: "9:07 AM",
-  },
-  {
-    from: "Daniel",
-    body: "+1 — that pairing makes v.18 land differently for me.",
-    time: "9:08 AM",
-  },
-];
-
 function ChatPanel({
+  roomId,
   roomName,
-  userMessages,
+  selfUserId,
+  accentKey,
+  dark,
+  onRead,
 }: {
+  roomId: string;
   roomName: string;
-  userMessages: DemoMsg[];
+  selfUserId?: string;
+  /** Active group's resolved accent — drives the "mine" bubble color
+   *  so each group's chat reads as different. The header band is kept
+   *  neutral so it doesn't double up with the top app bar's tint. */
+  accentKey: import("../lib/accentColors").AccentKey;
+  dark: boolean;
+  /** Fired after the server confirms the room has been marked read.
+   *  Parent zeroes the unread badge for this room. */
+  onRead?: () => void;
 }) {
+  const [messages, setMessages] = useState<ChatMessageOut[]>([]);
+  const [memberCount, setMemberCount] = useState<number | null>(null);
   const scrollerRef = useRef<HTMLDivElement | null>(null);
-  // Stick to the bottom whenever a new message lands. The user can
-  // still scroll up to read the seed thread — we just snap back after
-  // they hit send.
+
+  // Initial load — most recent 100 messages, chronological.
   useEffect(() => {
-    const el = scrollerRef.current;
-    if (!el) return;
-    el.scrollTop = el.scrollHeight;
-  }, [userMessages.length]);
+    if (!roomId) return;
+    let alive = true;
+    api
+      .chatList(roomId, 100)
+      .then((rows) => alive && setMessages(rows))
+      .catch(() => {});
+    api
+      .roomMembers(roomId)
+      .then((rows) => alive && setMemberCount(rows.length))
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [roomId]);
+
+  // Live updates via websocket. Reconnects with exponential backoff
+  // if the connection drops (mobile waking from sleep, server
+  // restart, etc.).
+  useEffect(() => {
+    if (!roomId) return;
+    let ws: WebSocket | null = null;
+    let closed = false;
+    let backoff = 1000;
+    const connect = () => {
+      const proto = location.protocol === "https:" ? "wss:" : "ws:";
+      const url = new URL(`${proto}//${location.host}/ws/chat/${roomId}`);
+      url.searchParams.set("password", getPassword());
+      url.searchParams.set("session", getSessionToken());
+      ws = new WebSocket(url.toString());
+      ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data) as ChatMessageOut;
+          setMessages((prev) =>
+            prev.some((m) => m.id === msg.id) ? prev : [...prev, msg],
+          );
+        } catch {
+          // Ignore malformed frames.
+        }
+      };
+      ws.onopen = () => {
+        backoff = 1000;
+      };
+      ws.onclose = () => {
+        if (closed) return;
+        window.setTimeout(connect, Math.min(backoff, 15000));
+        backoff *= 2;
+      };
+    };
+    connect();
+    return () => {
+      closed = true;
+      ws?.close();
+    };
+  }, [roomId]);
+
+  // Snap to bottom on new message AND on keyboard show/hide so the
+  // latest message stays pinned above the composer.
+  useStickToBottom(scrollerRef, [messages.length]);
+
+  // Mark the room as read whenever the user is looking at the Chat
+  // tab. Fires on mount (opening Chat zeroes the badge) and again
+  // each time a new message lands while still viewing the room (so
+  // the badge doesn't bounce up while the user is right here).
+  useEffect(() => {
+    if (!roomId) return;
+    api
+      .roomMarkRead(roomId)
+      .then(() => onRead?.())
+      .catch(() => {});
+  }, [roomId, messages.length, onRead]);
+
   return (
     <div className="flex h-full flex-col">
       <div className="border-b border-neutral-200 bg-paper-soft px-4 py-2 text-[11px] text-neutral-500 dark:border-neutral-800 dark:bg-neutral-950 dark:text-neutral-400">
-        <div className="flex items-center justify-between">
-          <span>
-            <span className="font-medium text-neutral-700 dark:text-neutral-200">
-              {roomName}
-            </span>{" "}
-            · 3 members
+        <span>
+          <span className="font-medium text-neutral-700 dark:text-neutral-200">
+            {roomName}
           </span>
-          <span className="rounded-full bg-amber-200/70 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-amber-900 dark:bg-amber-500/30 dark:text-amber-100">
-            Demo
-          </span>
-        </div>
+          {memberCount !== null && (
+            <span> · {memberCount} {memberCount === 1 ? "member" : "members"}</span>
+          )}
+        </span>
       </div>
       <div
         ref={scrollerRef}
-        // Bottom padding clears the floating glass composer + AI pill
-        // so the last bubble isn't hidden behind them. The pill is
-        // 64px tall and sits on top of the safe-area inset, so we add
-        // 64 + ~24px breathing room + the inset.
+        role="log"
+        aria-live="polite"
+        aria-label="Chat messages"
+        aria-relevant="additions"
         className="flex-1 space-y-3 overflow-y-auto px-3 pt-3"
         style={{
+          // 96px covers the floating composer + safe area at rest.
+          // When the keyboard is open we don't need extra padding —
+          // useKeyboardInset already lifts the composer onto the
+          // keyboard, and the visualViewport shrink takes care of
+          // the scroller height. Keep the base padding only.
           paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 96px)",
         }}
       >
-        {DEMO_THREAD.map((m, i) => (
-          <ChatBubble key={`seed-${i}`} msg={m} />
-        ))}
-        {userMessages.length > 0 && (
-          <div className="my-1 flex items-center gap-2 text-[10px] text-neutral-400 dark:text-neutral-500">
-            <span className="flex-1 border-t border-neutral-200 dark:border-neutral-700" />
-            <span>Today</span>
-            <span className="flex-1 border-t border-neutral-200 dark:border-neutral-700" />
-          </div>
+        {messages.length === 0 ? (
+          <p className="pt-8 text-center text-xs text-neutral-500 dark:text-neutral-400">
+            No messages yet. Be the first to say something.
+          </p>
+        ) : (
+          messages.map((m) => (
+            <ChatBubble
+              key={m.id}
+              msg={m}
+              mine={!!selfUserId && m.author_user_id === selfUserId}
+              accentKey={accentKey}
+              dark={dark}
+            />
+          ))
         )}
-        {userMessages.map((m, i) => (
-          <ChatBubble key={`mine-${i}`} msg={m} />
-        ))}
-        <p className="pt-2 text-center text-[10px] text-neutral-400 dark:text-neutral-500">
-          Demo conversation — real chat lands when{" "}
-          <code>POST /rooms/{`{id}`}/chat</code> + websocket are wired up.
-        </p>
       </div>
     </div>
   );
 }
 
-function ChatBubble({ msg }: { msg: DemoMsg }) {
-  const side = msg.mine ? "items-end" : "items-start";
-  // Mine = darker pill on the right; others = light glass bubble on
-  // the left. Both echo the rest of the app's glass material so the
-  // chat tab feels like part of the same surface.
-  const bubble = msg.mine
-    ? "rounded-[18px] rounded-br-md bg-neutral-900 text-white shadow-[0_4px_14px_rgba(0,0,0,0.18),inset_0_1px_0_rgba(255,255,255,0.10)] dark:bg-neutral-100 dark:text-neutral-900"
-    : `rounded-[18px] rounded-bl-md ${GLASS_CARD_INLINE}`;
+function ChatBubble({
+  msg,
+  mine,
+  accentKey,
+  dark,
+}: {
+  msg: ChatMessageOut;
+  mine: boolean;
+  accentKey: import("../lib/accentColors").AccentKey;
+  dark: boolean;
+}) {
+  const side = mine ? "items-end" : "items-start";
+  const palette = ACCENT_PALETTE[accentKey];
+  // "Mine" bubble: same physical material as the receiver bubble —
+  // same neutral edge ring, same drop shadow, same inset highlight.
+  // The ONLY visual distinction is the accent band tint on the
+  // background (matches the top banner's composition) + a slightly
+  // accent-tinted halo. Both bubbles therefore carry equal visual
+  // weight; the sender just reads as the "color side" of the thread.
+  const MINE_SURFACE = dark ? "#171717" : "#ffffff";
+  const MINE_EDGE = dark ? "#101015" : "#9aa3b2";
+  const myStyle: React.CSSProperties | undefined = mine
+    ? {
+        backgroundColor: MINE_SURFACE,
+        backgroundImage: `linear-gradient(to bottom, ${dark ? palette.bandDark : palette.band}, transparent 110%)`,
+        color: dark ? "#f5f5f5" : "#0f172a",
+        boxShadow: [
+          "0 8px 22px rgba(0,0,0,0.28)",
+          "inset 0 1.5px 0 rgba(255,255,255,0.45)",
+          // Neutral ring — matches the receiver bubble exactly so
+          // neither side stands out for having a louder outline.
+          `0 0 0 1.5px ${MINE_EDGE}`,
+          // Halo uses the soft `band` tint — same quiet intensity as
+          // the receiver's neutral halo, just in the group's color.
+          `0 0 24px -4px ${dark ? palette.bandDark : palette.band}`,
+        ].join(", "),
+      }
+    : undefined;
+  // "Other" bubble: same 3D treatment as "mine" — vertical gradient,
+  // heavy drop shadow, crisp ring, soft halo, glossy top highlight —
+  // but in neutral tones so the accent stays exclusive to the user's
+  // own messages. Both bubbles read as the same physical material;
+  // identity is color.
+  const NEUTRAL_TOP = dark ? "#3a3a44" : "#ffffff";
+  const NEUTRAL_BOT = dark ? "#1f1f25" : "#dfe3ea";
+  const NEUTRAL_EDGE = dark ? "#101015" : "#9aa3b2";
+  const otherStyle: React.CSSProperties | undefined = !mine
+    ? {
+        backgroundImage: `linear-gradient(to bottom, ${NEUTRAL_TOP}, ${NEUTRAL_BOT})`,
+        color: dark ? "#f5f5f5" : "#0f172a",
+        boxShadow: [
+          "0 8px 22px rgba(0,0,0,0.28)",
+          "inset 0 1.5px 0 rgba(255,255,255,0.45)",
+          `0 0 0 1.5px ${NEUTRAL_EDGE}`,
+          `0 0 24px -4px ${NEUTRAL_EDGE}`,
+        ].join(", "),
+      }
+    : undefined;
+  const otherClass = "rounded-[18px] rounded-bl-md";
+  const myClass = "rounded-[18px] rounded-br-md font-medium";
+  // The author label color on "others" bubbles dims a bit in dark mode
+  // — kept consistent regardless of accent so the eye-line going down
+  // the thread stays calm.
+  void dark;
+  const authorLabel = msg.author_is_agent
+    ? "Agent"
+    : msg.author_user_id
+      ? (msg.author_display_name || msg.author_handle || "?")
+      : "(deleted user)";
   return (
     <div className={`flex flex-col gap-0.5 ${side}`}>
-      {!msg.mine && (
+      {!mine && (
         <span className="px-2 text-[10px] font-semibold text-neutral-500 dark:text-neutral-400">
-          {msg.from}
+          {authorLabel}
         </span>
       )}
-      <div className={`max-w-[80%] px-3 py-1.5 text-sm ${bubble}`}>
+      <div
+        className={`max-w-[82%] ${mine ? "px-3.5 py-2 text-[15px]" : "px-3.5 py-2 text-[15px]"} ${mine ? myClass : otherClass}`}
+        style={mine ? myStyle : otherStyle}
+      >
         {msg.body}
       </div>
-      <span className="px-2 text-[9px] text-neutral-400 dark:text-neutral-500">
-        {msg.time}
-      </span>
+      {msg.created_at && (
+        <span className="mt-1 px-3 text-[11px] font-medium tracking-tight text-neutral-500 dark:text-neutral-400">
+          {formatChatTime(msg.created_at)}
+        </span>
+      )}
     </div>
   );
+}
+
+function formatChatTime(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 }

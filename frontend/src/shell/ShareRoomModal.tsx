@@ -156,7 +156,7 @@ export function ShareRoomModal({ open, onClose, roomId, roomName }: Props) {
             <button
               onClick={createInvite}
               disabled={creating}
-              className="rounded bg-neutral-900 px-3 py-1 text-xs text-white disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900"
+              className="inline-flex min-h-[40px] items-center gap-2 rounded-2xl bg-neutral-900 px-4 py-2.5 text-[13px] font-semibold text-white shadow-sm transition hover:bg-neutral-800 disabled:opacity-50 dark:bg-neutral-50 dark:text-neutral-900 dark:hover:bg-neutral-200"
             >
               {creating ? "Creating…" : "+ New invite link"}
             </button>
@@ -180,24 +180,24 @@ function InviteRow({
   onRevoke: () => void;
 }) {
   return (
-    <div className="mb-2 rounded border border-neutral-200 px-2 py-2 dark:border-neutral-800">
+    <div className="mb-2 rounded-2xl border border-neutral-200 bg-paper px-3 py-2.5 shadow-[0_1px_2px_rgba(0,0,0,0.04),inset_0_1px_0_rgba(255,255,255,0.5)] dark:border-neutral-800 dark:bg-neutral-900 dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
       <div className="flex items-center gap-2">
         <input
           id={`invite-url-${inv.code}`}
           readOnly
           value={url}
           onFocus={(e) => e.currentTarget.select()}
-          className="min-w-0 flex-1 rounded border border-neutral-200 bg-paper px-2 py-1 font-mono text-[11px] dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100"
+          className="min-w-0 flex-1 rounded-xl border border-neutral-200 bg-paper-soft px-2.5 py-1.5 font-mono text-[11px] outline-none focus:border-amber-300 focus:ring-2 focus:ring-amber-200/40 dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100 dark:focus:border-amber-700 dark:focus:ring-amber-800/40"
         />
         <button
           onClick={onCopy}
-          className="shrink-0 rounded border border-neutral-300 px-2 py-1 text-xs hover:bg-paper-soft dark:border-neutral-700 dark:hover:bg-neutral-800"
+          className="shrink-0 rounded-full border border-neutral-300 bg-paper px-3 py-1.5 text-[12px] font-semibold hover:bg-paper-soft dark:border-neutral-700 dark:bg-neutral-900 dark:hover:bg-neutral-800"
         >
           {copied ? "✓ Copied" : "Copy"}
         </button>
         <button
           onClick={onRevoke}
-          className="shrink-0 rounded border border-red-300 px-2 py-1 text-xs text-red-700 hover:bg-red-50 dark:border-red-700 dark:text-red-300 dark:hover:bg-red-900/40"
+          className="shrink-0 rounded-full border border-red-300 bg-paper px-3 py-1.5 text-[12px] font-semibold text-red-700 hover:bg-red-50 dark:border-red-900/50 dark:bg-neutral-900 dark:text-red-300 dark:hover:bg-red-950/40"
         >
           Revoke
         </button>

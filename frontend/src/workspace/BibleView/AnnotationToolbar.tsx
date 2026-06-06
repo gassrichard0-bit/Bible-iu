@@ -42,6 +42,10 @@ interface Props {
   onClearKind: (verseId: string, kind: AnnotationKind) => void;
   onClearAll: (verseId: string) => void;
   onClose: () => void;
+  /** Triggers the share sheet for the active verse. Hidden when not
+   *  supplied so the strip can stay annotation-only in contexts that
+   *  haven't wired sharing yet (the SocialShell desktop, e.g.). */
+  onShare?: (verseId: string) => void;
 }
 
 interface ToolSection {
@@ -65,6 +69,7 @@ export function AnnotationToolbar({
   onClearKind,
   onClearAll,
   onClose,
+  onShare,
 }: Props) {
   if (!target) return null;
 
@@ -78,6 +83,7 @@ export function AnnotationToolbar({
     <div
       role="toolbar"
       aria-label={`Annotation tools for ${target.label ?? target.verseId}`}
+      aria-orientation="horizontal"
       // Same glass recipe + outer dimensions as the bottom tab bar in
       // MobileShell — the strip lives in the same slot, so visually
       // it should read as the same panel switching modes.
@@ -137,6 +143,16 @@ export function AnnotationToolbar({
       >
         <EraserIcon />
       </button>
+      {onShare && (
+        <button
+          onClick={() => onShare(target.verseId)}
+          className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-neutral-900 text-white hover:bg-neutral-800 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-200"
+          aria-label="Share this verse"
+          title="Share"
+        >
+          <ShareIcon />
+        </button>
+      )}
     </div>
   );
 }
@@ -269,6 +285,26 @@ function SampleSwatch({
     >
       {children}
     </button>
+  );
+}
+
+function ShareIcon() {
+  return (
+    <svg
+      width="18"
+      height="18"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <path d="M12 3v12" />
+      <path d="m7 8 5-5 5 5" />
+      <path d="M5 12v6a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-6" />
+    </svg>
   );
 }
 

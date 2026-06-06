@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { JoinRoom } from "./shell/JoinRoom";
 import { Login } from "./shell/Login";
 import { MobileShell } from "./shell/MobileShell";
@@ -15,6 +15,8 @@ import {
 } from "./lib/api";
 import {
   readSettings,
+  settingsFromPreferences,
+  settingsToPreferences,
   writeSettings,
   type Settings,
 } from "./lib/settings";
@@ -50,9 +52,30 @@ export function App() {
     applyTheme(theme);
   }, [theme]);
 
+  // Debounced server sync — coalesces rapid toggles (e.g. flipping
+  // a switch back and forth) into one PATCH. The hydration flag stops
+  // the initial server-load from echoing right back to the server.
+  const settingsHydratedRef = useRef(false);
+  const patchTimerRef = useRef<number | null>(null);
   function setSettings(s: Settings) {
     writeSettings(s);
     setSettingsState(s);
+    // Only sync once we've heard from the server at least once;
+    // otherwise the initial local-only read would PATCH back the
+    // unhydrated defaults and clobber server-side state.
+    if (!settingsHydratedRef.current) return;
+    if (patchTimerRef.current !== null) {
+      window.clearTimeout(patchTimerRef.current);
+    }
+    patchTimerRef.current = window.setTimeout(() => {
+      patchTimerRef.current = null;
+      api
+        .authPatchMe({ preferences: settingsToPreferences(s) })
+        .catch(() => {
+          // Server sync is best-effort. localStorage still has the
+          // value, so nothing the user picked is lost.
+        });
+    }, 600);
   }
 
   // Register the global error handlers once.
@@ -85,9 +108,18 @@ export function App() {
     }
     api
       .authMe()
-      .then((u) =>
-        setAuth({ phase: "signed-in", handle: u.handle, userId: u.id }),
-      )
+      .then((u) => {
+        setAuth({ phase: "signed-in", handle: u.handle, userId: u.id });
+        // Hydrate settings from server preferences. Defaults already
+        // came from localStorage so missing keys keep the user's
+        // local choice.
+        setSettingsState((cur) => {
+          const merged = settingsFromPreferences(cur, u.preferences);
+          writeSettings(merged);
+          return merged;
+        });
+        settingsHydratedRef.current = true;
+      })
       .catch(() => {
         clearSessionToken();
         setAuth({ phase: "signed-out" });
@@ -100,12 +132,19 @@ export function App() {
   function onSignedIn(handle: string) {
     // We need the canonical user id (for "is this my comment?" checks
     // in social-notes), so re-fetch authMe rather than guessing from
-    // the handle.
+    // the handle. Also hydrate settings here for the fresh sign-in
+    // case (the gate effect above only runs on bootstrap).
     api
       .authMe()
-      .then((u) =>
-        setAuth({ phase: "signed-in", handle: u.handle, userId: u.id }),
-      )
+      .then((u) => {
+        setAuth({ phase: "signed-in", handle: u.handle, userId: u.id });
+        setSettingsState((cur) => {
+          const merged = settingsFromPreferences(cur, u.preferences);
+          writeSettings(merged);
+          return merged;
+        });
+        settingsHydratedRef.current = true;
+      })
       .catch(() => {
         // Fall back to handle-only auth state. The user can still use
         // the app — they just can't delete their own comments.
@@ -117,12 +156,14 @@ export function App() {
     api.authLogout().catch(() => {});
     clearSessionToken();
     setAuth({ phase: "signed-out" });
+    settingsHydratedRef.current = false;
   }
 
   function onDeleted() {
     // Account is already gone server-side — just drop local state.
     clearSessionToken();
     setAuth({ phase: "signed-out" });
+    settingsHydratedRef.current = false;
   }
 
   // Check gate FIRST: the password gate render must not be blocked by

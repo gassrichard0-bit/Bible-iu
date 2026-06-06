@@ -145,6 +145,7 @@ export function NoteSocialBlock({
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               placeholder="Comment…"
+              aria-label="Add a comment"
               rows={1}
               className="min-w-0 flex-1 resize-none bg-transparent px-2 py-1 text-[12px] text-neutral-900 placeholder:text-neutral-500 focus:outline-none dark:text-neutral-100 dark:placeholder:text-neutral-400"
             />

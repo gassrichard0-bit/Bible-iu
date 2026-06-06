@@ -18,6 +18,7 @@ import { SettingsModal } from "./Settings";
 import { Avatar } from "./Profile";
 import { NewRoomModal, type NewRoomValues } from "./NewRoomModal";
 import { ShareRoomModal } from "./ShareRoomModal";
+import { RoomAvatar } from "./RoomAvatar";
 import {
   api,
   type AnnotationColor,
@@ -39,6 +40,8 @@ interface RoomItem {
   /** Optional starting verse for the workspace when the user opens
    *  this room. Set on the welcome room to JHN.3.16. */
   focusedVerse?: string;
+  /** Server-relative URL for the room avatar; null when none. */
+  imageUrl?: string | null;
 }
 
 interface Props {
@@ -71,8 +74,32 @@ export function SocialShell({
 }: Props) {
   const isDesktop = useIsDesktop();
   const [rooms, setRooms] = useState<RoomItem[]>([]);
-  const [activeId, setActiveId] = useState<string>("");
+  // Last-selected room persistence (per-user key) — same shape as
+  // MobileShell so the choice survives reloads.
+  const lastRoomKey = handle ? `bible-iu:last-room:${handle}` : "";
+  const [activeId, setActiveIdRaw] = useState<string>("");
+  const setActiveId = (id: string) => {
+    setActiveIdRaw(id);
+    if (id && lastRoomKey && typeof localStorage !== "undefined") {
+      try {
+        localStorage.setItem(lastRoomKey, id);
+      } catch {
+        // ignore (private mode etc.)
+      }
+    }
+  };
   const [shareOpen, setShareOpen] = useState(false);
+  const [myAvatarUrl, setMyAvatarUrl] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    api
+      .authMe()
+      .then((p) => alive && setMyAvatarUrl(p.avatar_url ?? null))
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
   const [view, setView] = useState<"chat" | "study">("study");
   const [notesOpen, setNotesOpen] = useState(false);
   const [chatOpen, setChatOpen] = useState(true);
@@ -154,7 +181,9 @@ export function SocialShell({
   // notes-system.MD §3.1, §5.6). Skip when the active room hasn't
   // loaded yet — connecting Yjs with an empty room ID hits a 403 on
   // the server (no route match) and floods the console.
-  const notesApi = useYjsNotes(activeId);
+  // selfUserId scopes the personal-notes Y.Doc per user — see
+  // MobileShell for the rationale.
+  const notesApi = useYjsNotes(activeId, selfUserId);
 
   useEffect(() => {
     void api.health().catch(() => {});
@@ -175,6 +204,7 @@ export function SocialShell({
             | "group"
             | "direct",
           name: r.name ?? "(unnamed)",
+          imageUrl: r.image_url ?? null,
           focusedVerse: r.scripture_context?.focused_verse,
         }));
         setRooms(mapped);
@@ -185,7 +215,18 @@ export function SocialShell({
           setActiveId(pendingRoomId);
           onPendingRoomConsumed?.();
         } else if (!activeId && mapped.length > 0) {
-          setActiveId(mapped[0].id);
+          let initial = mapped[0].id;
+          if (lastRoomKey && typeof localStorage !== "undefined") {
+            try {
+              const saved = localStorage.getItem(lastRoomKey);
+              if (saved && mapped.some((r) => r.id === saved)) {
+                initial = saved;
+              }
+            } catch {
+              // ignore
+            }
+          }
+          setActiveId(initial);
         }
       })
       .catch(() => {
@@ -255,7 +296,17 @@ export function SocialShell({
               title={`Signed in as ${handle} — open settings`}
               aria-label="Settings"
             >
-              <Avatar handle={handle} size={24} />
+              <span
+                className="grid place-items-center rounded-full p-[1.5px] shadow-[0_2px_6px_rgba(0,0,0,0.15),inset_0_1px_0_rgba(255,255,255,0.55)] dark:shadow-[0_2px_6px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.10)]"
+                style={{
+                  background:
+                    "linear-gradient(135deg, rgba(255,255,255,0.85), rgba(180,180,180,0.35) 45%, rgba(0,0,0,0.18))",
+                }}
+              >
+                <span className="grid place-items-center rounded-full shadow-[inset_0_0_0_1px_rgba(255,255,255,0.45),inset_0_-1px_2px_rgba(0,0,0,0.20)] dark:shadow-[inset_0_0_0_1px_rgba(255,255,255,0.08),inset_0_-1px_2px_rgba(0,0,0,0.55)]">
+                  <Avatar handle={handle} url={myAvatarUrl} size={32} />
+                </span>
+              </span>
               <span className="text-[10px]">⚙</span>
             </button>
             {!isDesktop && (
@@ -271,9 +322,12 @@ export function SocialShell({
         </div>
         <button
           onClick={() => setNewRoomOpen(true)}
-          className="mx-3 mb-2 rounded border border-dashed border-neutral-300 px-2 py-2 text-xs text-neutral-600 hover:border-neutral-400 dark:border-neutral-700 dark:text-neutral-300 dark:hover:border-neutral-500"
+          className="mx-3 mb-2 inline-flex items-center justify-center gap-2 rounded-2xl border border-amber-200 bg-amber-50/70 px-3 py-2.5 text-[13px] font-semibold text-amber-900 transition hover:bg-amber-100 dark:border-amber-800/60 dark:bg-amber-900/30 dark:text-amber-100 dark:hover:bg-amber-900/40"
         >
-          + New room
+          <span className="grid h-5 w-5 place-items-center rounded-full bg-amber-200 text-amber-900 dark:bg-amber-700/60 dark:text-amber-100" aria-hidden>
+            +
+          </span>
+          New group
         </button>
         <input
           placeholder="Search"
@@ -284,21 +338,29 @@ export function SocialShell({
             <button
               key={r.id}
               onClick={() => pickRoom(r.id)}
-              className={`flex w-full items-start gap-2 px-3 py-3 text-left text-sm hover:bg-paper-soft dark:hover:bg-neutral-800/60 ${
+              className={`flex w-full items-center gap-3 px-3 py-2.5 text-left hover:bg-paper-soft dark:hover:bg-neutral-800/60 ${
                 r.id === activeId
                   ? "bg-paper-soft dark:bg-neutral-800"
                   : ""
               }`}
             >
-              <span className="mt-1 inline-block h-2 w-2 rounded-full bg-neutral-400 dark:bg-paper-soft0" />
-              <span className="flex-1 truncate">
-                <span className="block truncate font-medium">{r.name}</span>
-                <span className="block truncate text-xs text-neutral-500 dark:text-neutral-400">
-                  {r.lastMessage ?? "—"}
+              <RoomAvatar
+                id={r.id}
+                name={r.name}
+                type={r.type}
+                imageUrl={r.imageUrl}
+                size={44}
+              />
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-[14px] font-medium text-neutral-900 dark:text-neutral-50">
+                  {r.name}
+                </span>
+                <span className="block truncate text-[12px] text-neutral-500 dark:text-neutral-400">
+                  {r.lastMessage ?? (r.type === "direct" ? "Direct chat" : "Group")}
                 </span>
               </span>
               {r.unread ? (
-                <span className="rounded-full bg-neutral-900 px-1.5 text-[10px] text-white dark:bg-neutral-100 dark:text-neutral-900">
+                <span className="rounded-full bg-neutral-900 px-1.5 py-0.5 text-[10px] font-semibold text-white dark:bg-neutral-100 dark:text-neutral-900">
                   {r.unread}
                 </span>
               ) : null}
@@ -418,7 +480,6 @@ export function SocialShell({
                         focus={focus}
                         notes={notesApi}
                         roomId={active.id}
-                        roomName={active.name}
                         chatOpen={chatOpen}
                         onToggleChat={() => setChatOpen((v) => !v)}
                         socialNotesEnabled={settings.socialNotesEnabled}
@@ -482,7 +543,6 @@ export function SocialShell({
                         focus={focus}
                         notes={notesApi}
                         roomId={active.id}
-                        roomName={active.name}
                         chatOpen={chatOpen}
                         onToggleChat={() => setChatOpen((v) => !v)}
                         onCloseMobile={() => setNotesOpen(false)}
@@ -512,6 +572,7 @@ export function SocialShell({
         onToggleTheme={onToggleTheme}
         onSignOut={onSignOut}
         onDeleted={onDeleted}
+        onProfile={(p) => setMyAvatarUrl(p.avatar_url ?? null)}
       />
       <NewRoomModal
         open={newRoomOpen}

@@ -79,11 +79,11 @@ export function Login({ onSignedIn, theme, onToggleTheme }: Props) {
       </div>
       <form
         onSubmit={submit}
-        className={`w-80 p-6 ${GLASS_CARD}`}
+        className={`w-full max-w-sm p-6 ${GLASS_CARD}`}
       >
         <h1 className="mb-3 text-lg font-semibold">Bible IU</h1>
         <div
-          className="mb-4 flex rounded border border-neutral-200 p-0.5 dark:border-neutral-700"
+          className="mb-4 flex rounded-2xl border border-neutral-200 bg-neutral-100/60 p-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.5)] dark:border-neutral-700 dark:bg-neutral-800/60 dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]"
           role="tablist"
           aria-label="Auth mode"
         >
@@ -99,7 +99,7 @@ export function Login({ onSignedIn, theme, onToggleTheme }: Props) {
             }}
             role="tab"
             aria-selected={mode === "register"}
-            className={`flex-1 rounded px-2 py-1.5 text-xs font-medium ${
+            className={`flex-1 rounded-xl px-2 py-2 text-[13px] font-semibold transition ${
               mode === "register"
                 ? "bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900"
                 : "text-neutral-600 hover:text-neutral-900 dark:text-neutral-400 dark:hover:text-neutral-100"
@@ -115,7 +115,7 @@ export function Login({ onSignedIn, theme, onToggleTheme }: Props) {
             }}
             role="tab"
             aria-selected={mode === "login"}
-            className={`flex-1 rounded px-2 py-1.5 text-xs font-medium ${
+            className={`flex-1 rounded-xl px-2 py-2 text-[13px] font-semibold transition ${
               mode === "login"
                 ? "bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900"
                 : "text-neutral-600 hover:text-neutral-900 dark:text-neutral-400 dark:hover:text-neutral-100"
@@ -138,7 +138,7 @@ export function Login({ onSignedIn, theme, onToggleTheme }: Props) {
           value={handle}
           onChange={(e) => setHandle(e.target.value)}
           autoComplete="username"
-          className="mt-1 w-full rounded border border-neutral-300 bg-paper px-2 py-2 text-sm focus:border-neutral-400 focus:outline-none dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100 dark:focus:border-neutral-500"
+          className="mt-1 w-full rounded-2xl border border-neutral-200 bg-paper px-3.5 py-3 text-[15px] outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-200/40 dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100 dark:focus:border-amber-700 dark:focus:ring-amber-800/40"
           placeholder="alex"
         />
 
@@ -150,7 +150,7 @@ export function Login({ onSignedIn, theme, onToggleTheme }: Props) {
           value={password}
           onChange={(e) => setPassword(e.target.value)}
           autoComplete={mode === "register" ? "new-password" : "current-password"}
-          className="mt-1 w-full rounded border border-neutral-300 bg-paper px-2 py-2 text-sm focus:border-neutral-400 focus:outline-none dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100 dark:focus:border-neutral-500"
+          className="mt-1 w-full rounded-2xl border border-neutral-200 bg-paper px-3.5 py-3 text-[15px] outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-200/40 dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100 dark:focus:border-amber-700 dark:focus:ring-amber-800/40"
           placeholder="••••••••"
         />
 
@@ -162,7 +162,7 @@ export function Login({ onSignedIn, theme, onToggleTheme }: Props) {
             <input
               value={displayName}
               onChange={(e) => setDisplayName(e.target.value)}
-              className="mt-1 w-full rounded border border-neutral-300 bg-paper px-2 py-2 text-sm focus:border-neutral-400 focus:outline-none dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100 dark:focus:border-neutral-500"
+              className="mt-1 w-full rounded-2xl border border-neutral-200 bg-paper px-3.5 py-3 text-[15px] outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-200/40 dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100 dark:focus:border-amber-700 dark:focus:ring-amber-800/40"
               placeholder="Alex"
             />
           </>
@@ -175,7 +175,7 @@ export function Login({ onSignedIn, theme, onToggleTheme }: Props) {
         <button
           type="submit"
           disabled={busy || !handle.trim() || password.length < 8}
-          className="mt-4 w-full rounded bg-neutral-900 px-3 py-2 text-sm font-medium text-white hover:bg-neutral-800 disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-white"
+          className="mt-5 inline-flex min-h-[44px] w-full items-center justify-center rounded-2xl bg-neutral-900 px-4 py-3 text-[14px] font-semibold text-white shadow-sm transition hover:bg-neutral-800 disabled:opacity-50 dark:bg-neutral-50 dark:text-neutral-900 dark:hover:bg-neutral-200"
         >
           {busy ? "…" : mode === "register" ? "Create account" : "Sign in"}
         </button>

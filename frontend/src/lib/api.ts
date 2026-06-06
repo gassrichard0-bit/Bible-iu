@@ -173,6 +173,21 @@ export interface RoomOut {
   type: string;
   name: string | null;
   scripture_context?: { focused_verse?: string };
+  /** Caller's role IN THIS ROOM ('admin' | 'member'). Populated by
+   *  GET /rooms — lets the Profile UI flag rooms the user
+   *  administrates without a second round-trip. */
+  role?: "admin" | "member";
+  /** Server-relative URL for the room avatar, including a cache-busting
+   *  `?v=<token>` query. Null when no admin has uploaded one — UI
+   *  falls back to the gradient/initials avatar. */
+  image_url?: string | null;
+  /** Admin-picked accent color key (one of the palette in
+   *  `accentColors.ts`). Null = use the auto-derived color from the
+   *  room id. */
+  accent_color?: string | null;
+  /** Chat messages newer than the caller's `last_read_at` from anyone
+   *  but themselves. Zero when caught up. Drives the in-app badge. */
+  unread_count?: number;
 }
 
 export interface InviteOut {
@@ -378,10 +393,114 @@ export const api = {
     jsonFetch<BibleChapterMulti>(
       `/bible/${book}/${chapter}/multi?translations=${encodeURIComponent(translations.join(","))}`,
     ),
+  readingPlansList: () =>
+    jsonFetch<ReadingPlanSummary[]>("/reading-plans"),
+  readingPlanEnroll: (plan_id: string) =>
+    jsonFetch<ReadingPlanSummary>(`/reading-plans/${plan_id}/enroll`, {
+      method: "POST",
+      body: "{}",
+    }),
+  readingPlanLeave: (plan_id: string) =>
+    jsonFetch<{ ok: boolean }>(`/reading-plans/${plan_id}/enroll`, {
+      method: "DELETE",
+    }),
+  readingPlanToday: (plan_id: string) =>
+    jsonFetch<ReadingPlanDayOut>(`/reading-plans/${plan_id}/today`),
+  readingPlanComplete: (plan_id: string, day_index: number) =>
+    jsonFetch<ReadingPlanDayOut>(
+      `/reading-plans/${plan_id}/days/${day_index}/complete`,
+      { method: "POST", body: "{}" },
+    ),
+  chatList: (room_id: string, limit = 100) =>
+    jsonFetch<ChatMessageOut[]>(
+      `/rooms/${room_id}/chat?limit=${limit}`,
+    ),
+  chatPost: (room_id: string, body: string, language?: string) =>
+    jsonFetch<ChatMessageOut>(`/rooms/${room_id}/chat`, {
+      method: "POST",
+      body: JSON.stringify({ body, language }),
+    }),
   bibleXrefs: (verse_id: string, limit = 25) =>
     jsonFetch<CrossRefOut[]>(
       `/bible/xrefs/${verse_id}?limit=${limit}`,
     ),
+  noteRegisterGroup: (room_id: string, note_id: string) =>
+    jsonFetch<{ ok: boolean }>(
+      `/rooms/${room_id}/notes/${note_id}/register_group`,
+      { method: "POST", body: "{}" },
+    ),
+  roomMembers: (room_id: string) =>
+    jsonFetch<RoomMemberOut[]>(`/rooms/${room_id}/members`),
+  roomMemberPatch: (room_id: string, user_id: string, role: "admin" | "member") =>
+    jsonFetch<RoomMemberOut>(`/rooms/${room_id}/members/${user_id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ role }),
+    }),
+  roomMemberRemove: (room_id: string, user_id: string) =>
+    jsonFetch<{ ok: boolean }>(`/rooms/${room_id}/members/${user_id}`, {
+      method: "DELETE",
+    }),
+  roomAgentSettings: (room_id: string) =>
+    jsonFetch<AgentSettingsOut>(`/rooms/${room_id}/agent_settings`),
+  roomQuota: (room_id: string) =>
+    jsonFetch<QuotaStatus>(`/rooms/${room_id}/quota`),
+  roomImageUpload: async (room_id: string, file: File) => {
+    const form = new FormData();
+    form.append("file", file);
+    // jsonFetch sets Content-Type to application/json, which kills the
+    // multipart boundary. Drop down to raw fetch here.
+    const headers: Record<string, string> = {};
+    const pw = getPassword();
+    if (pw) headers["X-App-Password"] = pw;
+    const tok = getSessionToken();
+    if (tok) headers["X-Session-Token"] = tok;
+    const r = await fetch(`/api/rooms/${room_id}/image`, {
+      method: "POST",
+      headers,
+      body: form,
+    });
+    if (!r.ok) throw new Error(`Upload failed (${r.status})`);
+    return (await r.json()) as { image_url: string | null };
+  },
+  roomImageDelete: (room_id: string) =>
+    jsonFetch<{ image_url: string | null }>(`/rooms/${room_id}/image`, {
+      method: "DELETE",
+    }),
+  roomAccentPatch: (room_id: string, accent_color: string | null) =>
+    jsonFetch<RoomOut>(`/rooms/${room_id}/accent`, {
+      method: "PATCH",
+      body: JSON.stringify({ accent_color }),
+    }),
+  roomMarkRead: (room_id: string) =>
+    jsonFetch<{ unread_count: number }>(`/rooms/${room_id}/read`, {
+      method: "POST",
+      body: "{}",
+    }),
+  authImageUpload: async (file: File) => {
+    const form = new FormData();
+    form.append("file", file);
+    const headers: Record<string, string> = {};
+    const pw = getPassword();
+    if (pw) headers["X-App-Password"] = pw;
+    const tok = getSessionToken();
+    if (tok) headers["X-Session-Token"] = tok;
+    const r = await fetch(`/api/auth/me/image`, {
+      method: "POST",
+      headers,
+      body: form,
+    });
+    if (!r.ok) throw new Error(`Upload failed (${r.status})`);
+    return (await r.json()) as { avatar_url: string | null };
+  },
+  authImageDelete: () =>
+    jsonFetch<{ avatar_url: string | null }>(`/auth/me/image`, {
+      method: "DELETE",
+    }),
+  roomAgentSettingsPatch: (room_id: string, settings: AgentSettingsOut) =>
+    jsonFetch<AgentSettingsOut>(`/rooms/${room_id}/agent_settings`, {
+      method: "PATCH",
+      body: JSON.stringify(settings),
+    }),
   noteSocial: (room_id: string, note_id: string) =>
     jsonFetch<NoteSocialOut>(`/rooms/${room_id}/notes/${note_id}/social`),
   noteLikeToggle: (room_id: string, note_id: string) =>
@@ -400,10 +519,51 @@ export const api = {
     ),
 };
 
+export interface QuotaStatus {
+  /** Admin-set per-room daily cap. null = unlimited. */
+  limit: number | null;
+  /** Questions the caller has already used today in this room. */
+  used: number;
+  /** `limit - used` clamped to 0, or null when limit is null. */
+  remaining: number | null;
+}
+
+export interface ReadingPlanSummary {
+  id: string;
+  name: string;
+  summary: string;
+  length_days: number;
+  enrolled: boolean;
+  current_day: number | null;
+  completed_days: number;
+}
+
+export interface ReadingPlanDayOut {
+  plan_id: string;
+  day_index: number;
+  refs: string[];        // OSIS-style: "PSA.23", "JHN.3.16-21"
+  completed: boolean;
+}
+
+export interface ChatMessageOut {
+  id: string;
+  room_id: string;
+  author_user_id: string | null;
+  author_is_agent: boolean;
+  body: string;
+  language: string | null;
+  author_handle: string | null;
+  author_display_name: string | null;
+  created_at: string | null;
+}
+
 export interface NoteCommentOut {
   id: string;
   note_id: string;
-  author_user_id: string;
+  /** Null when the original author has deleted their account — the
+   *  comment body stays for room history, but the UI shows
+   *  "(deleted user)" instead of a handle. */
+  author_user_id: string | null;
   author_handle: string;
   author_display_name: string;
   body: string;
@@ -414,6 +574,22 @@ export interface NoteSocialOut {
   likes: number;
   liked_by_me: boolean;
   comments: NoteCommentOut[];
+}
+
+export interface RoomMemberOut {
+  user_id: string;
+  handle: string;
+  display_name: string;
+  role: "admin" | "member";
+  joined_at: string;
+}
+
+export interface AgentSettingsOut {
+  agent_enabled: boolean;
+  allow_web_search: boolean;
+  allow_external_links: boolean;
+  bypass_citation_engine_allowed: boolean;
+  max_questions_per_user_per_day: number | null;
 }
 
 /** Streaming reasoning over WebSocket. Events flow back via the supplied
@@ -440,6 +616,10 @@ export function streamReason(
      *  the citation engine and rule layer (user-toggled in Settings,
      *  overriding rule-guide.MD §14 / citation-engine.MD §10). */
     bypass_citation_engine?: boolean;
+    /** Caller's current zoom level. The backend retriever uses this
+     *  to expand or narrow the scripture context. Deeper → narrower,
+     *  wider → broader (markdown-style hierarchy). */
+    scope_kind?: "verse" | "chapter" | "book" | "testament" | "bible";
   },
   cb: {
     onStage?: (name: string, count: number | null) => void;
@@ -480,6 +660,37 @@ export function streamReason(
   ws.onerror = () => cb.onError?.("websocket error");
   return { close: () => ws.close() };
 }
+
+/** OSIS book code → display name (e.g. "JHN" → "John"). Used for
+ *  share-card labels + anywhere we need a human-readable book. */
+export const OSIS_TO_BOOK_NAME: Record<string, string> = {
+  GEN: "Genesis", EXO: "Exodus", LEV: "Leviticus", NUM: "Numbers",
+  DEU: "Deuteronomy", JOS: "Joshua", JDG: "Judges", RUT: "Ruth",
+  "1SA": "1 Samuel", "2SA": "2 Samuel",
+  "1KI": "1 Kings", "2KI": "2 Kings",
+  "1CH": "1 Chronicles", "2CH": "2 Chronicles",
+  EZR: "Ezra", NEH: "Nehemiah", EST: "Esther",
+  JOB: "Job", PSA: "Psalms", PRO: "Proverbs",
+  ECC: "Ecclesiastes", SNG: "Song of Solomon",
+  ISA: "Isaiah", JER: "Jeremiah", LAM: "Lamentations",
+  EZK: "Ezekiel", DAN: "Daniel",
+  HOS: "Hosea", JOL: "Joel", AMO: "Amos",
+  OBA: "Obadiah", JON: "Jonah", MIC: "Micah",
+  NAM: "Nahum", HAB: "Habakkuk", ZEP: "Zephaniah",
+  HAG: "Haggai", ZEC: "Zechariah", MAL: "Malachi",
+  MAT: "Matthew", MRK: "Mark", LUK: "Luke",
+  JHN: "John", ACT: "Acts", ROM: "Romans",
+  "1CO": "1 Corinthians", "2CO": "2 Corinthians",
+  GAL: "Galatians", EPH: "Ephesians", PHP: "Philippians",
+  COL: "Colossians",
+  "1TH": "1 Thessalonians", "2TH": "2 Thessalonians",
+  "1TI": "1 Timothy", "2TI": "2 Timothy",
+  TIT: "Titus", PHM: "Philemon", HEB: "Hebrews",
+  JAS: "James", "1PE": "1 Peter", "2PE": "2 Peter",
+  "1JN": "1 John", "2JN": "2 John", "3JN": "3 John",
+  JUD: "Jude", REV: "Revelation",
+};
+
 
 /** Parse "trans:KJV:JHN.3.16" or "JHN.3.16" → {book, chapter, verse}.
  *  Returns null when the id doesn't look like a verse reference. */

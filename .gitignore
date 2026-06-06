@@ -20,6 +20,7 @@ backend/.env.*
 *.sqlite-shm
 backend/data/bible-iu.sqlite*
 backend/data/yjs/
+backend/data/uploads/
 
 # ----------------------------------------------------------------------------
 # Python

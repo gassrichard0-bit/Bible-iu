@@ -26,7 +26,12 @@ _STOPWORDS = frozenset(
     so such that the their them then they this to us was we were what
     when where which who why will with you your yours mine related
     verses verse bible find more about does did mean meaning meanings
-    please""".split()
+    please
+    list lists listing show shows give gives gave name names tell tells
+    bring brings pull pulls fetch fetches search searched find finds
+    all every each some many much every passages passage reference
+    references chapter chapters scripture scriptures word words topic
+    topics theme themes everything anything anywhere everywhere""".split()
 )
 
 
@@ -50,6 +55,23 @@ def _note_body_text(note) -> str:
 # not just verses that mention their name. Disputed cases (Hebrews,
 # Psalms beyond David, etc.) are marked accordingly in the agent's
 # prompt — the engine still verifies each surviving claim.
+_OT_BOOK_CODES: list[str] = [
+    "GEN", "EXO", "LEV", "NUM", "DEU", "JOS", "JDG", "RUT",
+    "1SA", "2SA", "1KI", "2KI", "1CH", "2CH",
+    "EZR", "NEH", "EST", "JOB", "PSA", "PRO", "ECC", "SNG",
+    "ISA", "JER", "LAM", "EZK", "DAN",
+    "HOS", "JOL", "AMO", "OBA", "JON", "MIC",
+    "NAM", "HAB", "ZEP", "HAG", "ZEC", "MAL",
+]
+
+_NT_BOOK_CODES: list[str] = [
+    "MAT", "MRK", "LUK", "JHN", "ACT", "ROM",
+    "1CO", "2CO", "GAL", "EPH", "PHP", "COL",
+    "1TH", "2TH", "1TI", "2TI", "TIT", "PHM", "HEB",
+    "JAS", "1PE", "2PE", "1JN", "2JN", "3JN", "JUD", "REV",
+]
+
+
 _AUTHOR_BOOKS: dict[str, list[str]] = {
     "paul": ["ROM", "1CO", "2CO", "GAL", "EPH", "PHP", "COL",
              "1TH", "2TH", "1TI", "2TI", "TIT", "PHM"],
@@ -169,38 +191,101 @@ class SqlRetriever:
         verse_ref: str,
         question: str,
         room_id: str = "",
+        scope_kind: str = "verse",
     ) -> list[RetrievedChunk]:
         chunks: list[RetrievedChunk] = []
         seen_ids: set[str] = set()
         topic_mode = _is_topic_mode(question)
 
-        # 1. The focused verse(s) themselves — restrict to the named
-        #    translation so we don't accidentally hand the model Hebrew or
-        #    Arabic chunks for a verse it isn't asked about.
-        focus_text_parts: list[str] = []
-        for t in self.session.scalars(
-            select(Translation).where(
+        # 1. Scope-aware anchor pull. The caller picks a zoom level and
+        #    `verse_ref` is the canonical anchor; we expand to the right
+        #    breadth before keyword search runs in step 3.
+        #      verse     → just the anchor verse (historical behavior)
+        #      chapter   → every verse in BOOK.CHAPTER
+        #      book      → first chapter as a stage-setter; topic-aware
+        #                  step 3 backfills relevant verses from
+        #                  elsewhere in the book
+        #      testament → no scripture anchor (LLM general knowledge)
+        #      bible     → no scripture anchor
+        anchor_stmt = None
+        if scope_kind == "verse" and verse_ref:
+            anchor_stmt = select(Translation).where(
                 Translation.verse_id == verse_ref,
                 Translation.name == self.translation_name,
             )
-        ):
-            cid = f"trans:{t.id}"
-            chunks.append(
-                RetrievedChunk(
-                    citation_id=cid,
-                    text=t.text,
-                    source_kind="translation",
-                    verse_refs=[verse_ref],
-                    license=t.license,
+        elif scope_kind == "chapter":
+            parts = verse_ref.split(".")
+            if len(parts) >= 2:
+                book, ch = parts[0], parts[1]
+                anchor_stmt = select(Translation).where(
+                    Translation.name == self.translation_name,
+                    Translation.verse_id.like(f"{book}.{ch}.%"),
                 )
+        elif scope_kind == "book":
+            parts = verse_ref.split(".")
+            if parts and parts[0]:
+                book = parts[0]
+                anchor_stmt = select(Translation).where(
+                    Translation.name == self.translation_name,
+                    Translation.verse_id.like(f"{book}.1.%"),
+                )
+        # scope_kind in {testament, bible} → leave anchor_stmt None; rely
+        # on the LLM's general knowledge plus the framed question.
+
+        focus_text_parts: list[str] = []
+        if anchor_stmt is not None:
+            for t in self.session.scalars(anchor_stmt):
+                cid = f"trans:{t.id}"
+                if cid in seen_ids:
+                    continue
+                chunks.append(
+                    RetrievedChunk(
+                        citation_id=cid,
+                        text=t.text,
+                        source_kind="translation",
+                        verse_refs=[t.verse_id],
+                        license=t.license,
+                    )
+                )
+                seen_ids.add(cid)
+                focus_text_parts.append(t.text)
+
+        # 1b. Original-language row for the anchor verse(s) at verse
+        #     scope. Hebrew for OT books, Greek for NT — the seed
+        #     script populates the right one per `verse_id`. We pull
+        #     both names and let the DB return whichever exists.
+        #     Skipped at wider scopes so the context window isn't
+        #     flooded with parallel-language rows.
+        if scope_kind == "verse" and verse_ref:
+            orig_stmt = select(Translation).where(
+                Translation.verse_id == verse_ref,
+                Translation.name.in_(("Hebrew (WLC)", "Greek (TR)")),
             )
-            seen_ids.add(cid)
-            focus_text_parts.append(t.text)
+            for t in self.session.scalars(orig_stmt):
+                cid = f"trans:{t.id}"
+                if cid in seen_ids:
+                    continue
+                chunks.append(
+                    RetrievedChunk(
+                        citation_id=cid,
+                        text=t.text,
+                        source_kind="original_language",
+                        verse_refs=[t.verse_id],
+                        license=t.license,
+                    )
+                )
+                seen_ids.add(cid)
 
         # 2. Cross-references for the focused verse (CLAUDE.md §7.4).
         # Skip in topic-mode — xrefs are focus-specific and would crowd
-        # out topical results.
-        if self.xref_limit > 0 and not topic_mode:
+        # out topical results. Also skip at non-verse zoom levels — at
+        # chapter / book / wider scopes the anchor is already broad,
+        # and xrefs would dominate the context window.
+        if (
+            self.xref_limit > 0
+            and not topic_mode
+            and scope_kind == "verse"
+        ):
             xref_stmt = (
                 select(CrossReference.to_verse_id)
                 .where(CrossReference.from_verse_id == verse_ref)
@@ -305,17 +390,56 @@ class SqlRetriever:
         # are dropped entirely.
         question_keywords = _extract_keywords(question, limit=6 if topic_mode else 5)
         focus_keywords: list[str] = []
-        if not topic_mode:
+        # At testament + bible scope the focused verse is just the cursor
+        # position, not the topic — including its keywords pulls the
+        # ranking back toward that book and steals slots from real
+        # topic hits ("Tell me about love" while cursor=GEN.1.1 would
+        # otherwise rank verses with "beginning/created/heaven" above
+        # actual love verses). Topic-mode already drops these, but
+        # plain wide-scope questions need the same treatment.
+        wide_scope = scope_kind in ("testament", "bible")
+        if not topic_mode and not wide_scope:
             focus_keywords = [
                 kw for kw in _extract_keywords(" ".join(focus_text_parts), limit=4)
                 if kw not in question_keywords
             ]
         all_keywords = [*question_keywords, *focus_keywords]
-        # Bump the result cap in topic-mode — broad questions warrant more
-        # candidates so a verse mentioning the topic alone can still score.
-        result_limit = (
-            int(self.related_limit * 1.5) if topic_mode else self.related_limit
-        )
+        # Result cap selection.
+        #  • Default narrow ask         → `related_limit`
+        #  • Wide-scope conversation    → 1.5× (room for cross-book hits)
+        #  • Topic / word search        → 4× (the user wants a list, not
+        #    a paragraph; 40-50 verses is the right ballpark for "list
+        #    all verses about hate")
+        if topic_mode:
+            result_limit = max(40, self.related_limit * 4)
+        elif wide_scope:
+            result_limit = int(self.related_limit * 1.5)
+        else:
+            result_limit = self.related_limit
+        # Scope-aware keyword search. The anchor pull (step 1) covers
+        # the user's intended center; the keyword search backfills
+        # topic-relevant verses from within the scope. Earlier this
+        # was off at book/testament/bible — the model then hallucinated
+        # sources (e.g. fake "Genesis 1 + 2 Kings 1:4" for a Bible-wide
+        # "talks about love" prompt). Always run, but restrict the
+        # SEARCH WINDOW to match the scope.
+        keyword_book_codes: list[str] = []
+        keyword_book_like: str | None = None
+        if scope_kind == "chapter" or scope_kind == "book":
+            # Same book the user is reading.
+            parts = verse_ref.split(".")
+            if parts and parts[0]:
+                keyword_book_like = parts[0]
+        elif scope_kind == "testament":
+            # Old or New, based on the anchor book the frontend sent
+            # (GEN.1.1 for OT, MAT.1.1 for NT — see Workspace.ask).
+            parts = verse_ref.split(".")
+            anchor_book = parts[0] if parts else ""
+            keyword_book_codes = (
+                _NT_BOOK_CODES if anchor_book in _NT_BOOK_CODES else _OT_BOOK_CODES
+            )
+        # scope_kind in {"verse", "bible"} → no book filter; search the
+        # whole KJV. Bible scope NEEDS this — there's no anchor.
         if all_keywords:
             lowered = func.lower(Translation.text)
             conditions = [lowered.like(f"%{kw}%") for kw in all_keywords]
@@ -329,18 +453,59 @@ class SqlRetriever:
             score = score_terms[0]
             for term in score_terms[1:]:
                 score = score + term
+            where_clauses = [
+                Translation.name == self.translation_name,
+                or_(*conditions),
+            ]
+            if keyword_book_like:
+                where_clauses.append(
+                    Translation.verse_id.like(f"{keyword_book_like}.%")
+                )
+            elif keyword_book_codes:
+                # Testament — match any verse whose book code is in
+                # the testament's list. Use OR of LIKEs because SQLite
+                # has no array type; the book codes are short and
+                # finite (~39/27), so the OR fans out cheaply.
+                book_likes = [
+                    Translation.verse_id.like(f"{code}.%")
+                    for code in keyword_book_codes
+                ]
+                where_clauses.append(or_(*book_likes))
+            # At verse / bible scope no book filter is applied —
+            # the search runs across the whole KJV.
+            # Bible scope is the worst case for ties: a one-keyword
+            # query ("hate", "love") gives every hit the same +3 score,
+            # so a vanilla `ORDER BY score DESC` lets the canonical book
+            # order win — all results come from Genesis and the user
+            # never sees Psalm 97:10 or 1 John 4:8. Over-fetch wider at
+            # wide scope and cap per-book so coverage spreads across
+            # the canon.
+            wide_overfetch = 8 if wide_scope else 2
             stmt = (
                 select(Translation, score.label("score"))
-                .where(
-                    Translation.name == self.translation_name,
-                    or_(*conditions),
-                )
+                .where(*where_clauses)
                 .order_by(score.desc())
-                .limit(result_limit * 2)  # over-fetch, dedupe below
+                .limit(result_limit * wide_overfetch)
             )
+            # Per-book cap: tighter for chat-style turns so a "love"
+            # answer pulls from across the canon; looser for topic
+            # searches so Psalms (which dominates love verses) gets
+            # fair coverage without monopolizing the list.
+            if topic_mode:
+                per_book_cap = 6
+            elif wide_scope:
+                per_book_cap = 2
+            else:
+                per_book_cap = result_limit
+            book_counts: dict[str, int] = {}
             for t, _score in self.session.execute(stmt):
                 cid = f"trans:{t.id}"
                 if cid in seen_ids:
+                    continue
+                # Verse ids are `BOOK.CH.V`; the prefix up to the first
+                # dot is the OSIS book code.
+                book = t.verse_id.split(".", 1)[0]
+                if book_counts.get(book, 0) >= per_book_cap:
                     continue
                 chunks.append(
                     RetrievedChunk(
@@ -352,6 +517,7 @@ class SqlRetriever:
                     )
                 )
                 seen_ids.add(cid)
+                book_counts[book] = book_counts.get(book, 0) + 1
                 if (len(chunks) - 1) >= result_limit:
                     break
 
@@ -407,7 +573,12 @@ class PlaceholderGenerator:
         retrieval: list[RetrievedChunk],
         history=None,
         bypass: bool = False,
+        scope_kind: str = "verse",
     ):
+        # scope_kind is accepted for protocol compatibility but the
+        # placeholder doesn't tailor its output by scope — that's a
+        # job for the real generator.
+        del scope_kind
         reasoning = (
             f"Considering {verse_ref} in light of {len(retrieval)} retrieved "
             "source(s). No reasoning model is wired yet (CLAUDE.md §8 TODO)."

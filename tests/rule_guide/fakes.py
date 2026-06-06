@@ -20,6 +20,7 @@ class FakeRetriever:
         verse_ref: str,
         question: str,
         room_id: str = "",
+        scope_kind: str = "verse",
     ) -> list[RetrievedChunk]:
         return list(self.chunks)
 
@@ -37,6 +38,7 @@ class FakeGenerator:
         retrieval: list[RetrievedChunk],
         history=None,
         bypass: bool = False,
+        scope_kind: str = "verse",
     ):
         return self.reasoning, self.answer, list(self.statements), None
 

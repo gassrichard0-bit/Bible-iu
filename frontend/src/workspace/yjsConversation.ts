@@ -68,9 +68,29 @@ function buildHandle(handle: string, roomId: string) {
     doc,
     turns,
     cleanup: () => {
-      provider.destroy();
-      persistence.destroy();
-      doc.destroy();
+      // Wait for IndexedDB to flush any pending writes before tearing
+      // the doc down. Without this, a quick close-then-reopen (tab
+      // switch, agent toggle, etc.) can truncate the last few
+      // conversation updates and the agent appears to "forget" the
+      // thread. `whenSynced` resolves once initial load + any pending
+      // writes have settled.
+      const flushAndDestroy = async () => {
+        try {
+          await persistence.whenSynced;
+        } catch {
+          // ignore — best-effort flush
+        }
+        try {
+          provider.destroy();
+        } catch {}
+        try {
+          persistence.destroy();
+        } catch {}
+        try {
+          doc.destroy();
+        } catch {}
+      };
+      void flushAndDestroy();
     },
   };
 }
@@ -102,6 +122,9 @@ function snapshot(turns: Y.Array<Y.Map<unknown>>): ConversationTurn[] {
       id: (m.get("id") as string) ?? `t-${i}`,
       question: (m.get("question") as string) ?? "",
       verse_ref: (m.get("verse_ref") as string) ?? "",
+      scope_label: (m.get("scope_label") as string) || undefined,
+      scope_kind:
+        (m.get("scope_kind") as ConversationTurn["scope_kind"]) || undefined,
       reasoning: (m.get("reasoning") as string) ?? "",
       rawCot: (m.get("rawCot") as string) ?? "",
       stages,
@@ -120,6 +143,10 @@ export interface ConversationApi {
   add: (t: ConversationTurn) => string;
   /** Mutate fields on an existing turn by id. Yjs handles CRDT merge. */
   update: (id: string, patch: Partial<ConversationTurn>) => void;
+  /** Wipe every turn — used by the `/new` slash command. The Yjs
+   *  delete is broadcast to other tabs/devices syncing the same
+   *  conversation doc, so the reset is consistent everywhere. */
+  clear: () => void;
 }
 
 
@@ -146,6 +173,8 @@ export function useYjsConversation(
       m.set("id", t.id);
       m.set("question", t.question);
       m.set("verse_ref", t.verse_ref);
+      if (t.scope_label) m.set("scope_label", t.scope_label);
+      if (t.scope_kind) m.set("scope_kind", t.scope_kind);
       m.set("reasoning", t.reasoning);
       m.set("rawCot", t.rawCot);
       m.set("stages", JSON.stringify(t.stages ?? []));
@@ -176,6 +205,11 @@ export function useYjsConversation(
           if (patch.error !== undefined) m.set("error", patch.error || "");
           return;
         }
+      });
+    },
+    clear: () => {
+      ref.doc.transact(() => {
+        if (ref.turns.length > 0) ref.turns.delete(0, ref.turns.length);
       });
     },
   };

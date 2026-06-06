@@ -4,14 +4,32 @@
 
 /* Workspace shell — VS Code-feel scrollbars and panel grips. */
 @layer base {
+  /* Use the small/dynamic viewport units so the mobile browser chrome
+     (URL bar) collapsing in/out doesn't cause a jumpy layout. `100dvh`
+     follows the visible viewport in real time; `100svh` is the
+     conservative fallback when the viewport shrinks. `100%` is the
+     last-resort fallback for browsers without either. */
   html,
   body,
   #root {
     height: 100%;
+    height: 100svh;
+    height: 100dvh;
   }
   body {
     font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
       "Helvetica Neue", Arial, sans-serif;
+    /* Suppress the iOS gray tap-highlight on every interactive
+       element — focus-visible already handles keyboard a11y, and the
+       gray block flashing during taps reads as buggy. */
+    -webkit-tap-highlight-color: transparent;
+    /* Prevent rubber-band overscroll from pulling the whole page when
+       scrolling inside a panel — keeps fixed UI (header, composer)
+       pinned where they belong. */
+    overscroll-behavior-y: none;
+    /* Honor user's text-size preferences when their OS scales fonts. */
+    text-size-adjust: 100%;
+    -webkit-text-size-adjust: 100%;
   }
 
   /* iOS Safari auto-zooms any editable surface whose font-size is
@@ -26,6 +44,37 @@
     select,
     [contenteditable="true"] {
       font-size: 16px;
+    }
+  }
+
+  /* Keyboard-only focus ring on every interactive element — used to
+     not exist on the glass pills, swatches, admin buttons, etc.
+     `:focus-visible` (not `:focus`) keeps the ring hidden on mouse
+     taps, so we don't get the ring popping up after every click.
+     Each component can override via its own `focus-visible:` classes
+     for a tighter ring on, e.g., dark backgrounds. */
+  :focus { outline: none; }
+  :focus-visible {
+    outline: 2px solid rgb(23 23 23 / 0.85);
+    outline-offset: 2px;
+    border-radius: 6px;
+  }
+  .dark :focus-visible {
+    outline-color: rgb(245 245 245 / 0.85);
+  }
+
+  /* Respect prefers-reduced-motion — kill non-essential animation +
+     transitions. The user-CSS for this is bog-standard; sites that
+     skip it are the ones that make vestibular-disorder users sick.
+     We still allow micro-transitions (≤ 200ms) for tap feedback
+     because removing those makes the UI feel broken, but anything
+     longer collapses to zero. */
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.001ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.001ms !important;
+      scroll-behavior: auto !important;
     }
   }
 }

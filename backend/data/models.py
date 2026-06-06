@@ -59,6 +59,10 @@ class User(Base, TimestampMixin):
     handle: Mapped[str] = mapped_column(String, unique=True, index=True)
     display_name: Mapped[str] = mapped_column(String)
     avatar_url: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # Cache-bust token for the self-uploaded avatar served at
+    # `/auth/users/{id}/image`. Null means "no upload — render the
+    # external `avatar_url` (if any) or the gradient/initials fallback".
+    avatar_image_token: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     auth_provider: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     auth_subject: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     # Argon2 hash for local auth. Null when auth_provider != 'local'.
@@ -73,6 +77,33 @@ class User(Base, TimestampMixin):
     phone_verified_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime, nullable=True
     )
+
+
+class ReadingPlanEnrollment(Base, TimestampMixin):
+    """User opted into one of the hard-coded reading plans (defined
+    in `backend.api.reading_plans`). One row per (user, plan) — only
+    one active enrollment per plan per user, but a user can be on
+    multiple plans simultaneously."""
+    __tablename__ = "reading_plan_enrollments"
+    __table_args__ = (UniqueConstraint("user_id", "plan_id"),)
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    plan_id: Mapped[str] = mapped_column(String, index=True)
+    # The user's day-1 of the plan. The current day is derived from
+    # `(today - started_at).days + 1`, capped at plan length.
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+
+
+class ReadingPlanProgress(Base, TimestampMixin):
+    """Check-off log. One row per (user, plan, day_index) the moment
+    the user marks that day complete. Whether they skipped or fell
+    behind is derived from absence of rows."""
+    __tablename__ = "reading_plan_progress"
+    __table_args__ = (UniqueConstraint("user_id", "plan_id", "day_index"),)
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    plan_id: Mapped[str] = mapped_column(String, index=True)
+    day_index: Mapped[int] = mapped_column()
 
 
 class Annotation(Base, TimestampMixin):
@@ -92,6 +123,29 @@ class Annotation(Base, TimestampMixin):
     color: Mapped[str] = mapped_column(String)
 
 
+class RegisteredGroupNote(Base, TimestampMixin):
+    """Server-side registry of note IDs that are in a room's SHARED
+    Y.Doc (i.e. group-scope). Likes + comments only accept note IDs
+    that appear here.
+
+    Personal notes never get registered — they live in per-user
+    private Y.Docs that no one else can subscribe to, so their UUIDs
+    are never legitimately exposed. If a personal note's UUID DOES
+    leak (devtools, a frontend bug), the social endpoints still
+    refuse it because there's no row here for it.
+
+    Author is recorded so we can ignore registrations from anyone who
+    isn't the actual note author (a member can't fake-register
+    someone else's personal note as a group note).
+    """
+    __tablename__ = "registered_group_notes"
+    note_id: Mapped[str] = mapped_column(String, primary_key=True)
+    room_id: Mapped[str] = mapped_column(ForeignKey("rooms.id"), index=True)
+    author_user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id"), index=True
+    )
+
+
 class NoteLike(Base, TimestampMixin):
     """One heart per (note, user). Only group-scope notes are exposed in
     the UI for likes — personal notes never leave the author's view
@@ -108,11 +162,17 @@ class NoteLike(Base, TimestampMixin):
 class NoteComment(Base, TimestampMixin):
     """Flat comments on a group note. Threading isn't supported by
     design — the spec leans toward humility, not Reddit-style debate
-    trees. Authors can delete their own comments."""
+    trees. Authors can delete their own comments.
+
+    `author_user_id` is nullable so account deletion can tombstone
+    comments (body stays for group history; the author becomes
+    "deleted user" in the UI)."""
     __tablename__ = "note_comments"
     id: Mapped[str] = mapped_column(String, primary_key=True)
     note_id: Mapped[str] = mapped_column(String, index=True)
-    author_user_id: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    author_user_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("users.id"), nullable=True
+    )
     room_id: Mapped[str] = mapped_column(ForeignKey("rooms.id"), index=True)
     body: Mapped[str] = mapped_column(Text)
 
@@ -176,6 +236,20 @@ class Room(Base, TimestampMixin):
     type: Mapped[str] = mapped_column(String)  # 'group' | 'direct'
     name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     scripture_context: Mapped[dict] = mapped_column(JSON, default=dict)
+    # Per-room agent + safety controls — set by admins via
+    # PATCH /rooms/{id}/agent_settings. Defaults are restrictive so a
+    # fresh room is safe out of the box.
+    agent_settings: Mapped[dict] = mapped_column(JSON, default=dict)
+    # Opaque token tied to the room's current avatar. Bumped on every
+    # successful upload so the frontend's `<img>` URL changes and the
+    # browser cache discards the old one. Null means "no avatar set —
+    # show the gradient/initials fallback".
+    image_token: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # Optional accent color picked by an admin. Stored as a palette key
+    # (e.g. "amber", "sky", "rose") — the frontend maps it to actual
+    # CSS variables so a future palette refresh doesn't require a DB
+    # migration. Null = use the auto-derived color from the room id.
+    accent_color: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
 
 class RoomMember(Base, TimestampMixin):
@@ -184,7 +258,18 @@ class RoomMember(Base, TimestampMixin):
     id: Mapped[str] = mapped_column(String, primary_key=True)
     room_id: Mapped[str] = mapped_column(ForeignKey("rooms.id"), index=True)
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
-    role: Mapped[str] = mapped_column(String, default="member")  # TODO(spec)
+    # 'admin' or 'member'. The creator of a room is auto-promoted
+    # to admin on insert (see api/main.py:create_room). Direct (1:1)
+    # rooms keep both participants as 'member' since there's nothing
+    # to administrate.
+    role: Mapped[str] = mapped_column(String, default="member")
+    # Last time this member opened the room and read messages. Used to
+    # derive the `unread_count` returned by GET /rooms. Null = never
+    # opened (the join time effectively becomes the read cutoff via
+    # the COALESCE in the unread-count query in main.py).
+    last_read_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime, nullable=True
+    )
 
 
 class RoomInvite(Base, TimestampMixin):

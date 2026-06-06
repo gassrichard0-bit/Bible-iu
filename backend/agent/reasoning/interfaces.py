@@ -23,6 +23,7 @@ class Retriever(Protocol):
         verse_ref: str,
         question: str,
         room_id: str = "",
+        scope_kind: str = "verse",
     ) -> list[RetrievedChunk]: ...
 
 
@@ -42,8 +43,12 @@ class Generator(Protocol):
         question: str,
         retrieval: list[RetrievedChunk],
         history: list[Any] = ...,  # list[HistoryTurn], avoid circular import
+        scope_kind: str = "verse",
     ) -> tuple[str, str, list[GeneratedStatement]]:
-        """Return (reasoning, answer, statements)."""
+        """Return (reasoning, answer, statements). `scope_kind` tells
+        the implementation what label to put on the prompt — at
+        chapter/book/wider zoom levels, anchoring the prompt to a
+        single VERSE causes the model to ignore the broader context."""
         ...
 
 

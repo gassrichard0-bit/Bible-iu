@@ -21,6 +21,24 @@ class RoomRead(BaseModel):
     type: str
     name: Optional[str]
     scripture_context: dict = Field(default_factory=dict)
+    # Caller's role IN THIS ROOM — populated by GET /rooms and
+    # POST /rooms. Lets the Profile UI flag rooms the user
+    # administrates without a second round-trip.
+    role: Optional[str] = None
+    # When an admin has uploaded a room avatar, this is the URL that
+    # serves it (with a cache-busting query param so the browser
+    # refetches on every re-upload). Null = no avatar set — frontend
+    # falls back to the gradient + initials.
+    image_url: Optional[str] = None
+    # Optional accent color picked by an admin from a fixed palette
+    # (see `ROOM_ACCENT_PALETTE` in main.py). Null = the frontend
+    # auto-derives one from the room id so brand-new rooms still look
+    # distinct out of the box.
+    accent_color: Optional[str] = None
+    # Count of chat messages in this room newer than the caller's
+    # `last_read_at`, authored by someone other than the caller. Drives
+    # the in-app unread badges. Always present; zero when caught up.
+    unread_count: int = 0
 
 
 class ChatMessageCreate(BaseModel):
@@ -35,6 +53,12 @@ class ChatMessageRead(BaseModel):
     author_is_agent: bool
     body: str
     language: Optional[str]
+    # Populated for outbound replies so the UI can render the
+    # author's name without a second lookup. Null when the author
+    # deleted their account; "(deleted user)" rendered in the UI.
+    author_handle: Optional[str] = None
+    author_display_name: Optional[str] = None
+    created_at: Optional[str] = None
 
 
 class NoteCreate(BaseModel):
@@ -131,6 +155,15 @@ class ReasoningRequest(BaseModel):
     # gating and returns raw LLM output. The user opted into this in
     # Settings; the safety invariant no longer holds for that response.
     bypass_citation_engine: bool = False
+    # Caller's current zoom level — drives how much scripture context
+    # the retriever pulls in. `verse` is the historical behavior;
+    # wider scopes expand the lookup:
+    #   verse     → just the anchor verse + its cross-refs
+    #   chapter   → every verse in `BOOK.CHAPTER`
+    #   book      → representative passages from the book
+    #   testament → no retrieval; LLM general knowledge + framing
+    #   bible     → no retrieval; LLM general knowledge + framing
+    scope_kind: Literal["verse", "chapter", "book", "testament", "bible"] = "verse"
 
 
 class CitationOut(BaseModel):

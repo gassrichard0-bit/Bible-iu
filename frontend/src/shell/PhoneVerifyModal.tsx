@@ -17,6 +17,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api, type UserProfile } from "../lib/api";
 import { BottomSheet } from "./BottomSheet";
+import { ActionButton, Pill } from "./SettingsButtons";
 
 interface Props {
   open: boolean;
@@ -161,7 +162,7 @@ export function PhoneVerifyModal({
                   value={phone}
                   onChange={(e) => setPhone(e.target.value)}
                   placeholder="+14155551234"
-                  className="w-full rounded border border-neutral-200 bg-paper px-2 py-1.5 text-sm dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100"
+                  className="w-full rounded-2xl border border-neutral-200 bg-paper px-3.5 py-3 text-[15px] outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-200/40 dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100 dark:focus:border-amber-700 dark:focus:ring-amber-800/40"
                 />
                 <span className="mt-1 block text-[10px] text-neutral-500 dark:text-neutral-400">
                   Include the country code (E.164 — e.g.{" "}
@@ -175,20 +176,15 @@ export function PhoneVerifyModal({
                 </p>
               )}
               <div className="flex items-center justify-end gap-2">
-                <button
-                  type="button"
-                  onClick={onClose}
-                  className="rounded border border-neutral-300 px-2 py-1 text-xs hover:bg-paper-soft dark:border-neutral-700 dark:hover:bg-neutral-800"
-                >
+                <Pill type="button" onClick={onClose}>
                   Cancel
-                </button>
-                <button
+                </Pill>
+                <ActionButton
                   type="submit"
                   disabled={busy || !/^\+[1-9]\d{6,}/.test(phone.trim())}
-                  className="rounded bg-neutral-900 px-3 py-1 text-xs text-white disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900"
                 >
                   {busy ? "Sending…" : "Send code"}
-                </button>
+                </ActionButton>
               </div>
             </form>
           ) : (
@@ -224,7 +220,7 @@ export function PhoneVerifyModal({
                     setCode(e.target.value.replace(/\D/g, "").slice(0, 6))
                   }
                   placeholder="••••••"
-                  className="w-full rounded border border-neutral-200 bg-paper px-2 py-1.5 text-center font-mono text-lg tracking-[0.5em] dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100"
+                  className="w-full rounded-2xl border border-neutral-200 bg-paper px-3.5 py-3 text-center font-mono text-lg tracking-[0.5em] outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-200/40 dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100 dark:focus:border-amber-700 dark:focus:ring-amber-800/40"
                 />
               </label>
               {error && (
@@ -241,20 +237,15 @@ export function PhoneVerifyModal({
                   ← Change number
                 </button>
                 <div className="flex gap-2">
-                  <button
-                    type="button"
-                    onClick={onClose}
-                    className="rounded border border-neutral-300 px-2 py-1 text-xs hover:bg-paper-soft dark:border-neutral-700 dark:hover:bg-neutral-800"
-                  >
+                  <Pill type="button" onClick={onClose}>
                     Cancel
-                  </button>
-                  <button
+                  </Pill>
+                  <ActionButton
                     type="submit"
                     disabled={busy || code.length !== 6}
-                    className="rounded bg-neutral-900 px-3 py-1 text-xs text-white disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900"
                   >
                     {busy ? "Verifying…" : "Verify"}
-                  </button>
+                  </ActionButton>
                 </div>
               </div>
             </form>

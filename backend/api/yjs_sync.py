@@ -94,8 +94,16 @@ async def startup() -> None:
 
 
 async def shutdown() -> None:
+    global _server_ctx
     if _server_ctx is not None:
         await _server_ctx.__aexit__(None, None, None)
+        _server_ctx = None
+
+
+def is_running() -> bool:
+    """Used by /healthz to report whether the CRDT sync server is
+    currently accepting connections."""
+    return _server_ctx is not None
 
 
 def _password_ok(ws: WebSocket) -> bool:
@@ -110,6 +118,19 @@ def _conv_doc_owner(doc_name: str) -> str | None:
     None for non-conversation docs (which are shared room-scope)."""
     if doc_name.startswith("conv__"):
         rest = doc_name[len("conv__"):]
+        sep = rest.find("__")
+        if sep > 0:
+            return rest[:sep]
+    return None
+
+
+def _personal_notes_doc_owner(doc_name: str) -> str | None:
+    """Per-user personal-notes Y.Doc — `notes_private__{userId}__{roomId}`.
+    The user's stable id (not handle) is in the name so renaming a user
+    doesn't orphan their notes. Returns the user_id if this is such a
+    doc, None for shared docs."""
+    if doc_name.startswith("notes_private__"):
+        rest = doc_name[len("notes_private__"):]
         sep = rest.find("__")
         if sep > 0:
             return rest[:sep]
@@ -133,14 +154,26 @@ async def handle_yjs(ws: WebSocket, room_id: str) -> None:
         await ws.close(code=4001, reason="Unauthorized")
         return
 
-    owner = _conv_doc_owner(room_id)
-    if owner is not None:
+    # Two kinds of per-user doc are gated here:
+    #   conv__{handle}__{roomId}            — agent conversation history
+    #   notes_private__{userId}__{roomId}   — personal notes (NEW)
+    # Both require a session token that proves the user is the doc owner,
+    # so even if an attacker guesses the doc name they can't connect.
+    conv_owner = _conv_doc_owner(room_id)
+    notes_owner_id = _personal_notes_doc_owner(room_id)
+    if conv_owner is not None or notes_owner_id is not None:
         # Local import to avoid a circular import at module load time.
         from .auth_users import resolve_user
 
         token = ws.query_params.get("session", "")
         user = resolve_user(token) if token else None
-        if user is None or user.handle != owner:
+        if user is None:
+            await ws.close(code=4001, reason="Wrong user for doc")
+            return
+        if conv_owner is not None and user.handle != conv_owner:
+            await ws.close(code=4001, reason="Wrong user for doc")
+            return
+        if notes_owner_id is not None and user.id != notes_owner_id:
             await ws.close(code=4001, reason="Wrong user for doc")
             return
 

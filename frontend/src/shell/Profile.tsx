@@ -7,10 +7,16 @@
  * preferences (default translation, note scope). Change password and
  * delete account live here too.
  */
-import { useEffect, useState } from "react";
-import { api, type UserProfile } from "../lib/api";
+import { useEffect, useRef, useState } from "react";
+import {
+  api,
+  getPassword,
+  getSessionToken,
+  type UserProfile,
+} from "../lib/api";
 import { PhoneVerifyModal } from "./PhoneVerifyModal";
 import { BackupCodesSection } from "./BackupCodes";
+import { ActionButton, Pill } from "./SettingsButtons";
 
 interface Props {
   /** Called when the profile is reloaded so callers can pick up new
@@ -95,6 +101,53 @@ function ProfileForm({
   const [languages, setLanguages] = useState((profile.languages || []).join(", "));
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  const [photoBusy, setPhotoBusy] = useState(false);
+  const [photoError, setPhotoError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  async function uploadPhoto(file: File) {
+    if (photoBusy) return;
+    if (file.size > 20 * 1024 * 1024) {
+      setPhotoError(
+        `Image is ${(file.size / (1024 * 1024)).toFixed(1)}MB — must be under 20MB.`,
+      );
+      return;
+    }
+    if (!file.type.startsWith("image/")) {
+      setPhotoError("That file isn't an image.");
+      return;
+    }
+    setPhotoBusy(true);
+    setPhotoError(null);
+    try {
+      const { avatar_url } = await api.authImageUpload(file);
+      setAvatarUrl(avatar_url ?? "");
+      // Reload the canonical profile so the parent state sees the new URL.
+      const fresh = await api.authMe();
+      onSaved(fresh);
+    } catch (e) {
+      setPhotoError((e as Error).message);
+    } finally {
+      setPhotoBusy(false);
+    }
+  }
+
+  async function clearPhoto() {
+    if (photoBusy) return;
+    if (!confirm("Remove your profile photo?")) return;
+    setPhotoBusy(true);
+    setPhotoError(null);
+    try {
+      const { avatar_url } = await api.authImageDelete();
+      setAvatarUrl(avatar_url ?? "");
+      const fresh = await api.authMe();
+      onSaved(fresh);
+    } catch (e) {
+      setPhotoError((e as Error).message);
+    } finally {
+      setPhotoBusy(false);
+    }
+  }
   const dirty =
     displayName !== profile.display_name ||
     avatarUrl !== (profile.avatar_url ?? "") ||
@@ -125,28 +178,74 @@ function ProfileForm({
   return (
     <Section title="Profile">
       <div className="border-b border-neutral-200 px-3 py-3 dark:border-neutral-800">
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/*"
+          className="hidden"
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (f) void uploadPhoto(f);
+            e.target.value = "";
+          }}
+        />
         <div className="mb-3 flex items-center gap-3">
-          <Avatar handle={profile.handle} url={avatarUrl} size={48} />
-          <div>
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={photoBusy}
+            className="group relative shrink-0 rounded-full focus:outline-none focus:ring-2 focus:ring-amber-400 disabled:opacity-60"
+            title={avatarUrl ? "Change profile photo" : "Upload profile photo"}
+            aria-label={avatarUrl ? "Change profile photo" : "Upload profile photo"}
+          >
+            <Avatar handle={profile.handle} url={avatarUrl} size={72} />
+            <span className="absolute -bottom-0.5 -right-0.5 grid h-6 w-6 place-items-center rounded-full border border-white bg-neutral-900 text-[12px] text-white shadow dark:border-neutral-900 dark:bg-neutral-100 dark:text-neutral-900">
+              {photoBusy ? "…" : "✎"}
+            </span>
+          </button>
+          <div className="min-w-0 flex-1">
             <div className="text-sm font-medium">@{profile.handle}</div>
-            <div className="text-[11px] text-neutral-500 dark:text-neutral-400">
-              Handle is permanent — pick a display name to change how it appears.
+            <div className="mt-1 flex flex-wrap gap-1.5">
+              <Pill
+                type="button"
+                disabled={photoBusy}
+                onClick={() => fileInputRef.current?.click()}
+              >
+                {photoBusy
+                  ? "Uploading…"
+                  : avatarUrl
+                    ? "Change photo"
+                    : "Upload photo"}
+              </Pill>
+              {avatarUrl && (
+                <Pill
+                  type="button"
+                  variant="destructive"
+                  disabled={photoBusy}
+                  onClick={() => void clearPhoto()}
+                >
+                  Remove
+                </Pill>
+              )}
+            </div>
+            <div className="mt-1 text-[10px] text-neutral-500 dark:text-neutral-400">
+              Tap the avatar or "Change photo" — any image, under 20MB.
             </div>
           </div>
         </div>
+        {photoError && (
+          <p
+            role="alert"
+            className="mb-2 rounded border border-red-200 bg-red-50 px-2 py-1.5 text-[12px] text-red-700 dark:border-red-900/50 dark:bg-red-950/40 dark:text-red-300"
+          >
+            {photoError}
+          </p>
+        )}
         <Field label="Display name">
           <input
             value={displayName}
             onChange={(e) => setDisplayName(e.target.value)}
-            className="w-full rounded border border-neutral-200 bg-paper px-2 py-1.5 text-sm dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100"
-          />
-        </Field>
-        <Field label="Avatar URL (optional)">
-          <input
-            value={avatarUrl}
-            onChange={(e) => setAvatarUrl(e.target.value)}
-            placeholder="https://…"
-            className="w-full rounded border border-neutral-200 bg-paper px-2 py-1.5 text-sm dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100"
+            className="w-full rounded-2xl border border-neutral-200 bg-paper px-3 py-2.5 text-[15px] outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-200/40 dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100 dark:focus:border-amber-700 dark:focus:ring-amber-800/40"
           />
         </Field>
         <Field label="Languages (comma-separated)">
@@ -154,23 +253,22 @@ function ProfileForm({
             value={languages}
             onChange={(e) => setLanguages(e.target.value)}
             placeholder="en, es"
-            className="w-full rounded border border-neutral-200 bg-paper px-2 py-1.5 text-sm dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100"
+            className="w-full rounded-2xl border border-neutral-200 bg-paper px-3 py-2.5 text-[15px] outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-200/40 dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100 dark:focus:border-amber-700 dark:focus:ring-amber-800/40"
           />
           <p className="mt-1 text-[10px] text-neutral-500 dark:text-neutral-400">
             Drives multilingual replies (rule-guide.MD §11).
           </p>
         </Field>
-        <div className="mt-2 flex items-center justify-between">
+        <div className="mt-3 flex items-center justify-between gap-3">
           <span className="text-[11px] text-neutral-500 dark:text-neutral-400">
             {msg ?? ""}
           </span>
-          <button
+          <ActionButton
             onClick={save}
             disabled={!dirty || busy}
-            className="rounded bg-neutral-900 px-3 py-1 text-xs text-white disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900"
           >
-            {busy ? "…" : "Save profile"}
-          </button>
+            {busy ? "Saving…" : "Save profile"}
+          </ActionButton>
         </div>
       </div>
     </Section>
@@ -227,35 +325,24 @@ function PhoneForm({
                 if you've shared it in your profile.
               </div>
             </div>
-            <div className="flex shrink-0 gap-1">
-              <button
-                onClick={() => setOpen(true)}
-                disabled={busy}
-                className="rounded border border-neutral-300 px-2 py-1 text-xs hover:bg-paper-soft dark:border-neutral-700 dark:hover:bg-neutral-800"
-              >
+            <div className="flex shrink-0 gap-1.5">
+              <Pill onClick={() => setOpen(true)} disabled={busy}>
                 Replace
-              </button>
-              <button
-                onClick={remove}
-                disabled={busy}
-                className="rounded border border-red-300 px-2 py-1 text-xs text-red-700 hover:bg-red-50 dark:border-red-700 dark:text-red-300 dark:hover:bg-red-900/40"
-              >
+              </Pill>
+              <Pill variant="destructive" onClick={remove} disabled={busy}>
                 Remove
-              </button>
+              </Pill>
             </div>
           </div>
         ) : (
           <div className="flex items-center justify-between gap-3">
             <div className="text-xs text-neutral-600 dark:text-neutral-300">
               No phone on file. Add one to enable phone-based recovery
-              and let friends in your rooms reach you.
+              and let friends in your groups reach you.
             </div>
-            <button
-              onClick={() => setOpen(true)}
-              className="shrink-0 rounded bg-neutral-900 px-3 py-1 text-xs text-white dark:bg-neutral-100 dark:text-neutral-900"
-            >
+            <Pill variant="primary" onClick={() => setOpen(true)} className="shrink-0">
               Add phone
-            </button>
+            </Pill>
           </div>
         )}
         {msg && (
@@ -319,7 +406,7 @@ function PreferencesForm({
           <select
             value={defaultTranslation}
             onChange={(e) => setDefaultTranslation(e.target.value)}
-            className="w-full rounded border border-neutral-200 bg-paper px-2 py-1.5 text-sm dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100"
+            className="w-full rounded-2xl border border-neutral-200 bg-paper px-3 py-2.5 text-[15px] outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-200/40 dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100 dark:focus:border-amber-700 dark:focus:ring-amber-800/40"
           >
             <option>King James Version</option>
             <option>Hebrew (WLC)</option>
@@ -333,23 +420,19 @@ function PreferencesForm({
             onChange={(e) =>
               setDefaultScope(e.target.value as "personal" | "group")
             }
-            className="w-full rounded border border-neutral-200 bg-paper px-2 py-1.5 text-sm dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100"
+            className="w-full rounded-2xl border border-neutral-200 bg-paper px-3 py-2.5 text-[15px] outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-200/40 dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100 dark:focus:border-amber-700 dark:focus:ring-amber-800/40"
           >
             <option value="personal">Personal (private, agent invisible)</option>
             <option value="group">Group (shared, agent oversight)</option>
           </select>
         </Field>
-        <div className="mt-2 flex items-center justify-between">
+        <div className="mt-3 flex items-center justify-between gap-3">
           <span className="text-[11px] text-neutral-500 dark:text-neutral-400">
             {msg ?? ""}
           </span>
-          <button
-            onClick={save}
-            disabled={busy}
-            className="rounded bg-neutral-900 px-3 py-1 text-xs text-white disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900"
-          >
-            {busy ? "…" : "Save preferences"}
-          </button>
+          <ActionButton onClick={save} disabled={busy}>
+            {busy ? "Saving…" : "Save preferences"}
+          </ActionButton>
         </div>
       </div>
     </Section>
@@ -391,12 +474,7 @@ function PasswordForm() {
     <Section title="Password">
       <div className="border-b border-neutral-200 px-3 py-3 dark:border-neutral-800">
         {!open ? (
-          <button
-            onClick={() => setOpen(true)}
-            className="rounded border border-neutral-300 px-2 py-1 text-xs hover:bg-paper-soft dark:border-neutral-700 dark:hover:bg-neutral-800"
-          >
-            Change password
-          </button>
+          <Pill onClick={() => setOpen(true)}>Change password</Pill>
         ) : (
           <>
             <Field label="Current password">
@@ -404,7 +482,7 @@ function PasswordForm() {
                 type="password"
                 value={current}
                 onChange={(e) => setCurrent(e.target.value)}
-                className="w-full rounded border border-neutral-200 bg-paper px-2 py-1.5 text-sm dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100"
+                className="w-full rounded-2xl border border-neutral-200 bg-paper px-3 py-2.5 text-[15px] outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-200/40 dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100 dark:focus:border-amber-700 dark:focus:ring-amber-800/40"
               />
             </Field>
             <Field label="New password (8+ chars)">
@@ -412,7 +490,7 @@ function PasswordForm() {
                 type="password"
                 value={next}
                 onChange={(e) => setNext(e.target.value)}
-                className="w-full rounded border border-neutral-200 bg-paper px-2 py-1.5 text-sm dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100"
+                className="w-full rounded-2xl border border-neutral-200 bg-paper px-3 py-2.5 text-[15px] outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-200/40 dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100 dark:focus:border-amber-700 dark:focus:ring-amber-800/40"
               />
             </Field>
             <div className="mt-2 flex items-center justify-between">
@@ -420,23 +498,22 @@ function PasswordForm() {
                 {msg ?? ""}
               </span>
               <div className="flex gap-2">
-                <button
+                <Pill
                   onClick={() => {
                     setOpen(false);
                     setCurrent("");
                     setNext("");
                   }}
-                  className="rounded border border-neutral-300 px-2 py-1 text-xs hover:bg-paper-soft dark:border-neutral-700 dark:hover:bg-neutral-800"
                 >
                   Cancel
-                </button>
-                <button
+                </Pill>
+                <Pill
+                  variant="primary"
                   onClick={save}
                   disabled={busy || !current || next.length < 8}
-                  className="rounded bg-neutral-900 px-3 py-1 text-xs text-white disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900"
                 >
-                  {busy ? "…" : "Change"}
-                </button>
+                  {busy ? "Saving…" : "Change"}
+                </Pill>
               </div>
             </div>
           </>
@@ -458,27 +535,23 @@ function DangerSection({ onDeleted }: { onDeleted: () => void }) {
     <Section title="Danger zone">
       <div className="px-3 py-3">
         {!confirming ? (
-          <button
+          <Pill
+            variant="destructive"
             onClick={() => setConfirming(true)}
-            className="rounded border border-red-300 px-2 py-1 text-xs text-red-700 hover:bg-red-50 dark:border-red-700 dark:text-red-300 dark:hover:bg-red-900/40"
           >
             Delete account
-          </button>
+          </Pill>
         ) : (
           <>
-            <p className="mb-2 text-xs text-neutral-700 dark:text-neutral-300">
+            <p className="mb-3 text-xs text-neutral-700 dark:text-neutral-300">
               This will sign you out everywhere and remove your account.
-              Shared (group) notes you wrote in rooms stay — they're owned
-              by the room, not by you.
+              Shared (group) notes you wrote stay — they're owned by the
+              group, not by you.
             </p>
-            <div className="flex gap-2">
-              <button
-                onClick={() => setConfirming(false)}
-                className="rounded border border-neutral-300 px-2 py-1 text-xs hover:bg-paper-soft dark:border-neutral-700 dark:hover:bg-neutral-800"
-              >
-                Keep my account
-              </button>
-              <button
+            <div className="flex flex-wrap gap-2">
+              <Pill onClick={() => setConfirming(false)}>Keep my account</Pill>
+              <ActionButton
+                variant="destructive"
                 onClick={async () => {
                   setBusy(true);
                   try {
@@ -491,10 +564,9 @@ function DangerSection({ onDeleted }: { onDeleted: () => void }) {
                   }
                 }}
                 disabled={busy}
-                className="rounded bg-red-600 px-2 py-1 text-xs text-white disabled:opacity-50 dark:bg-red-700"
               >
-                {busy ? "…" : "Yes, delete forever"}
-              </button>
+                {busy ? "Deleting…" : "Yes, delete forever"}
+              </ActionButton>
             </div>
           </>
         )}
@@ -515,7 +587,7 @@ function Section({
       <h3 className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
         {title}
       </h3>
-      <div className="overflow-hidden rounded border border-neutral-200 dark:border-neutral-800">
+      <div className="overflow-hidden rounded-2xl border border-neutral-200 bg-paper shadow-[0_1px_2px_rgba(0,0,0,0.04),inset_0_1px_0_rgba(255,255,255,0.6)] dark:border-neutral-800 dark:bg-neutral-900 dark:shadow-[0_1px_2px_rgba(0,0,0,0.2),inset_0_1px_0_rgba(255,255,255,0.04)]">
         {children}
       </div>
     </section>
@@ -539,6 +611,29 @@ function Field({
   );
 }
 
+/** Prefix server-relative URLs (anything starting with `/` that
+ *  isn't already `/api/...`) so Vite's dev proxy and the prod SPA
+ *  routing send them to the backend. Also append the deployment
+ *  password + session token in the query string — browser `<img>`
+ *  loaders can't send custom headers, so credentials have to ride
+ *  in the URL for the GET to authenticate. External `https://…`
+ *  URLs and data URIs are returned untouched. */
+function withApiPrefix(path: string): string {
+  if (/^(?:https?:|data:|blob:)/i.test(path)) return path;
+  let base = path;
+  if (!base.startsWith("/api")) {
+    if (base.startsWith("/")) base = `/api${base}`;
+    else return path;
+  }
+  const sep = base.includes("?") ? "&" : "?";
+  const auth: string[] = [];
+  const pw = getPassword();
+  const tok = getSessionToken();
+  if (pw) auth.push(`password=${encodeURIComponent(pw)}`);
+  if (tok) auth.push(`session=${encodeURIComponent(tok)}`);
+  return auth.length ? `${base}${sep}${auth.join("&")}` : base;
+}
+
 export function Avatar({
   handle,
   url,
@@ -551,7 +646,7 @@ export function Avatar({
   if (url && url.trim()) {
     return (
       <img
-        src={url}
+        src={withApiPrefix(url.trim())}
         alt={handle}
         style={{ width: size, height: size }}
         className="rounded-full object-cover"

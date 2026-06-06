@@ -18,9 +18,11 @@ from uuid import uuid4
 
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, File, Header, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse
+from pathlib import Path
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 import secrets
@@ -31,7 +33,11 @@ from ..data.models import (
     Annotation,
     BackupCode,
     Bookmark,
+    ChatMessage,
+    NoteComment,
+    NoteLike,
     PhoneVerification,
+    RegisteredGroupNote,
     Room,
     RoomMember,
     Session as SessionRow,
@@ -172,7 +178,10 @@ def register(
             id=str(uuid4()),
             room_id=welcome.id,
             user_id=user.id,
-            role="owner",
+            # 'admin' is the canonical role since Phase 2 — see
+            # `_require_admin()` in api/main.py. The Welcome room's
+            # creator is the user themselves, so they get admin.
+            role="admin",
         )
     )
     s.commit()
@@ -269,6 +278,103 @@ def patch_me(
     return _user_to_response(user)
 
 
+class AvatarImageOut(BaseModel):
+    avatar_url: Optional[str]
+
+
+@router.post(
+    "/me/image",
+    response_model=AvatarImageOut,
+    dependencies=[Depends(require_password)],
+)
+async def upload_my_avatar(
+    file: UploadFile = File(...),
+    s: Session = Depends(_db_session),
+    x_session_token: Optional[str] = Header(default=None),
+) -> AvatarImageOut:
+    """Authenticated user uploads their own photo. Re-encoded to WebP
+    at ≤384px. The token bump invalidates the browser cache for
+    everyone viewing the user's avatar (e.g. chat author rows)."""
+    user = _resolve_session(s, x_session_token)
+    if user is None:
+        raise HTTPException(401, "not signed in")
+    raw = await file.read()
+    if len(raw) > _USER_IMAGE_MAX_BYTES:
+        raise HTTPException(413, "Image too large (max 20MB).")
+    from io import BytesIO
+    from PIL import Image, UnidentifiedImageError
+    try:
+        with Image.open(BytesIO(raw)) as im:
+            im.load()
+            from PIL.ImageOps import exif_transpose
+            im = exif_transpose(im)
+            im.thumbnail((_USER_IMAGE_MAX_SIDE, _USER_IMAGE_MAX_SIDE))
+            if im.mode not in ("RGB", "RGBA"):
+                im = im.convert("RGB")
+            _USER_UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+            out_path = _user_image_path(user.id)
+            im.save(out_path, format="WEBP", quality=82, method=4)
+    except UnidentifiedImageError:
+        raise HTTPException(415, "Unsupported image format.")
+    user.avatar_image_token = uuid4().hex[:12]
+    s.commit()
+    return AvatarImageOut(avatar_url=_resolved_avatar_url(user))
+
+
+@router.delete(
+    "/me/image",
+    response_model=AvatarImageOut,
+    dependencies=[Depends(require_password)],
+)
+def delete_my_avatar(
+    s: Session = Depends(_db_session),
+    x_session_token: Optional[str] = Header(default=None),
+) -> AvatarImageOut:
+    user = _resolve_session(s, x_session_token)
+    if user is None:
+        raise HTTPException(401, "not signed in")
+    path = _user_image_path(user.id)
+    if path.exists():
+        try:
+            path.unlink()
+        except OSError:
+            pass
+    user.avatar_image_token = None
+    # Also clear the external URL so a "Remove" actually removes the
+    # avatar instead of falling back to a previously-pasted URL the
+    # user may have forgotten was there.
+    user.avatar_url = None
+    s.commit()
+    return AvatarImageOut(avatar_url=_resolved_avatar_url(user))
+
+
+@router.get("/users/{user_id}/image")
+def get_user_avatar(
+    user_id: str,
+    request: Request,
+    s: Session = Depends(_db_session),
+) -> FileResponse:
+    """Avatars are visible to any authenticated user. Browser `<img>`
+    loaders can't send custom headers, so this handler accepts the
+    deployment password + session token via header OR query string
+    (`?password=…&session=…`). Cache-bust via `?v=<token>`."""
+    pw = request.headers.get("X-App-Password") or request.query_params.get("password")
+    expected = os.getenv("BIBLE_IU_PASSWORD") or ""
+    if expected and pw != expected:
+        raise HTTPException(401, "App password required.")
+    token = request.headers.get("X-Session-Token") or request.query_params.get("session")
+    if _resolve_session(s, token) is None:
+        raise HTTPException(401, "not signed in")
+    path = _user_image_path(user_id)
+    if not path.exists():
+        raise HTTPException(404, "No avatar set for this user.")
+    return FileResponse(
+        str(path),
+        media_type="image/webp",
+        headers={"Cache-Control": "private, max-age=86400"},
+    )
+
+
 @router.post(
     "/change-password",
     dependencies=[Depends(require_password)],
@@ -308,21 +414,163 @@ def delete_me(
     s: Session = Depends(_db_session),
     x_session_token: Optional[str] = Header(default=None),
 ) -> dict:
+    """Delete the calling user's account and every byte of their data
+    we can. Group artifacts (chat, comments) are TOMBSTONED — the
+    body stays for room history but the author goes null so the UI
+    shows "deleted user". Rooms where the user is the only admin
+    auto-promote another member; rooms where they're the only
+    member are dropped entirely."""
     user = _resolve_session(s, x_session_token)
     if user is None:
         raise HTTPException(401, "not signed in")
-    # Cascade-delete sessions, then the user row. Notes / conversation
-    # Y.Docs live in the separate ystore database — we leave those for
-    # now (they're orphaned but harmless). A future migration can purge
-    # by handle.
-    sessions = s.scalars(
-        select(SessionRow).where(SessionRow.user_id == user.id)
+
+    user_id = user.id
+    user_handle = user.handle
+
+    # --- ROOM MEMBERSHIP: don't strand any group room ---
+    memberships = s.scalars(
+        select(RoomMember).where(RoomMember.user_id == user_id)
     ).all()
-    for row in sessions:
-        s.delete(row)
+    rooms_to_drop: list[str] = []
+    for mem in memberships:
+        room = s.get(Room, mem.room_id)
+        if room is None or room.type != "group" or mem.role != "admin":
+            continue
+        # Is this user the only admin?
+        other_admins = s.scalars(
+            select(RoomMember).where(
+                RoomMember.room_id == room.id,
+                RoomMember.role == "admin",
+                RoomMember.user_id != user_id,
+            )
+        ).all()
+        if other_admins:
+            continue
+        # Promote the longest-tenured non-admin member, if any.
+        candidate = s.scalar(
+            select(RoomMember)
+            .where(
+                RoomMember.room_id == room.id,
+                RoomMember.user_id != user_id,
+            )
+            .order_by(RoomMember.created_at.asc())
+        )
+        if candidate is None:
+            # User is the only member of this room — drop it.
+            rooms_to_drop.append(room.id)
+        else:
+            candidate.role = "admin"
+
+    # --- HARD DELETE: rows that are only meaningful to the user ---
+    s.query(Bookmark).filter(Bookmark.user_id == user_id).delete(
+        synchronize_session=False
+    )
+    s.query(Annotation).filter(Annotation.user_id == user_id).delete(
+        synchronize_session=False
+    )
+    s.query(BackupCode).filter(BackupCode.user_id == user_id).delete(
+        synchronize_session=False
+    )
+    s.query(PhoneVerification).filter(
+        PhoneVerification.user_id == user_id
+    ).delete(synchronize_session=False)
+    s.query(NoteLike).filter(NoteLike.user_id == user_id).delete(
+        synchronize_session=False
+    )
+    s.query(RegisteredGroupNote).filter(
+        RegisteredGroupNote.author_user_id == user_id
+    ).delete(synchronize_session=False)
+
+    # --- TOMBSTONE: group artifacts stay for history, author goes null ---
+    s.query(NoteComment).filter(NoteComment.author_user_id == user_id).update(
+        {"author_user_id": None}, synchronize_session=False
+    )
+    s.query(ChatMessage).filter(ChatMessage.author_user_id == user_id).update(
+        {"author_user_id": None}, synchronize_session=False
+    )
+
+    # --- MEMBERSHIP + ROOM DROPS ---
+    s.query(RoomMember).filter(RoomMember.user_id == user_id).delete(
+        synchronize_session=False
+    )
+    for room_id in rooms_to_drop:
+        # Cascade by hand: invites, registered notes, comments, likes,
+        # chat — all keyed on room_id. (SQLite FKs alone won't fire
+        # without `PRAGMA foreign_keys=ON`.)
+        s.execute(text("DELETE FROM room_invites WHERE room_id = :r"), {"r": room_id})
+        s.query(RegisteredGroupNote).filter(
+            RegisteredGroupNote.room_id == room_id
+        ).delete(synchronize_session=False)
+        s.query(NoteComment).filter(NoteComment.room_id == room_id).delete(
+            synchronize_session=False
+        )
+        s.query(NoteLike).filter(NoteLike.room_id == room_id).delete(
+            synchronize_session=False
+        )
+        s.query(ChatMessage).filter(ChatMessage.room_id == room_id).delete(
+            synchronize_session=False
+        )
+        s.execute(text("DELETE FROM notes WHERE room_id = :r"), {"r": room_id})
+        s.execute(text("DELETE FROM rooms WHERE id = :r"), {"r": room_id})
+
+    # --- SESSIONS + USER ---
+    s.query(SessionRow).filter(SessionRow.user_id == user_id).delete(
+        synchronize_session=False
+    )
     s.delete(user)
     s.commit()
+
+    # --- YSTORE PURGE: per-user Y.Docs from the websocket store ---
+    _purge_user_ystore(user_id=user_id, user_handle=user_handle)
+
     return {"ok": True}
+
+
+def _purge_user_ystore(user_id: str, user_handle: str) -> None:
+    """Delete every row in the Yjs ystore that belongs to docs only
+    this user could connect to: `notes_private__{user_id}__...` and
+    `conv__{user_handle}__...`. The schema is private to pycrdt so
+    we sniff the candidate table names (matches scripts/scrub_legacy
+    _personal_notes.py). Best-effort — failures here don't undo the
+    SQL deletion above; orphaned bytes aren't a privacy issue (only
+    the deleted user could have read them)."""
+    from pathlib import Path
+    import sqlite3
+
+    store = (
+        Path(__file__).resolve().parent.parent / "data" / "yjs" / "ystore.db"
+    )
+    if not store.is_file():
+        return
+    try:
+        conn = sqlite3.connect(str(store))
+    except sqlite3.Error:
+        return
+    try:
+        target_tables: list[str] = []
+        for candidate in ("yupdates", "ystore_yupdates", "updates"):
+            try:
+                conn.execute(
+                    f"SELECT 1 FROM {candidate} LIMIT 1"
+                )
+                target_tables.append(candidate)
+            except sqlite3.OperationalError:
+                continue
+        personal_prefix = f"notes_private__{user_id}__"
+        conv_prefix = f"conv__{user_handle}__"
+        for table in target_tables:
+            conn.execute(
+                f"DELETE FROM {table} WHERE path LIKE ? OR path LIKE ?",
+                (f"{personal_prefix}%", f"{conv_prefix}%"),
+            )
+        conn.commit()
+    except sqlite3.Error:
+        pass
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 class BackupCodesResponse(BaseModel):
@@ -964,12 +1212,38 @@ def delete_annotations(
     return {"ok": True}
 
 
+# ---------------------------------------------------------------------------
+# Self-uploaded avatar — admin-style flow but scoped to /me.
+# ---------------------------------------------------------------------------
+_USER_UPLOADS_DIR = (
+    Path(os.environ.get("BIBLE_IU_UPLOADS_DIR", ""))
+    if os.environ.get("BIBLE_IU_UPLOADS_DIR")
+    else Path(__file__).resolve().parent.parent / "data" / "uploads"
+) / "users"
+_USER_IMAGE_MAX_BYTES = 20 * 1024 * 1024
+_USER_IMAGE_MAX_SIDE = 384  # px — slightly tighter than rooms; profile photos render small
+
+
+def _user_image_path(user_id: str) -> Path:
+    return _USER_UPLOADS_DIR / f"{user_id}.webp"
+
+
+def _resolved_avatar_url(user: User) -> Optional[str]:
+    """When the user has uploaded their own photo, return the served
+    URL (with cache-bust token). Otherwise return whatever's in
+    `avatar_url` (an externally-hosted URL or null)."""
+    token = getattr(user, "avatar_image_token", None)
+    if token:
+        return f"/auth/users/{user.id}/image?v={token}"
+    return user.avatar_url
+
+
 def _user_to_response(user: User) -> MeResponse:
     return MeResponse(
         id=user.id,
         handle=user.handle,
         display_name=user.display_name,
-        avatar_url=user.avatar_url,
+        avatar_url=_resolved_avatar_url(user),
         languages=list(user.languages or []),
         preferences=dict(user.preferences or {}),
         phone_e164=user.phone_e164,
@@ -990,7 +1264,7 @@ def _issue_session(s: Session, user: User) -> SessionResponse:
         token=token,
         handle=user.handle,
         display_name=user.display_name,
-        avatar_url=user.avatar_url,
+        avatar_url=_resolved_avatar_url(user),
         languages=list(user.languages or []),
         preferences=dict(user.preferences or {}),
         phone_e164=user.phone_e164,

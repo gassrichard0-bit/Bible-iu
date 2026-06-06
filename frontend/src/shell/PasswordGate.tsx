@@ -27,7 +27,7 @@ export function PasswordGate({ onUnlock, message }: Props) {
           setPassword(value.trim());
           onUnlock();
         }}
-        className={`w-80 p-6 ${GLASS_CARD}`}
+        className={`w-full max-w-sm p-6 ${GLASS_CARD}`}
       >
         <h1 className="mb-1 text-lg font-semibold">Bible IU</h1>
         <p className="mb-4 text-sm text-neutral-500 dark:text-neutral-400">
@@ -39,12 +39,12 @@ export function PasswordGate({ onUnlock, message }: Props) {
           type="password"
           value={value}
           onChange={(e) => setValue(e.target.value)}
-          className="mt-1 w-full rounded border border-neutral-300 bg-paper px-2 py-2 text-sm focus:border-neutral-400 focus:outline-none dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100"
+          className="mt-1 w-full rounded-2xl border border-neutral-200 bg-paper px-3.5 py-3 text-[15px] outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-200/40 dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100 dark:focus:border-amber-700 dark:focus:ring-amber-800/40"
           placeholder="Password"
         />
         <button
           type="submit"
-          className="mt-4 w-full rounded bg-neutral-900 px-3 py-2 text-sm font-medium text-white hover:bg-neutral-800 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-paper"
+          className="mt-5 inline-flex min-h-[44px] w-full items-center justify-center rounded-2xl bg-neutral-900 px-4 py-3 text-[14px] font-semibold text-white shadow-sm transition hover:bg-neutral-800 disabled:opacity-50 dark:bg-neutral-50 dark:text-neutral-900 dark:hover:bg-neutral-200"
         >
           Continue
         </button>

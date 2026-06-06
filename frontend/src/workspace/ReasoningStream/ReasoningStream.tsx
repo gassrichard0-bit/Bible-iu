@@ -128,11 +128,18 @@ function TurnBlock({
   const r = turn.response;
   return (
     <article className="mb-5 border-b border-neutral-200 pb-4 last:mb-0 last:border-b-0 last:pb-0 dark:border-neutral-800">
-      <section className="mb-3 rounded border border-neutral-200 bg-paper-soft px-3 py-2 dark:border-neutral-700 dark:bg-neutral-900">
+      <section className="mb-3 rounded-2xl border border-neutral-200 bg-paper-soft px-3.5 py-2.5 shadow-[0_1px_2px_rgba(0,0,0,0.04),inset_0_1px_0_rgba(255,255,255,0.5)] dark:border-neutral-800 dark:bg-neutral-900 dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
         <div className="mb-1 flex items-center justify-between text-[10px] uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
           <span>Question · turn {index}</span>
           <span className="font-normal normal-case text-neutral-400 dark:text-neutral-500">
-            on {turn.verse_ref}
+            {/* Prefer the scope label ("the Old Testament", "John 3")
+                over the raw `verse_ref` — at non-verse scope the
+                verse_ref is a placeholder anchor (e.g. GEN.1.1 for
+                OT) and reading "on GEN.1.1" misleads the user into
+                thinking they asked about Genesis 1:1. */}
+            {turn.scope_kind && turn.scope_kind !== "verse"
+              ? `about ${turn.scope_label || turn.verse_ref}`
+              : `on ${turn.scope_label || turn.verse_ref}`}
           </span>
         </div>
         <p className="whitespace-pre-wrap text-neutral-800 dark:text-neutral-100">
@@ -232,7 +239,7 @@ function ClaimList({
         {claims.map((c, i) => (
           <li
             key={i}
-            className={`rounded border px-2 py-1.5 text-xs ${
+            className={`rounded-xl border px-3 py-2 text-xs shadow-[inset_0_1px_0_rgba(255,255,255,0.4)] dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] ${
               muted
                 ? "border-neutral-200 bg-paper-soft text-neutral-500 dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-500"
                 : c.kind === "scripture" || c.kind === "original_language"

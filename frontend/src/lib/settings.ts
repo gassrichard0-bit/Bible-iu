@@ -25,6 +25,11 @@ export interface Settings {
    *  this UI, per rule-guide.MD §12. Off by default; the app stays
    *  in humble-study mode unless opted in. */
   socialNotesEnabled: boolean;
+  /** When true, the agent works even when the room admin has toggled
+   *  agent_enabled off. Only takes effect for the user who enables it
+   *  — other members still see the gate. Dev-mode escape hatch for
+   *  shell-level access. */
+  bypassAgentGate: boolean;
 }
 
 const KEY = "bible-iu:settings";
@@ -34,6 +39,7 @@ export const defaultSettings: Settings = {
   bypassCitationEngine: false,
   timezone: "",
   socialNotesEnabled: false,
+  bypassAgentGate: false,
 };
 
 export function readSettings(): Settings {
@@ -49,4 +55,48 @@ export function readSettings(): Settings {
 
 export function writeSettings(s: Settings): void {
   localStorage.setItem(KEY, JSON.stringify(s));
+}
+
+/** Project the settings shape into the server's `preferences` JSON,
+ *  scoped under `ui` so we don't collide with other prefs
+ *  (default_translation, default_note_scope, etc.). */
+export function settingsToPreferences(s: Settings): { ui: Partial<Settings> } {
+  return {
+    ui: {
+      debugMode: s.debugMode,
+      bypassCitationEngine: s.bypassCitationEngine,
+      timezone: s.timezone,
+      socialNotesEnabled: s.socialNotesEnabled,
+      bypassAgentGate: s.bypassAgentGate,
+    },
+  };
+}
+
+/** Pull our keys back out of the server's `preferences` JSON,
+ *  falling back to whatever the caller already had. Empty / missing
+ *  ui block keeps the local defaults intact, so a fresh server
+ *  account doesn't blow away the user's localStorage choices. */
+export function settingsFromPreferences(
+  base: Settings,
+  prefs: Record<string, unknown> | null | undefined,
+): Settings {
+  const ui = (prefs?.ui ?? {}) as Partial<Settings>;
+  return {
+    debugMode:
+      typeof ui.debugMode === "boolean" ? ui.debugMode : base.debugMode,
+    bypassCitationEngine:
+      typeof ui.bypassCitationEngine === "boolean"
+        ? ui.bypassCitationEngine
+        : base.bypassCitationEngine,
+    timezone:
+      typeof ui.timezone === "string" ? ui.timezone : base.timezone,
+    socialNotesEnabled:
+      typeof ui.socialNotesEnabled === "boolean"
+        ? ui.socialNotesEnabled
+        : base.socialNotesEnabled,
+    bypassAgentGate:
+      typeof ui.bypassAgentGate === "boolean"
+        ? ui.bypassAgentGate
+        : base.bypassAgentGate,
+  };
 }

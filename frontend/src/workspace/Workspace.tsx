@@ -14,6 +14,7 @@ import {
   forwardRef,
   useEffect,
   useImperativeHandle,
+  useRef,
   useState,
 } from "react";
 import { Panel, PanelGroup } from "react-resizable-panels";
@@ -33,12 +34,22 @@ import type {
 import { parseVerseRef, streamReason } from "../lib/api";
 import { Grip } from "../lib/Grip";
 import { useIsDesktop } from "../lib/useMediaQuery";
+import { useRoomQuota } from "../lib/useRoomQuota";
 import { useYjsConversation } from "./yjsConversation";
 
 export interface ConversationTurn {
   id: string;
   question: string;
   verse_ref: string;
+  /** Human-readable scope label sent with the question (e.g. "the Old
+   *  Testament", "John 3", "GEN 1:1"). Displayed in the conversation
+   *  header instead of the raw `verse_ref` anchor, which is a placeholder
+   *  at non-verse scope and misleads the reader. */
+  scope_label?: string;
+  /** Scope kind used for this turn — matches what was sent to the
+   *  backend. Surfaced in debug mode + drives the empty-state copy
+   *  on the next ask. */
+  scope_kind?: "verse" | "chapter" | "book" | "testament" | "bible";
   reasoning: string;
   /** Raw streamed chain-of-thought (debug view). Separate from
    *  `reasoning` so debug mode can keep showing it even after the engine
@@ -99,6 +110,9 @@ interface Props {
   /** Settings → "Social on group notes". When on, every inline group
    *  note (non-agent) gets a heart + flat comment thread under it. */
   socialNotesEnabled?: boolean;
+  /** Live notification whenever the resolved agent scope changes —
+   *  the floating scope chip above the composer subscribes to this. */
+  onScopeChange?: (scope: WorkspaceScope) => void;
   /** All of the user's verse annotations (highlight/underline/strike).
    *  Threaded through BibleView so the long-press toolbar can mark up
    *  scripture without round-tripping to a parent for state. */
@@ -132,9 +146,23 @@ export interface VerseFocus {
  *  MobileShell can submit a question without owning the conversation
  *  state. The `pending` flag tracks any in-flight turn so the chat
  *  send button can disable itself. */
+export interface WorkspaceScope {
+  kind: "verse" | "chapter" | "book" | "testament" | "bible";
+  label: string;
+}
+
 export interface WorkspaceHandle {
   ask: (question: string) => void;
   isPending: () => boolean;
+  /** Wipe the agent conversation. Called by the `/new` slash command
+   *  in MobileShell's composer. */
+  clear: () => void;
+  /** What scope would `ask()` send right now, given the current zoom
+   *  level + focus? Used by the floating scope chip in MobileShell. */
+  scope: () => WorkspaceScope;
+  /** Step the scope one level wider — verse → chapter → book →
+   *  testament → bible. No-op at the widest. */
+  widenScope: () => void;
 }
 
 export const Workspace = forwardRef<WorkspaceHandle, Props>(function Workspace(
@@ -158,6 +186,7 @@ export const Workspace = forwardRef<WorkspaceHandle, Props>(function Workspace(
     timezone,
     selfUserId,
     socialNotesEnabled,
+    onScopeChange,
     annotations,
     onApplyAnnotation,
     onClearAnnotationKind,
@@ -190,6 +219,17 @@ export const Workspace = forwardRef<WorkspaceHandle, Props>(function Workspace(
     setBook(focus.book);
     setChapter(focus.chapter);
   }, [focus]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Inverse direction: when the user navigates to a different
+  // book/chapter via the dropdowns (which call setBook/setChapter
+  // without touching focus), an old verse focus would still claim
+  // verse scope on the next /ask. Drop the focus eagerly so the
+  // scope falls through to "chapter" cleanly.
+  useEffect(() => {
+    if (!focus) return;
+    if (focus.book === book && focus.chapter === chapter) return;
+    onFocusChange(null);
+  }, [book, chapter]); // eslint-disable-line react-hooks/exhaustive-deps
   const [translation, setTranslation] = useState("WEB");
   const [resourcesOpen, setResourcesOpen] = useState(true);
   // The Original-language toggle lives in the Reasoning header (per
@@ -214,17 +254,73 @@ export const Workspace = forwardRef<WorkspaceHandle, Props>(function Workspace(
     [...turns].reverse().find((t) => t.response)?.response ?? null;
   const anyPending = turns.some((t) => t.pending);
 
+  // Live notification — fires whenever the scope-driving state
+  // changes so the parent's chip stays in sync without polling.
+  useEffect(() => {
+    if (!onScopeChange) return;
+    onScopeChange(currentScope());
+  }, [focus, book, chapter, testamentView, bibleView, onScopeChange]);
+
+  // Live read of "what scope would ask() use right now?" — mirrors the
+  // branching in ask() exactly so the chip never lies. WorkspaceHandle
+  // exposes this as `scope()` so MobileShell can render it.
+  function currentScope(): WorkspaceScope {
+    if (bibleView) return { kind: "bible", label: "the Bible" };
+    if (testamentView) {
+      return {
+        kind: "testament",
+        label: testamentView === "OT" ? "the Old Testament" : "the New Testament",
+      };
+    }
+    if (focus && focus.book === book && focus.chapter === chapter) {
+      return {
+        kind: "verse",
+        label: `${focus.book} ${focus.chapter}:${focus.verse}`,
+      };
+    }
+    return { kind: "chapter", label: `${book} chapter ${chapter}` };
+  }
+
+  // Tap-to-widen the scope chip. One step up the hierarchy each time;
+  // verse → chapter clears the focus (drops the verse pin), chapter
+  // → book promotes to testamentView for the anchor's testament,
+  // book → testament keeps it, testament → bible expands to OT+NT.
+  function widenScope(): void {
+    const s = currentScope();
+    if (s.kind === "verse") {
+      onFocusChange(null);
+      return;
+    }
+    if (s.kind === "chapter") {
+      // chapter → testament. Use the anchor book's testament.
+      const t = testamentOf(book) ?? "OT";
+      setTestamentView(t);
+      return;
+    }
+    if (s.kind === "book" || s.kind === "testament") {
+      // book/testament → bible
+      setTestamentView(null);
+      setBibleView(true);
+      return;
+    }
+    // already bible — no-op
+  }
+
   useImperativeHandle(
     workspaceRef,
     () => ({
       ask: (question: string) => ask(question),
       isPending: () => anyPending,
+      clear: () => conversation.clear(),
+      scope: () => currentScope(),
+      widenScope: () => widenScope(),
     }),
-    // anyPending changes drive isPending(); ask itself closes over
-    // current state via setTurns updaters so it doesn't need to be in
-    // the dep list. Including it would force a new ref on every render.
+    // anyPending changes drive isPending(); the other methods close
+    // over current state via the conversation API + setTurns updaters,
+    // so they don't need to be in the dep list. Including them would
+    // force a new ref on every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [anyPending],
+    [anyPending, focus, book, chapter, testamentView, bibleView],
   );
 
   function jumpToCitation(source_id: string) {
@@ -240,20 +336,36 @@ export const Workspace = forwardRef<WorkspaceHandle, Props>(function Workspace(
     // Pick a verse anchor for retrieval AND a human-readable scope
     // label that prefixes the question so the LLM knows the user is
     // asking at the current zoom level, not about the lone anchor verse.
+    // Markdown-style hierarchy: deeper = more focused, wider = broader
+    // (verse < chapter < book < testament < bible).
     let verseRef: string;
     let scopeLabel: string;
+    let scopeKind: "verse" | "chapter" | "book" | "testament" | "bible";
     if (bibleView) {
       verseRef = "GEN.1.1";
       scopeLabel = "the Bible";
+      scopeKind = "bible";
     } else if (testamentView) {
       verseRef = testamentView === "OT" ? "GEN.1.1" : "MAT.1.1";
-      scopeLabel = testamentView === "OT" ? "the Old Testament" : "the New Testament";
-    } else if (focus) {
+      scopeLabel =
+        testamentView === "OT" ? "the Old Testament" : "the New Testament";
+      scopeKind = "testament";
+    } else if (focus && focus.book === book && focus.chapter === chapter) {
+      // Verse scope only counts when the active focus actually
+      // matches the chapter the user is reading. Changing book or
+      // chapter via the dropdowns doesn't auto-clear the focus, so
+      // without this guard a stale verse pin keeps every later
+      // question pinned to the old verse.
       verseRef = focus.ref;
       scopeLabel = `${focus.book} ${focus.chapter}:${focus.verse}`;
+      scopeKind = "verse";
     } else {
+      // Chapter view (no relevant verse focused). Anchor is the
+      // first verse of the chapter — the retriever expands to the
+      // whole chapter at scope_kind="chapter".
       verseRef = `${book}.${chapter}.1`;
       scopeLabel = `${book} chapter ${chapter}`;
+      scopeKind = "chapter";
     }
     const framedQuestion = `[About ${scopeLabel}] ${question.trim()}`;
     const turnId = `t-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
@@ -262,6 +374,8 @@ export const Workspace = forwardRef<WorkspaceHandle, Props>(function Workspace(
       id: turnId,
       question: question.trim(),
       verse_ref: verseRef,
+      scope_label: scopeLabel,
+      scope_kind: scopeKind,
       reasoning: "",
       rawCot: "",
       stages: [],
@@ -298,6 +412,7 @@ export const Workspace = forwardRef<WorkspaceHandle, Props>(function Workspace(
         question: framedQuestion,
         history,
         bypass_citation_engine: bypassCitationEngine,
+        scope_kind: scopeKind,
       },
       {
         onStage: (name, count) => {
@@ -639,7 +754,6 @@ function CenterColumn(props: {
       testament={testamentView}
       currentBook={book}
       onPickBook={onPickBookFromGrid}
-      onZoomIn={() => onPickBookFromGrid(book)}
     />
   ) : (
     <BibleView
@@ -739,6 +853,7 @@ function CenterColumn(props: {
           onAsk={onAsk}
           pending={anyPending}
           notes={notes}
+          roomId={roomId}
         />
       )}
     </div>
@@ -845,6 +960,7 @@ function PromptBar({
   onAsk,
   pending,
   notes,
+  roomId,
 }: {
   focus: VerseFocus | null;
   book: string;
@@ -854,7 +970,15 @@ function PromptBar({
   onAsk: (q: string) => void;
   pending: boolean;
   notes: NotesApi;
+  roomId: string;
 }) {
+  const { quota, refresh: refreshQuota } = useRoomQuota(roomId);
+  // Re-fetch when a request finishes (`pending` flips back to false).
+  const prevPending = useRef(pending);
+  useEffect(() => {
+    if (prevPending.current && !pending) refreshQuota();
+    prevPending.current = pending;
+  }, [pending, refreshQuota]);
   const [q, setQ] = useState("");
   const [noteScope, setNoteScope] = useState<"personal" | "group">("personal");
   const [justSaved, setJustSaved] = useState<"personal" | "group" | null>(null);
@@ -879,7 +1003,27 @@ function PromptBar({
     setTimeout(() => setJustSaved(null), 1500);
   }
 
+  // Render `null` until the snapshot arrives so we don't flash a
+  // misleading "0 left" before the first /quota response.
+  const quotaHint =
+    quota && quota.limit != null && quota.remaining != null
+      ? `${quota.remaining} of ${quota.limit} questions left today`
+      : null;
+
   return (
+    <div className="border-t border-neutral-200 bg-paper dark:border-neutral-800 dark:bg-neutral-900">
+      {quotaHint && (
+        <div
+          className={`px-3 pt-1.5 text-[10px] ${
+            (quota?.remaining ?? 1) <= 1
+              ? "text-amber-700 dark:text-amber-300"
+              : "text-neutral-500 dark:text-neutral-400"
+          }`}
+          aria-live="polite"
+        >
+          {quotaHint}
+        </div>
+      )}
     <form
       onSubmit={(e) => {
         e.preventDefault();
@@ -890,7 +1034,7 @@ function PromptBar({
           setQ("");
         }
       }}
-      className="flex items-center gap-2 border-t border-neutral-200 bg-paper p-2 dark:border-neutral-800 dark:bg-neutral-900"
+      className="flex items-center gap-2 p-2"
     >
       <input
         value={q}
@@ -962,6 +1106,7 @@ function PromptBar({
         {pending ? "…" : "Ask"}
       </button>
     </form>
+    </div>
   );
 }
 

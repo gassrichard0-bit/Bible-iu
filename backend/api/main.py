@@ -7,16 +7,30 @@ then the rule middleware (architecture.MD §2).
 """
 from __future__ import annotations
 
+import asyncio
+import os
 import secrets
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import AsyncIterator, Optional
 
 from pydantic import BaseModel, Field
 
-from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from sqlalchemy import select
+from fastapi import (
+    Depends,
+    FastAPI,
+    File,
+    HTTPException,
+    Request,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+)
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from ..agent.orchestrator import (
@@ -41,6 +55,9 @@ from ..data.models import (
     Note,
     NoteComment,
     NoteLike,
+    ReadingPlanEnrollment,
+    ReadingPlanProgress,
+    RegisteredGroupNote,
     Room,
     RoomInvite,
     RoomMember,
@@ -50,9 +67,10 @@ from ..data.models import (
 )
 from ..data.repos import UserNoteRepository
 from .auth import require_password
-from .auth_users import require_user, router as auth_router
+from .auth_users import require_user, router as auth_router, resolve_user
+from .observability import configure_logging, configure_sentry
 from .rate_limit import rate_limit
-from . import yjs_sync
+from . import chat_hub, reading_plans, yjs_sync
 from .schemas import (
     AgentNoteAppended,
     AgentNoteOut,
@@ -79,6 +97,8 @@ from .schemas import (
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    configure_logging()
+    configure_sentry()
     init_db()
     # Persist provenance to the SQL ledger so the audit trail survives a
     # restart (CLAUDE.md §7.5). The Sql session is created per-write so
@@ -117,9 +137,110 @@ def health() -> HealthResponse:
     return HealthResponse()
 
 
+@app.get("/healthz")
+def healthz(session: Session = Depends(db)) -> JSONResponse:
+    """Deep readiness probe. Verifies the DB is reachable and reports
+    whether the reasoning backend has a real API key configured. Used
+    by Fly's healthcheck + the password-gate's pre-flight check."""
+    db_ok = False
+    try:
+        session.execute(text("SELECT 1"))
+        db_ok = True
+    except Exception:
+        db_ok = False
+    return JSONResponse(
+        {
+            "ok": db_ok,
+            "db": db_ok,
+            "reasoning": bool(os.getenv("DEEPSEEK_API_KEY")),
+            "yjs": yjs_sync.is_running(),
+        },
+        status_code=200 if db_ok else 503,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Rooms / chat (architecture.MD §4.3)
 # ---------------------------------------------------------------------------
+def _room_image_url(room: Room) -> Optional[str]:
+    """Public URL the frontend uses to render this room's avatar. The
+    `?v=` query string is the `image_token` so the URL changes on
+    every upload — without it, browsers happily cache the prior image
+    for hours after a replacement. None when no image is set."""
+    if not getattr(room, "image_token", None):
+        return None
+    return f"/rooms/{room.id}/image?v={room.image_token}"
+
+
+def _room_read(
+    room: Room,
+    role: Optional[str],
+    unread_count: int = 0,
+) -> RoomRead:
+    return RoomRead(
+        id=room.id,
+        type=room.type,
+        name=room.name,
+        scripture_context=dict(room.scripture_context or {}),
+        role=role,
+        image_url=_room_image_url(room),
+        accent_color=getattr(room, "accent_color", None),
+        unread_count=unread_count,
+    )
+
+
+def _unread_count(session: Session, room_id: str, user_id: str) -> int:
+    """How many chat messages in `room_id` are newer than the user's
+    `last_read_at` and weren't written by them. Treats null
+    last_read_at as the room-member's join time so a brand-new member
+    sees a (potentially huge) backlog as zero, not all-of-history."""
+    member = (
+        session.query(RoomMember)
+        .filter(
+            RoomMember.room_id == room_id, RoomMember.user_id == user_id
+        )
+        .one_or_none()
+    )
+    if member is None:
+        return 0
+    cutoff = member.last_read_at or member.created_at
+    if cutoff is None:
+        # Defensive fallback — shouldn't happen since TimestampMixin
+        # supplies created_at, but if it does treat as fully read.
+        return 0
+    return (
+        session.query(ChatMessage)
+        .filter(
+            ChatMessage.room_id == room_id,
+            ChatMessage.created_at > cutoff,
+            ChatMessage.author_user_id != user_id,
+        )
+        .count()
+    )
+
+
+# Palette of accent colors an admin can pick for their group. Keep the
+# server-side allow-list small + literal so a malformed client can't
+# inject arbitrary CSS via the column. The frontend maps each key to
+# real CSS values (see `frontend/src/lib/accentColors.ts`).
+ROOM_ACCENT_PALETTE: tuple[str, ...] = (
+    "amber",
+    "rose",
+    "violet",
+    "sky",
+    "emerald",
+    "lime",
+    "fuchsia",
+    "slate",
+)
+
+
+class AccentPatch(BaseModel):
+    """`null` clears the override and the frontend reverts to the
+    auto-derived color. Any other value must be in the palette."""
+    accent_color: Optional[str]
+
+
 @app.post(
     "/rooms",
     response_model=RoomRead,
@@ -133,12 +254,22 @@ def create_room(
     room = Room(id=str(uuid.uuid4()), type=payload.type, name=payload.name)
     session.add(room)
     members = set(payload.member_ids) | {user_id}
+    # Group rooms get an admin; direct (1:1) rooms don't need the
+    # concept since there's nothing to administrate between two
+    # equals.
+    my_role = "admin" if payload.type == "group" else "member"
     for m in members:
+        role = "admin" if (m == user_id and payload.type == "group") else "member"
         session.add(
-            RoomMember(id=str(uuid.uuid4()), room_id=room.id, user_id=m)
+            RoomMember(
+                id=str(uuid.uuid4()),
+                room_id=room.id,
+                user_id=m,
+                role=role,
+            )
         )
     session.commit()
-    return RoomRead(id=room.id, type=room.type, name=room.name, scripture_context=dict(room.scripture_context or {}))
+    return _room_read(room, my_role)
 
 
 @app.get(
@@ -150,14 +281,442 @@ def list_rooms(
     session: Session = Depends(db),
     user_id: str = Depends(current_user_id),
 ) -> list[RoomRead]:
-    """All rooms the current user is a member of."""
-    rooms = session.scalars(
-        select(Room)
+    """All rooms the current user is a member of, with the user's role
+    in each room so the Profile UI can flag the ones they administrate."""
+    rows = (
+        session.query(Room, RoomMember.role)
         .join(RoomMember, RoomMember.room_id == Room.id)
-        .where(RoomMember.user_id == user_id)
+        .filter(RoomMember.user_id == user_id)
         .order_by(Room.created_at.desc())
-    ).all()
-    return [RoomRead(id=r.id, type=r.type, name=r.name, scripture_context=dict(r.scripture_context or {})) for r in rooms]
+        .all()
+    )
+    return [
+        _room_read(r, role, _unread_count(session, r.id, user_id))
+        for r, role in rows
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Room administration — admin-only endpoints for member + agent control.
+#
+# Authority model:
+#   • The room creator is auto-promoted to 'admin' on `POST /rooms`.
+#   • Admins can: list members (with roles), promote/demote, remove
+#     anyone except the last admin, and edit per-room agent settings.
+#   • Members can: see who's in the room (via /members), but not change
+#     anyone or anything.
+#   • Direct (1:1) rooms have no admin concept; all admin endpoints
+#     return 400 there.
+# ---------------------------------------------------------------------------
+class RoomMemberOut(BaseModel):
+    user_id: str
+    handle: str
+    display_name: str
+    role: str  # 'admin' | 'member'
+    joined_at: str
+
+
+class RoomMemberPatch(BaseModel):
+    role: str = Field(pattern=r"^(admin|member)$")
+
+
+class AgentSettings(BaseModel):
+    """Per-room agent + safety controls. Conservative defaults so a
+    fresh room is safe out of the box. Admins relax as needed."""
+    agent_enabled: bool = True
+    allow_web_search: bool = False
+    allow_external_links: bool = False
+    bypass_citation_engine_allowed: bool = False
+    max_questions_per_user_per_day: Optional[int] = None
+
+
+def _agent_settings(room: Room) -> AgentSettings:
+    return AgentSettings(**dict(room.agent_settings or {}))
+
+
+@app.get(
+    "/rooms/{room_id}/members",
+    response_model=list[RoomMemberOut],
+    dependencies=[Depends(require_password)],
+)
+def list_members(
+    room_id: str,
+    session: Session = Depends(db),
+    user_id: str = Depends(current_user_id),
+) -> list[RoomMemberOut]:
+    """Every member of the room can see the membership list. Names + roles
+    only — no email, phone, or session data."""
+    _require_member(session, room_id, user_id)
+    rows = (
+        session.query(RoomMember, User)
+        .join(User, User.id == RoomMember.user_id)
+        .filter(RoomMember.room_id == room_id)
+        .order_by(RoomMember.created_at.asc())
+        .all()
+    )
+    out: list[RoomMemberOut] = []
+    for m, u in rows:
+        joined = m.created_at
+        if joined.tzinfo is None:
+            joined = joined.replace(tzinfo=timezone.utc)
+        out.append(
+            RoomMemberOut(
+                user_id=u.id,
+                handle=u.handle,
+                display_name=u.display_name,
+                role=m.role,
+                joined_at=joined.isoformat(),
+            )
+        )
+    return out
+
+
+@app.patch(
+    "/rooms/{room_id}/members/{target_user_id}",
+    response_model=RoomMemberOut,
+    dependencies=[Depends(require_password)],
+)
+def patch_member(
+    room_id: str,
+    target_user_id: str,
+    payload: RoomMemberPatch,
+    session: Session = Depends(db),
+    user_id: str = Depends(current_user_id),
+) -> RoomMemberOut:
+    """Promote a member to admin, or demote an admin to member.
+    Refuses to demote the last admin so the room can't get stranded."""
+    _require_admin(session, room_id, user_id)
+    target = session.scalar(
+        select(RoomMember).where(
+            RoomMember.room_id == room_id,
+            RoomMember.user_id == target_user_id,
+        )
+    )
+    if target is None:
+        raise HTTPException(404, "user is not a member of this room")
+    if payload.role == "member" and target.role == "admin":
+        # Don't strand the room — at least one admin must remain.
+        other_admins = session.scalar(
+            select(RoomMember).where(
+                RoomMember.room_id == room_id,
+                RoomMember.role == "admin",
+                RoomMember.user_id != target_user_id,
+            )
+        )
+        if other_admins is None:
+            raise HTTPException(
+                400, "promote another member first; can't demote the last admin"
+            )
+    target.role = payload.role
+    session.commit()
+    session.refresh(target)
+    user = session.get(User, target.user_id)
+    assert user is not None  # FK guarantee
+    joined = target.created_at
+    if joined.tzinfo is None:
+        joined = joined.replace(tzinfo=timezone.utc)
+    return RoomMemberOut(
+        user_id=user.id,
+        handle=user.handle,
+        display_name=user.display_name,
+        role=target.role,
+        joined_at=joined.isoformat(),
+    )
+
+
+@app.delete(
+    "/rooms/{room_id}/members/{target_user_id}",
+    dependencies=[Depends(require_password)],
+)
+def remove_member(
+    room_id: str,
+    target_user_id: str,
+    session: Session = Depends(db),
+    user_id: str = Depends(current_user_id),
+) -> dict:
+    """Admin removes a member. Removing the last admin is rejected for
+    the same stranding reason as demotion. Admins removing themselves
+    is allowed only if another admin exists."""
+    _require_admin(session, room_id, user_id)
+    target = session.scalar(
+        select(RoomMember).where(
+            RoomMember.room_id == room_id,
+            RoomMember.user_id == target_user_id,
+        )
+    )
+    if target is None:
+        raise HTTPException(404, "user is not a member of this room")
+    if target.role == "admin":
+        other_admins = session.scalar(
+            select(RoomMember).where(
+                RoomMember.room_id == room_id,
+                RoomMember.role == "admin",
+                RoomMember.user_id != target_user_id,
+            )
+        )
+        if other_admins is None:
+            raise HTTPException(
+                400, "promote another member to admin first"
+            )
+    session.delete(target)
+    session.commit()
+    return {"ok": True}
+
+
+@app.get(
+    "/rooms/{room_id}/agent_settings",
+    response_model=AgentSettings,
+    dependencies=[Depends(require_password)],
+)
+def get_agent_settings(
+    room_id: str,
+    session: Session = Depends(db),
+    user_id: str = Depends(current_user_id),
+) -> AgentSettings:
+    """All members can read settings (they need to know whether the
+    agent is on, web search is enabled, etc.). Only admins can change."""
+    room = _require_member(session, room_id, user_id)
+    return _agent_settings(room)
+
+
+@app.patch(
+    "/rooms/{room_id}/agent_settings",
+    response_model=AgentSettings,
+    dependencies=[Depends(require_password)],
+)
+def patch_agent_settings(
+    room_id: str,
+    payload: AgentSettings,
+    session: Session = Depends(db),
+    user_id: str = Depends(current_user_id),
+) -> AgentSettings:
+    room = _require_admin(session, room_id, user_id)
+    room.agent_settings = payload.model_dump()
+    session.commit()
+    session.refresh(room)
+    return _agent_settings(room)
+
+
+# ---------------------------------------------------------------------------
+# Room avatar — admin-managed image, served back to all members.
+# Files live on the local filesystem; uploads are re-encoded to webp
+# at a sane max dimension so we don't hand the network a 10MB iPhone
+# photo every time a chat row scrolls into view.
+# ---------------------------------------------------------------------------
+_UPLOADS_DIR = (
+    Path(os.environ.get("BIBLE_IU_UPLOADS_DIR", ""))
+    if os.environ.get("BIBLE_IU_UPLOADS_DIR")
+    else Path(__file__).resolve().parent.parent / "data" / "uploads"
+)
+_ROOM_IMAGES_DIR = _UPLOADS_DIR / "rooms"
+# Upload cap is generous because modern phone cameras emit 10-20MB
+# JPEGs and the server downscales + re-encodes everything to WebP at
+# 512px anyway. The on-disk artifact is < 50KB regardless of input.
+_ROOM_IMAGE_MAX_BYTES = 20 * 1024 * 1024
+_ROOM_IMAGE_MAX_SIDE = 512  # px — plenty for a chat-row avatar
+
+
+def _room_image_path(room_id: str) -> Path:
+    return _ROOM_IMAGES_DIR / f"{room_id}.webp"
+
+
+class RoomImageOut(BaseModel):
+    image_url: Optional[str]
+
+
+@app.post(
+    "/rooms/{room_id}/image",
+    response_model=RoomImageOut,
+    dependencies=[Depends(require_password)],
+)
+async def upload_room_image(
+    room_id: str,
+    file: UploadFile = File(...),
+    session: Session = Depends(db),
+    user_id: str = Depends(current_user_id),
+) -> RoomImageOut:
+    """Admin-only. Accepts JPEG/PNG/WebP up to 4MB, re-encodes to
+    WebP at ≤512px on the longest side. The token bump invalidates
+    the browser cache for every member viewing the room list."""
+    room = _require_admin(session, room_id, user_id)
+    raw = await file.read()
+    if len(raw) > _ROOM_IMAGE_MAX_BYTES:
+        raise HTTPException(413, "Image too large (max 4MB).")
+    # Lazy import — Pillow isn't needed by the rest of the API and
+    # adds ~10MB of process memory we only want paid for on upload.
+    from io import BytesIO
+    from PIL import Image, UnidentifiedImageError
+
+    try:
+        with Image.open(BytesIO(raw)) as im:
+            im.load()
+            # EXIF rotate so portraits taken on a phone aren't
+            # rendered sideways. iPhone photos rely on this.
+            from PIL.ImageOps import exif_transpose
+
+            im = exif_transpose(im)
+            im.thumbnail((_ROOM_IMAGE_MAX_SIDE, _ROOM_IMAGE_MAX_SIDE))
+            if im.mode not in ("RGB", "RGBA"):
+                im = im.convert("RGB")
+            _ROOM_IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+            out_path = _room_image_path(room.id)
+            im.save(out_path, format="WEBP", quality=82, method=4)
+    except UnidentifiedImageError:
+        raise HTTPException(415, "Unsupported image format.")
+
+    room.image_token = uuid.uuid4().hex[:12]
+    session.commit()
+    return RoomImageOut(image_url=_room_image_url(room))
+
+
+@app.delete(
+    "/rooms/{room_id}/image",
+    response_model=RoomImageOut,
+    dependencies=[Depends(require_password)],
+)
+def delete_room_image(
+    room_id: str,
+    session: Session = Depends(db),
+    user_id: str = Depends(current_user_id),
+) -> RoomImageOut:
+    """Admin-only. Removes the file and clears the token so the
+    frontend falls back to the gradient/initials avatar."""
+    room = _require_admin(session, room_id, user_id)
+    path = _room_image_path(room.id)
+    if path.exists():
+        try:
+            path.unlink()
+        except OSError:
+            # Best-effort; token clear below is the actual source of
+            # truth for the UI.
+            pass
+    room.image_token = None
+    session.commit()
+    return RoomImageOut(image_url=None)
+
+
+@app.get("/rooms/{room_id}/image")
+def get_room_image(
+    room_id: str,
+    request: Request,
+    session: Session = Depends(db),
+) -> FileResponse:
+    """Members only — the image is private to the room. Browser
+    `<img>` loaders can't send custom headers, so this handler accepts
+    the deployment password + session token via either header OR query
+    string (`?password=...&session=...`). Clients also append
+    `?v=<image_token>` for cache busting; the server ignores its value.
+    """
+    pw = request.headers.get("X-App-Password") or request.query_params.get("password")
+    expected = os.getenv("BIBLE_IU_PASSWORD") or ""
+    if expected and pw != expected:
+        raise HTTPException(401, "App password required.")
+    token = request.headers.get("X-Session-Token") or request.query_params.get("session")
+    user = resolve_user(token) if token else None
+    if user is None:
+        raise HTTPException(401, "not signed in")
+    _require_member(session, room_id, user.id)
+    path = _room_image_path(room_id)
+    if not path.exists():
+        raise HTTPException(404, "No image set for this room.")
+    return FileResponse(
+        str(path),
+        media_type="image/webp",
+        headers={"Cache-Control": "private, max-age=86400"},
+    )
+
+
+class ReadAck(BaseModel):
+    """Response from POST /rooms/{id}/read."""
+    unread_count: int
+
+
+@app.post(
+    "/rooms/{room_id}/read",
+    response_model=ReadAck,
+    dependencies=[Depends(require_password)],
+)
+def mark_room_read(
+    room_id: str,
+    session: Session = Depends(db),
+    user_id: str = Depends(current_user_id),
+) -> ReadAck:
+    """Bumps the caller's `last_read_at` to now in `room_id`. Idempotent.
+    Frontend calls this when the user opens a room's Chat tab so the
+    in-app unread badge clears."""
+    member = (
+        session.query(RoomMember)
+        .filter(
+            RoomMember.room_id == room_id, RoomMember.user_id == user_id
+        )
+        .one_or_none()
+    )
+    if member is None:
+        raise HTTPException(403, "Not a member of this room.")
+    member.last_read_at = datetime.now(timezone.utc)
+    session.commit()
+    return ReadAck(unread_count=_unread_count(session, room_id, user_id))
+
+
+@app.patch(
+    "/rooms/{room_id}/accent",
+    response_model=RoomRead,
+    dependencies=[Depends(require_password)],
+)
+def patch_room_accent(
+    room_id: str,
+    payload: AccentPatch,
+    session: Session = Depends(db),
+    user_id: str = Depends(current_user_id),
+) -> RoomRead:
+    """Admin-only. Sets or clears the room's accent color. Validates
+    the value against `ROOM_ACCENT_PALETTE` so the column can never
+    hold an arbitrary string the frontend doesn't know about."""
+    room = _require_admin(session, room_id, user_id)
+    value = payload.accent_color
+    if value is not None and value not in ROOM_ACCENT_PALETTE:
+        raise HTTPException(400, f"accent_color must be one of {', '.join(ROOM_ACCENT_PALETTE)} or null")
+    room.accent_color = value
+    session.commit()
+    session.refresh(room)
+    # Caller's role doesn't change here, but the response reflects the
+    # caller's perspective so just re-read it.
+    role = (
+        session.query(RoomMember.role)
+        .filter(RoomMember.room_id == room.id, RoomMember.user_id == user_id)
+        .scalar()
+    )
+    return _room_read(room, role)
+
+
+class QuotaStatus(BaseModel):
+    """Per-room, per-day quota snapshot for the caller. `limit=None`
+    means the room admin has not set a cap (unlimited)."""
+    limit: Optional[int]
+    used: int
+    remaining: Optional[int]
+
+
+@app.get(
+    "/rooms/{room_id}/quota",
+    response_model=QuotaStatus,
+    dependencies=[Depends(require_password)],
+)
+def get_room_quota(
+    room_id: str,
+    session: Session = Depends(db),
+    user_id: str = Depends(current_user_id),
+) -> QuotaStatus:
+    """Mirrors the in-memory counter that `_enforce_daily_quota` writes
+    to. Best-effort and single-instance only — the frontend uses it for
+    a hint ("3 questions left today") not for hard enforcement."""
+    room = _require_member(session, room_id, user_id)
+    settings = _agent_settings(room)
+    limit = settings.max_questions_per_user_per_day
+    today = datetime.now(timezone.utc).date().isoformat()
+    used = _DAILY_COUNTS.get((user_id, room_id, today), 0)
+    remaining = max(limit - used, 0) if limit is not None else None
+    return QuotaStatus(limit=limit, used=used, remaining=remaining)
 
 
 # ---------------------------------------------------------------------------
@@ -235,6 +794,27 @@ def _require_member(session: Session, room_id: str, user_id: str) -> Room:
     )
     if member is None:
         raise HTTPException(403, "not a member of this room")
+    return room
+
+
+def _require_admin(session: Session, room_id: str, user_id: str) -> Room:
+    """Gate for admin-only endpoints. Verifies membership AND admin role
+    in a single round-trip. Direct (1:1) rooms have no admin concept —
+    every operation that would require admin is rejected on those."""
+    room = session.get(Room, room_id)
+    if room is None:
+        raise HTTPException(404, "room not found")
+    if room.type != "group":
+        raise HTTPException(400, "this room has no admin role")
+    member = session.scalar(
+        select(RoomMember).where(
+            RoomMember.room_id == room_id, RoomMember.user_id == user_id
+        )
+    )
+    if member is None:
+        raise HTTPException(403, "not a member of this room")
+    if member.role != "admin":
+        raise HTTPException(403, "admin only")
     return room
 
 
@@ -377,7 +957,75 @@ def accept_invite(
         inv.uses += 1
     # Already a member: idempotent, don't bump uses or error.
     session.commit()
-    return RoomRead(id=room.id, type=room.type, name=room.name, scripture_context=dict(room.scripture_context or {}))
+    # Reflect the joiner's resolved role so the UI's role-gated chrome
+    # (admin badge, settings access) is correct on the very first
+    # /rooms/{id}/join response — no extra GET required.
+    joined_role = (
+        session.query(RoomMember.role)
+        .filter(RoomMember.room_id == room.id, RoomMember.user_id == user_id)
+        .scalar()
+    )
+    return _room_read(
+        room, joined_role, _unread_count(session, room.id, user_id)
+    )
+
+
+def _serialize_chat(msg: ChatMessage, author: User | None) -> ChatMessageRead:
+    created = msg.created_at
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=timezone.utc)
+    return ChatMessageRead(
+        id=msg.id,
+        room_id=msg.room_id,
+        author_user_id=msg.author_user_id,
+        author_is_agent=msg.author_is_agent,
+        body=msg.body,
+        language=msg.language,
+        author_handle=(author.handle if author else None),
+        author_display_name=(author.display_name if author else None),
+        created_at=created.isoformat(),
+    )
+
+
+@app.get(
+    "/rooms/{room_id}/chat",
+    response_model=list[ChatMessageRead],
+    dependencies=[Depends(require_password)],
+)
+def list_chat(
+    room_id: str,
+    session: Session = Depends(db),
+    user_id: str = Depends(current_user_id),
+    limit: int = 100,
+) -> list[ChatMessageRead]:
+    """Return the most recent `limit` messages in chronological order.
+    Members only. Capped at 500 so a single fetch can't blow up the
+    client."""
+    _require_member(session, room_id, user_id)
+    limit = max(1, min(limit, 500))
+    rows = (
+        session.query(ChatMessage)
+        .filter(ChatMessage.room_id == room_id)
+        .order_by(ChatMessage.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+    rows.reverse()
+    author_ids = {r.author_user_id for r in rows if r.author_user_id}
+    authors = (
+        {
+            u.id: u
+            for u in session.scalars(
+                select(User).where(User.id.in_(author_ids))
+            ).all()
+        }
+        if author_ids
+        else {}
+    )
+    return [
+        _serialize_chat(m, authors.get(m.author_user_id) if m.author_user_id else None)
+        for m in rows
+    ]
 
 
 @app.post(
@@ -391,8 +1039,7 @@ def post_chat(
     session: Session = Depends(db),
     user_id: str = Depends(current_user_id),
 ) -> ChatMessageRead:
-    if not session.get(Room, room_id):
-        raise HTTPException(404, "room not found")
+    _require_member(session, room_id, user_id)
     msg = ChatMessage(
         id=str(uuid.uuid4()),
         room_id=room_id,
@@ -403,14 +1050,14 @@ def post_chat(
     )
     session.add(msg)
     session.commit()
-    return ChatMessageRead(
-        id=msg.id,
-        room_id=msg.room_id,
-        author_user_id=msg.author_user_id,
-        author_is_agent=msg.author_is_agent,
-        body=msg.body,
-        language=msg.language,
-    )
+    session.refresh(msg)
+    author = session.get(User, user_id)
+    out = _serialize_chat(msg, author)
+    # Fan out to anyone currently subscribed via /ws/chat/{room_id}.
+    # The hub is process-local; multi-instance deployments need Redis
+    # pub/sub (see WORKSTREAM.md scale-out section).
+    chat_hub.publish(room_id, out.model_dump())
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -471,7 +1118,9 @@ def list_notes(
 class NoteCommentOut(BaseModel):
     id: str
     note_id: str
-    author_user_id: str
+    # Null when the author deleted their account — body stays for
+    # room history, but the row tombstones to "deleted user" in the UI.
+    author_user_id: Optional[str]
     author_handle: str
     author_display_name: str
     body: str
@@ -488,6 +1137,61 @@ class NoteCommentCreate(BaseModel):
     body: str = Field(min_length=1, max_length=2000)
 
 
+class GroupNoteRegister(BaseModel):
+    """Frontend asks the server "this UUID is for a group-scope note
+    in this room." The server doesn't trust it blindly — registration
+    is keyed on (author_user_id, room_id) so only the actual author
+    of the room's shared-doc note can register, and only if the user
+    is a member of the room."""
+    pass
+
+
+@app.post(
+    "/rooms/{room_id}/notes/{note_id}/register_group",
+    dependencies=[Depends(require_password)],
+)
+def register_group_note(
+    room_id: str,
+    note_id: str,
+    _payload: GroupNoteRegister | None = None,
+    session: Session = Depends(db),
+    user_id: str = Depends(current_user_id),
+) -> dict:
+    """Frontend calls this every time it `add()`s a GROUP-scope note
+    via Yjs (yjsNotes.ts). Idempotent — re-registering the same ID is
+    a no-op. Personal-scope notes MUST NOT be registered here; the
+    UI calls this only on the group path."""
+    _require_member(session, room_id, user_id)
+    existing = session.get(RegisteredGroupNote, note_id)
+    if existing is not None:
+        # Idempotent re-register from the same user in the same room
+        # is fine; cross-user / cross-room attempts are rejected so
+        # nobody can claim someone else's note ID as their own.
+        if existing.room_id != room_id or existing.author_user_id != user_id:
+            raise HTTPException(409, "note already registered elsewhere")
+        return {"ok": True}
+    session.add(
+        RegisteredGroupNote(
+            note_id=note_id,
+            room_id=room_id,
+            author_user_id=user_id,
+        )
+    )
+    session.commit()
+    return {"ok": True}
+
+
+def _require_group_note(
+    session: Session, note_id: str, room_id: str
+) -> RegisteredGroupNote:
+    row = session.get(RegisteredGroupNote, note_id)
+    if row is None or row.room_id != room_id:
+        # 404 instead of 403 so we don't even confirm the note exists
+        # to a probing attacker.
+        raise HTTPException(404, "note not found in this room")
+    return row
+
+
 @app.get(
     "/rooms/{room_id}/notes/{note_id}/social",
     response_model=NoteSocialOut,
@@ -500,6 +1204,7 @@ def get_note_social(
     user_id: str = Depends(current_user_id),
 ) -> NoteSocialOut:
     _require_member(session, room_id, user_id)
+    _require_group_note(session, note_id, room_id)
     likes = session.scalars(
         select(NoteLike).where(NoteLike.note_id == note_id)
     ).all()
@@ -509,7 +1214,10 @@ def get_note_social(
         .order_by(NoteComment.created_at.asc())
     ).all()
     # Bulk-load comment authors (avoid N+1 on small lists).
-    author_ids = {c.author_user_id for c in comments}
+    # Drop None (tombstoned author) before the IN-query — SQLAlchemy
+    # otherwise translates it to `IN (NULL)` which matches nothing
+    # and warns about unhashable types in some backends.
+    author_ids = {c.author_user_id for c in comments if c.author_user_id}
     authors = (
         {
             u.id: u
@@ -528,12 +1236,23 @@ def get_note_social(
                 id=c.id,
                 note_id=c.note_id,
                 author_user_id=c.author_user_id,
-                author_handle=authors[c.author_user_id].handle
-                if c.author_user_id in authors
-                else "?",
-                author_display_name=authors[c.author_user_id].display_name
-                if c.author_user_id in authors
-                else "(unknown)",
+                # A null author_user_id (the deletion tombstone path)
+                # renders as the "deleted user" sentinel; an unknown
+                # but non-null id falls back to "?".
+                author_handle=(
+                    authors[c.author_user_id].handle
+                    if c.author_user_id and c.author_user_id in authors
+                    else ("deleted" if c.author_user_id is None else "?")
+                ),
+                author_display_name=(
+                    authors[c.author_user_id].display_name
+                    if c.author_user_id and c.author_user_id in authors
+                    else (
+                        "(deleted user)"
+                        if c.author_user_id is None
+                        else "(unknown)"
+                    )
+                ),
                 body=c.body,
                 created_at=c.created_at.isoformat()
                 if c.created_at.tzinfo
@@ -556,6 +1275,7 @@ def toggle_note_like(
     user_id: str = Depends(current_user_id),
 ) -> NoteSocialOut:
     _require_member(session, room_id, user_id)
+    _require_group_note(session, note_id, room_id)
     existing = session.scalar(
         select(NoteLike).where(
             NoteLike.note_id == note_id, NoteLike.user_id == user_id
@@ -589,6 +1309,7 @@ def add_note_comment(
     user_id: str = Depends(current_user_id),
 ) -> NoteSocialOut:
     _require_member(session, room_id, user_id)
+    _require_group_note(session, note_id, room_id)
     session.add(
         NoteComment(
             id=str(uuid.uuid4()),
@@ -885,7 +1606,7 @@ def list_agent_notes(
 # ---------------------------------------------------------------------------
 # Reasoning — the core path (architecture.MD §4.1)
 # ---------------------------------------------------------------------------
-def _orchestrator(session: Session) -> AgentOrchestrator:
+def _orchestrator(session: Session, allow_web: bool = False) -> AgentOrchestrator:
     ledger = app.state.ledger
     # If a DeepSeek key is configured at process start, use the real
     # generator + verifier. Otherwise the placeholder pair keeps the
@@ -894,17 +1615,60 @@ def _orchestrator(session: Session) -> AgentOrchestrator:
     has_key = bool(_os.environ.get("DEEPSEEK_API_KEY"))
     generator = DeepSeekGenerator() if has_key else PlaceholderGenerator()
     verifier = DeepSeekVerifier() if has_key else PassThroughVerifier()
-    # Web search is opt-in via env (BIBLE_IU_WEB_SEARCH=1). Stays off by
-    # default so deployments don't accidentally hit the network without
-    # consent (rule-guide.MD §8 — rule-bounded sandbox).
-    web_enabled = _os.environ.get("BIBLE_IU_WEB_SEARCH", "").strip() == "1"
     engine = CitationEngine(
-        retriever=SqlRetriever(session, web_searcher=make_searcher(web_enabled)),
+        retriever=SqlRetriever(session, web_searcher=make_searcher(allow_web)),
         generator=generator,
         verifier=verifier,
         ledger=ledger,
     )
     return AgentOrchestrator(engine=engine, ledger=ledger)
+
+
+# Per-user, per-room daily question counter — used by
+# `_enforce_daily_quota` to honor `agent_settings.max_questions_per_user_per_day`.
+# In-memory, single-instance only (resets on restart). For multi-instance
+# deployments swap to Redis INCR with a TTL until next UTC midnight.
+_DAILY_COUNTS: dict[tuple[str, str, str], int] = {}
+_DAILY_LOCK = __import__("threading").Lock()
+
+
+def _enforce_daily_quota(
+    session: Session, room_id: str, user_id: str, limit: int
+) -> None:
+    """Raise 429 when the user has already used their quota for this
+    room today (UTC). The increment happens here, before the expensive
+    reasoning call, so a refused turn doesn't burn a quota slot."""
+    today = datetime.now(timezone.utc).date().isoformat()
+    key = (user_id, room_id, today)
+    with _DAILY_LOCK:
+        used = _DAILY_COUNTS.get(key, 0)
+        if used >= limit:
+            raise HTTPException(
+                429,
+                f"Daily question quota reached ({limit}/day in this room). "
+                "Resets at midnight UTC.",
+            )
+        _DAILY_COUNTS[key] = used + 1
+
+
+def _web_search_allowed(room: Room) -> bool:
+    """Two-layer gate:
+      env BIBLE_IU_WEB_SEARCH="0"  → deployment kill-switch; web is off
+                                     for the whole instance regardless of
+                                     room settings. Useful for offline
+                                     dev or for the rule-bounded sandbox
+                                     (rule-guide.MD §8).
+      room.agent_settings.allow_web_search → the admin's per-room
+                                     opt-in. False by default; admins
+                                     enable via PATCH /agent_settings.
+    Both must be on for the room to actually hit the network."""
+    import os as _os
+
+    env_kill = _os.environ.get("BIBLE_IU_WEB_SEARCH", "1").strip() == "0"
+    if env_kill:
+        return False
+    settings = AgentSettings(**dict(room.agent_settings or {}))
+    return bool(settings.allow_web_search)
 
 
 @app.post(
@@ -915,8 +1679,31 @@ def _orchestrator(session: Session) -> AgentOrchestrator:
 def reason(
     payload: ReasoningRequest,
     session: Session = Depends(db),
+    user_id: str = Depends(current_user_id),
 ) -> ReasoningResponse:
-    orch = _orchestrator(session)
+    # Gate every reasoning request through the room's admin settings.
+    room = _require_member(session, payload.room_id, user_id)
+    settings = _agent_settings(room)
+    # User-level override: when the user's Settings has bypassAgentGate
+    # enabled, the room-level gate is skipped for that account only.
+    user = session.get(User, user_id)
+    ui_prefs = (dict(user.preferences or {}).get("ui", {}) or {})
+    bypass_gate = bool(ui_prefs.get("bypassAgentGate", False))
+    if not settings.agent_enabled and not bypass_gate:
+        raise HTTPException(403, "the agent is disabled in this room")
+    # Per-user daily quota — set by the admin via PATCH /agent_settings.
+    # Counts SQL ledger rows for this user in this room since UTC midnight.
+    if settings.max_questions_per_user_per_day:
+        _enforce_daily_quota(
+            session, payload.room_id, user_id, settings.max_questions_per_user_per_day,
+        )
+    # The user-facing toggle in Settings can ASK to bypass the citation
+    # engine; whether the request honors it is the admin's call.
+    effective_bypass = (
+        payload.bypass_citation_engine
+        and settings.bypass_citation_engine_allowed
+    )
+    orch = _orchestrator(session, allow_web=_web_search_allowed(room))
     turn = orch.reason(
         OrchestratorReq(
             room_id=payload.room_id,
@@ -932,7 +1719,8 @@ def reason(
                 )
                 for h in payload.history
             ],
-            bypass_citation_engine=payload.bypass_citation_engine,
+            bypass_citation_engine=effective_bypass,
+            scope_kind=payload.scope_kind,
         )
     )
     # Persist the agent's note only if the turn passed the rule layer
@@ -942,7 +1730,281 @@ def reason(
         note_appended = _persist_agent_note(
             session, payload.room_id, turn.note_to_append
         )
-    return _turn_to_response(turn, note_appended=note_appended)
+    return _turn_to_response(
+        turn,
+        note_appended=note_appended,
+        allow_links=settings.allow_external_links,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Reading plans (CLAUDE.md §4.7 — daily plans drive retention)
+#
+# Plans are hardcoded in `backend.api.reading_plans`; users opt into
+# them and the server tracks (a) when they started + (b) which days
+# they've ticked off. "Today" is derived from
+# `(today - started_at).days + 1`, capped at plan length.
+# ---------------------------------------------------------------------------
+class ReadingPlanSummary(BaseModel):
+    id: str
+    name: str
+    summary: str
+    length_days: int
+    # Caller-scoped — null when the user isn't enrolled.
+    enrolled: bool = False
+    current_day: Optional[int] = None
+    completed_days: int = 0
+
+
+class ReadingPlanDayOut(BaseModel):
+    plan_id: str
+    day_index: int
+    refs: list[str]
+    completed: bool
+
+
+def _plan_status(
+    session: Session, user_id: str, plan_id: str
+) -> tuple[bool, Optional[int], int]:
+    """(enrolled, current_day_index, completed_days)."""
+    enr = session.scalar(
+        select(ReadingPlanEnrollment).where(
+            ReadingPlanEnrollment.user_id == user_id,
+            ReadingPlanEnrollment.plan_id == plan_id,
+        )
+    )
+    completed = session.query(ReadingPlanProgress).filter(
+        ReadingPlanProgress.user_id == user_id,
+        ReadingPlanProgress.plan_id == plan_id,
+    ).count()
+    if enr is None:
+        return False, None, completed
+    started = enr.started_at
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=timezone.utc)
+    delta = (datetime.now(timezone.utc) - started).days
+    plan = reading_plans.PLANS.get(plan_id)
+    length = len(plan["days"]) if plan else 1
+    current = max(1, min(length, delta + 1))
+    return True, current, completed
+
+
+@app.get(
+    "/reading-plans",
+    response_model=list[ReadingPlanSummary],
+    dependencies=[Depends(require_password)],
+)
+def list_reading_plans(
+    session: Session = Depends(db),
+    user_id: str = Depends(current_user_id),
+) -> list[ReadingPlanSummary]:
+    out: list[ReadingPlanSummary] = []
+    for plan_id in reading_plans.plan_ids():
+        s = reading_plans.plan_summary(plan_id)
+        enrolled, current, done = _plan_status(session, user_id, plan_id)
+        out.append(
+            ReadingPlanSummary(
+                **s,
+                enrolled=enrolled,
+                current_day=current,
+                completed_days=done,
+            )
+        )
+    return out
+
+
+@app.post(
+    "/reading-plans/{plan_id}/enroll",
+    response_model=ReadingPlanSummary,
+    dependencies=[Depends(require_password)],
+)
+def enroll_reading_plan(
+    plan_id: str,
+    session: Session = Depends(db),
+    user_id: str = Depends(current_user_id),
+) -> ReadingPlanSummary:
+    if plan_id not in reading_plans.PLANS:
+        raise HTTPException(404, "unknown plan")
+    existing = session.scalar(
+        select(ReadingPlanEnrollment).where(
+            ReadingPlanEnrollment.user_id == user_id,
+            ReadingPlanEnrollment.plan_id == plan_id,
+        )
+    )
+    if existing is None:
+        session.add(
+            ReadingPlanEnrollment(
+                id=str(uuid.uuid4()),
+                user_id=user_id,
+                plan_id=plan_id,
+            )
+        )
+        session.commit()
+    return list_reading_plans(session, user_id)[
+        next(i for i, s in enumerate(reading_plans.plan_ids()) if s == plan_id)
+    ]
+
+
+@app.delete(
+    "/reading-plans/{plan_id}/enroll",
+    dependencies=[Depends(require_password)],
+)
+def leave_reading_plan(
+    plan_id: str,
+    session: Session = Depends(db),
+    user_id: str = Depends(current_user_id),
+) -> dict:
+    """Unenroll. Progress rows are kept so re-enrolling resumes where
+    the user left off; pass `?wipe=1` to scrub progress too."""
+    session.query(ReadingPlanEnrollment).filter(
+        ReadingPlanEnrollment.user_id == user_id,
+        ReadingPlanEnrollment.plan_id == plan_id,
+    ).delete(synchronize_session=False)
+    session.commit()
+    return {"ok": True}
+
+
+@app.get(
+    "/reading-plans/{plan_id}/today",
+    response_model=ReadingPlanDayOut,
+    dependencies=[Depends(require_password)],
+)
+def reading_plan_today(
+    plan_id: str,
+    session: Session = Depends(db),
+    user_id: str = Depends(current_user_id),
+) -> ReadingPlanDayOut:
+    if plan_id not in reading_plans.PLANS:
+        raise HTTPException(404, "unknown plan")
+    enrolled, current, _ = _plan_status(session, user_id, plan_id)
+    if not enrolled or current is None:
+        raise HTTPException(400, "enroll in this plan first")
+    try:
+        refs = reading_plans.plan_day(plan_id, current)
+    except IndexError:
+        raise HTTPException(404, "no day for this index")
+    completed = (
+        session.query(ReadingPlanProgress)
+        .filter(
+            ReadingPlanProgress.user_id == user_id,
+            ReadingPlanProgress.plan_id == plan_id,
+            ReadingPlanProgress.day_index == current,
+        )
+        .first()
+        is not None
+    )
+    return ReadingPlanDayOut(
+        plan_id=plan_id,
+        day_index=current,
+        refs=refs,
+        completed=completed,
+    )
+
+
+@app.post(
+    "/reading-plans/{plan_id}/days/{day_index}/complete",
+    response_model=ReadingPlanDayOut,
+    dependencies=[Depends(require_password)],
+)
+def complete_reading_plan_day(
+    plan_id: str,
+    day_index: int,
+    session: Session = Depends(db),
+    user_id: str = Depends(current_user_id),
+) -> ReadingPlanDayOut:
+    if plan_id not in reading_plans.PLANS:
+        raise HTTPException(404, "unknown plan")
+    try:
+        refs = reading_plans.plan_day(plan_id, day_index)
+    except IndexError:
+        raise HTTPException(404, "no day for this index")
+    existing = session.scalar(
+        select(ReadingPlanProgress).where(
+            ReadingPlanProgress.user_id == user_id,
+            ReadingPlanProgress.plan_id == plan_id,
+            ReadingPlanProgress.day_index == day_index,
+        )
+    )
+    if existing is None:
+        session.add(
+            ReadingPlanProgress(
+                id=str(uuid.uuid4()),
+                user_id=user_id,
+                plan_id=plan_id,
+                day_index=day_index,
+            )
+        )
+        session.commit()
+    return ReadingPlanDayOut(
+        plan_id=plan_id,
+        day_index=day_index,
+        refs=refs,
+        completed=True,
+    )
+
+
+@app.websocket("/ws/chat/{room_id}")
+async def chat_ws(ws: WebSocket, room_id: str) -> None:
+    """Live chat feed for a room. The browser opens this after the
+    initial `GET /chat` and receives one JSON line per new message.
+
+    Auth: app password via `?password=...`, session token via
+    `?session=...`. Membership is enforced on connect — a sign-in
+    that isn't a room member is rejected with 4401 (a custom Fly /
+    nginx-friendly close code, matching the yjs endpoint's style)."""
+    await ws.accept()
+    expected_pw = (os.environ.get("BIBLE_IU_PASSWORD") or "").strip() or None
+    if expected_pw is not None and ws.query_params.get("password") != expected_pw:
+        await ws.close(code=4001, reason="Unauthorized")
+        return
+    token = ws.query_params.get("session", "").strip()
+    user = resolve_user(token) if token else None
+    if user is None:
+        await ws.close(code=4001, reason="Unauthorized")
+        return
+    s = get_session()
+    try:
+        room = s.get(Room, room_id)
+        if room is None:
+            await ws.close(code=4404, reason="room not found")
+            return
+        member = s.scalar(
+            select(RoomMember).where(
+                RoomMember.room_id == room_id,
+                RoomMember.user_id == user.id,
+            )
+        )
+        if member is None:
+            await ws.close(code=4403, reason="not a member")
+            return
+    finally:
+        s.close()
+
+    queue = await chat_hub.subscribe(room_id)
+    try:
+        while True:
+            # We don't actually expect inbound frames — the client
+            # posts via HTTP. But we run a reader so the connection
+            # detects close from the browser side promptly.
+            recv = asyncio.create_task(ws.receive_text())
+            send = asyncio.create_task(queue.get())
+            done, pending = await asyncio.wait(
+                {recv, send}, return_when=asyncio.FIRST_COMPLETED
+            )
+            for p in pending:
+                p.cancel()
+            if recv in done and not recv.cancelled():
+                try:
+                    recv.result()
+                except WebSocketDisconnect:
+                    return
+            if send in done and not send.cancelled():
+                msg = send.result()
+                await ws.send_text(msg)
+    except WebSocketDisconnect:
+        pass
+    finally:
+        await chat_hub.unsubscribe(room_id, queue)
 
 
 @app.websocket("/ws/yjs/{room_id}")
@@ -968,16 +2030,20 @@ async def reason_ws(ws: WebSocket) -> None:
     custom headers on WS handshakes). If `BIBLE_IU_PASSWORD` is unset on
     the server, no auth is required (matches the HTTP gate's behavior).
     """
-    import asyncio
-    import os as _os
-
     await ws.accept()
-    expected = (_os.environ.get("BIBLE_IU_PASSWORD") or "").strip() or None
+    expected = (os.environ.get("BIBLE_IU_PASSWORD") or "").strip() or None
     if expected is not None:
         provided = ws.query_params.get("password", "")
         if provided != expected:
             await ws.close(code=4001, reason="Unauthorized")
             return
+
+    # Resolve the user from the session token (same pattern as chat WS).
+    token = ws.query_params.get("session", "").strip()
+    user = resolve_user(token) if token else None
+    if user is None:
+        await ws.close(code=4001, reason="Unauthorized")
+        return
 
     session = get_session()
     loop = asyncio.get_event_loop()
@@ -986,7 +2052,38 @@ async def reason_ws(ws: WebSocket) -> None:
         while True:
             payload = await ws.receive_json()
             req = ReasoningRequest(**payload)
-            orch = _orchestrator(session)
+
+            # Validate room membership + agent_enabled gate.
+            room = session.get(Room, req.room_id)
+            if room is None:
+                await ws.send_json({"type": "error", "message": "room not found"})
+                break
+            member = session.scalar(
+                select(RoomMember).where(
+                    RoomMember.room_id == req.room_id,
+                    RoomMember.user_id == user.id,
+                )
+            )
+            if member is None:
+                await ws.send_json({"type": "error", "message": "not a member of this room"})
+                break
+            ag_settings = _agent_settings(room)
+            ui_prefs = (dict(user.preferences or {}).get("ui", {}) or {})
+            bypass_gate = bool(ui_prefs.get("bypassAgentGate", False))
+            if not ag_settings.agent_enabled and not bypass_gate:
+                await ws.send_json({"type": "error", "message": "the agent is disabled in this room"})
+                break
+            if ag_settings.max_questions_per_user_per_day:
+                try:
+                    _enforce_daily_quota(
+                        session, req.room_id, user.id,
+                        ag_settings.max_questions_per_user_per_day,
+                    )
+                except HTTPException as e:
+                    await ws.send_json({"type": "error", "message": e.detail})
+                    break
+
+            orch = _orchestrator(session, allow_web=_web_search_allowed(room))
 
             queue: asyncio.Queue = asyncio.Queue()
 
@@ -1026,6 +2123,7 @@ async def reason_ws(ws: WebSocket) -> None:
                                     for h in req.history
                                 ],
                                 bypass_citation_engine=req.bypass_citation_engine,
+                                scope_kind=req.scope_kind,
                             ),
                             events,
                         ),
@@ -1048,7 +2146,9 @@ async def reason_ws(ws: WebSocket) -> None:
                         {
                             "type": "result",
                             **_turn_to_response(
-                                data, note_appended=note_appended
+                                data,
+                                note_appended=note_appended,
+                                allow_links=ag_settings.allow_external_links,
                             ).model_dump(),
                         }
                     )
@@ -1105,14 +2205,35 @@ def _persist_agent_note(
     )
 
 
+_URL_RE = __import__("re").compile(
+    r"https?://[^\s)\]>}\"']+|www\.[^\s)\]>}\"']+",
+    __import__("re").IGNORECASE,
+)
+
+
+def _strip_links(text: str) -> str:
+    """Replace inline URLs with `[link removed]` when the room's
+    `allow_external_links` is off. Doesn't touch markdown citation
+    pills — those go through structured `claims`, not the answer body."""
+    if not text:
+        return text
+    return _URL_RE.sub("[link removed]", text)
+
+
 def _turn_to_response(
     turn,
     note_appended: Optional[AgentNoteAppended] = None,
+    allow_links: bool = True,
 ) -> ReasoningResponse:
+    answer = turn.grounded.answer
+    reasoning = turn.grounded.reasoning
+    if not allow_links:
+        answer = _strip_links(answer)
+        reasoning = _strip_links(reasoning)
     return ReasoningResponse(
         decision=turn.decision.value,
-        reasoning=turn.grounded.reasoning,
-        answer=turn.grounded.answer,
+        reasoning=reasoning,
+        answer=answer,
         claims=[_claim_out(c, turn.grounded.retrieval) for c in turn.grounded.claims],
         dropped=[_claim_out(c, turn.grounded.retrieval) for c in turn.grounded.dropped],
         revision_hints=turn.revision_hints,
@@ -1138,3 +2259,36 @@ def _claim_out(c, retrieval) -> ClaimOut:
             for cid in c.citation_ids
         ],
     )
+
+
+# ---------------------------------------------------------------------------
+# Static frontend assets — when BIBLE_IU_STATIC_DIR points at the Vite
+# build output (Dockerfile copies it from the frontend builder stage),
+# serve the SPA from the same FastAPI process. In dev this var is
+# unset and the frontend runs separately on port 5173.
+# ---------------------------------------------------------------------------
+_STATIC_DIR = os.getenv("BIBLE_IU_STATIC_DIR", "").strip()
+if _STATIC_DIR:
+    _STATIC_PATH = Path(_STATIC_DIR)
+    if _STATIC_PATH.is_dir():
+        # Mount /assets, etc. The catch-all below routes everything
+        # else through index.html so client-side routing works on
+        # deep-links like /room/abc.
+        app.mount(
+            "/assets",
+            StaticFiles(directory=str(_STATIC_PATH / "assets")),
+            name="assets",
+        )
+
+        @app.get("/")
+        def _serve_root() -> FileResponse:
+            return FileResponse(str(_STATIC_PATH / "index.html"))
+
+        @app.get("/{full_path:path}")
+        def _serve_spa(full_path: str) -> FileResponse:
+            # API + WS routes register first, so this only matches
+            # unknown paths — exactly what we want for SPA routing.
+            candidate = _STATIC_PATH / full_path
+            if candidate.is_file():
+                return FileResponse(str(candidate))
+            return FileResponse(str(_STATIC_PATH / "index.html"))

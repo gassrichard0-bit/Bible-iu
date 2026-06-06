@@ -50,6 +50,10 @@ class ReasoningRequest:
     # / citation-engine.MD §10. When true, the orchestrator skips both
     # verification (inside the engine) and the rule-layer enforce step.
     bypass_citation_engine: bool = False
+    # Zoom level — the retriever uses this to expand or narrow the
+    # context it pulls from scripture. See ReasoningRequest in
+    # api/schemas.py for the four scopes.
+    scope_kind: str = "verse"
 
 
 @dataclass
@@ -126,6 +130,7 @@ class AgentOrchestrator:
             events=events,
             history=req.history,
             bypass=req.bypass_citation_engine,
+            scope_kind=req.scope_kind,
         )
         # Rule-layer enforce() ALWAYS runs (rule-guide.MD safety
         # predicates are non-bypassable). When the citation engine is

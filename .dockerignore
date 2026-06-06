@@ -1,0 +1,20 @@
+# Build artifacts + secrets — never copy into the image.
+**/.git
+**/.gitignore
+**/node_modules
+**/dist
+**/.venv
+**/__pycache__
+**/*.pyc
+**/.env
+**/.env.*
+!**/.env.example
+**/.DS_Store
+**/.vite
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+backend/data/*.sqlite*
+backend/data/yjs/
+tests/
+sandbox/

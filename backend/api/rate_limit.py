@@ -49,15 +49,25 @@ def _take(ip: str) -> bool:
         return False
 
 
-def rate_limit(request: Request) -> None:
-    # Trust the upstream proxy (cloudflared) to set X-Forwarded-For,
-    # otherwise fall back to the raw client.
+def _client_ip(request: Request) -> str:
+    """Prefer X-Forwarded-For (Fly / cloudflared / any proxy) then the
+    raw client. Never falls through to a constant — that would make
+    one bad actor knock out everyone."""
     fwd = request.headers.get("x-forwarded-for", "")
-    ip = (fwd.split(",")[0].strip() if fwd else "") or (
+    return (fwd.split(",")[0].strip() if fwd else "") or (
         request.client.host if request.client else "unknown"
     )
-    if not _take(ip):
+
+
+def rate_limit(request: Request) -> None:
+    """Per-user (when signed in) or per-IP (when not) token-bucket.
+    Keying by `user:<id>` when a session token is present means a
+    shared IP (dorm / NAT / coffee shop) doesn't share a bucket, and
+    a logged-in attacker can't bypass the limit by hopping IPs."""
+    token = request.headers.get("x-session-token", "").strip()
+    key = f"user:{token}" if token else f"ip:{_client_ip(request)}"
+    if not _take(key):
         raise HTTPException(
             status_code=429,
-            detail=f"Too many requests. Limit ~{int(_RATE)}/min per IP.",
+            detail=f"Too many requests. Limit ~{int(_RATE)}/min.",
         )

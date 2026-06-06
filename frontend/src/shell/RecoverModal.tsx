@@ -9,6 +9,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api, setSessionToken, type SessionResponse } from "../lib/api";
 import { BottomSheet } from "./BottomSheet";
+import { ActionButton, Pill } from "./SettingsButtons";
 
 interface Props {
   open: boolean;
@@ -103,7 +104,7 @@ export function RecoverModal({ open, onClose, onRecovered }: Props) {
               value={handle}
               onChange={(e) => setHandle(e.target.value)}
               autoComplete="username"
-              className="w-full rounded border border-neutral-200 bg-paper px-2 py-1.5 text-sm dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100"
+              className="w-full rounded-2xl border border-neutral-200 bg-paper px-3.5 py-3 text-[15px] outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-200/40 dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100 dark:focus:border-amber-700 dark:focus:ring-amber-800/40"
             />
           </label>
           <label className="mb-2 block">
@@ -116,7 +117,7 @@ export function RecoverModal({ open, onClose, onRecovered }: Props) {
                 setCode(e.target.value.toUpperCase())
               }
               placeholder="XXXX-XXXX-XXXX"
-              className="w-full rounded border border-neutral-200 bg-paper px-2 py-1.5 font-mono text-sm dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100"
+              className="w-full rounded-2xl border border-neutral-200 bg-paper px-3.5 py-3 font-mono text-[15px] tracking-wider outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-200/40 dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100 dark:focus:border-amber-700 dark:focus:ring-amber-800/40"
             />
           </label>
           <label className="mb-3 block">
@@ -128,7 +129,7 @@ export function RecoverModal({ open, onClose, onRecovered }: Props) {
               value={newPassword}
               onChange={(e) => setNewPassword(e.target.value)}
               autoComplete="new-password"
-              className="w-full rounded border border-neutral-200 bg-paper px-2 py-1.5 text-sm dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100"
+              className="w-full rounded-2xl border border-neutral-200 bg-paper px-3.5 py-3 text-[15px] outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-200/40 dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100 dark:focus:border-amber-700 dark:focus:ring-amber-800/40"
             />
           </label>
           {error && (
@@ -136,21 +137,13 @@ export function RecoverModal({ open, onClose, onRecovered }: Props) {
               {error}
             </p>
           )}
-          <div className="flex items-center justify-between gap-2">
-            <button
-              type="button"
-              onClick={onClose}
-              className="rounded border border-neutral-300 px-2 py-1 text-xs hover:bg-paper-soft dark:border-neutral-700 dark:hover:bg-neutral-800"
-            >
+          <div className="flex items-center justify-end gap-2">
+            <Pill type="button" onClick={onClose}>
               Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={busy}
-              className="rounded bg-neutral-900 px-3 py-1 text-xs text-white disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900"
-            >
+            </Pill>
+            <ActionButton type="submit" disabled={busy}>
               {busy ? "Recovering…" : "Reset password"}
-            </button>
+            </ActionButton>
           </div>
         </form>
     </BottomSheet>

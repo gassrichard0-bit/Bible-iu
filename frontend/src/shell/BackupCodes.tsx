@@ -9,6 +9,7 @@
  */
 import { useEffect, useState } from "react";
 import { api, type BackupCodesStatus } from "../lib/api";
+import { ActionButton, Pill } from "./SettingsButtons";
 
 export function BackupCodesSection() {
   const [status, setStatus] = useState<BackupCodesStatus | null>(null);
@@ -56,7 +57,7 @@ export function BackupCodesSection() {
       <h3 className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
         Backup codes
       </h3>
-      <div className="overflow-hidden rounded border border-neutral-200 dark:border-neutral-800">
+      <div className="overflow-hidden rounded-2xl border border-neutral-200 bg-paper shadow-[0_1px_2px_rgba(0,0,0,0.04),inset_0_1px_0_rgba(255,255,255,0.6)] dark:border-neutral-800 dark:bg-neutral-900 dark:shadow-[0_1px_2px_rgba(0,0,0,0.2),inset_0_1px_0_rgba(255,255,255,0.04)]">
         <div className="border-b border-neutral-200 px-3 py-3 dark:border-neutral-800">
           <p className="mb-2 text-[11px] text-neutral-600 dark:text-neutral-300">
             If you forget your password, you can use one of these single-use
@@ -92,17 +93,13 @@ export function BackupCodesSection() {
               {error}
             </p>
           )}
-          <button
-            onClick={generate}
-            disabled={busy}
-            className="rounded border border-neutral-300 px-2 py-1 text-xs hover:bg-paper-soft disabled:opacity-50 dark:border-neutral-700 dark:hover:bg-neutral-800"
-          >
+          <Pill onClick={generate} disabled={busy}>
             {busy
               ? "Generating…"
               : status && status.total > 0
                 ? "Regenerate codes"
                 : "Generate codes"}
-          </button>
+          </Pill>
         </div>
       </div>
       {pendingCodes && (
@@ -153,51 +150,33 @@ function CodesRevealDialog({
       <div
         role="dialog"
         aria-modal="true"
-        className="relative z-10 w-full max-w-md overflow-hidden rounded-lg border border-neutral-200 bg-paper shadow-xl dark:border-neutral-800 dark:bg-neutral-900"
+        className="relative z-10 w-full max-w-md overflow-hidden rounded-2xl border border-neutral-200 bg-paper shadow-2xl dark:border-neutral-800 dark:bg-neutral-900"
       >
         <header className="border-b border-neutral-200 px-4 py-2 dark:border-neutral-800">
           <h2 className="text-sm font-semibold">Save your backup codes</h2>
         </header>
         <div className="px-4 py-3">
-          <p className="mb-2 rounded border border-amber-300 bg-amber-50 px-2 py-1 text-xs text-amber-800 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-200">
+          <p className="mb-3 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-200">
             This is the only time these codes will be shown. After this
             dialog closes, the server only keeps hashed copies. Save them
             now.
           </p>
-          <ul className="mb-3 rounded border border-neutral-200 bg-paper-soft p-3 font-mono text-sm dark:border-neutral-800 dark:bg-neutral-950">
+          <ul className="mb-3 rounded-2xl border border-neutral-200 bg-paper-soft p-3 font-mono text-sm shadow-[inset_0_1px_2px_rgba(0,0,0,0.06)] dark:border-neutral-800 dark:bg-neutral-950 dark:shadow-[inset_0_1px_2px_rgba(0,0,0,0.4)]">
             {codes.map((c) => (
               <li key={c} className="leading-relaxed">
                 {c}
               </li>
             ))}
           </ul>
-          <div className="flex items-center justify-between gap-2">
-            <div className="flex gap-2">
-              <button
-                onClick={copy}
-                className="rounded border border-neutral-300 px-2 py-1 text-xs hover:bg-paper-soft dark:border-neutral-700 dark:hover:bg-neutral-800"
-              >
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex flex-wrap gap-2">
+              <Pill onClick={copy}>
                 {copied ? "✓ Copied" : "Copy all"}
-              </button>
-              <button
-                onClick={download}
-                className="rounded border border-neutral-300 px-2 py-1 text-xs hover:bg-paper-soft dark:border-neutral-700 dark:hover:bg-neutral-800"
-              >
-                Download .txt
-              </button>
-              <button
-                onClick={() => window.print()}
-                className="rounded border border-neutral-300 px-2 py-1 text-xs hover:bg-paper-soft dark:border-neutral-700 dark:hover:bg-neutral-800"
-              >
-                Print
-              </button>
+              </Pill>
+              <Pill onClick={download}>Download .txt</Pill>
+              <Pill onClick={() => window.print()}>Print</Pill>
             </div>
-            <button
-              onClick={onClose}
-              className="rounded bg-neutral-900 px-3 py-1 text-xs text-white dark:bg-neutral-100 dark:text-neutral-900"
-            >
-              I&rsquo;ve saved them
-            </button>
+            <ActionButton onClick={onClose}>I&rsquo;ve saved them</ActionButton>
           </div>
         </div>
       </div>

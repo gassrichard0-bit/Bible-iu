@@ -2,11 +2,26 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <!--
+      viewport-fit=cover  → fill the entire screen incl. notch / island.
+      interactive-widget=resizes-content → Android keyboard pushes the
+        viewport (matches iOS), so visualViewport + dvh stay in sync.
+      No maximum-scale / user-scalable=no — those break pinch zoom and
+        WCAG 1.4.4. We rely on a 16px-min font-size on touch viewports
+        (index.css) to prevent the iOS auto-zoom-on-focus instead.
+    -->
     <meta
       name="viewport"
-      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover"
+      content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content"
     />
+    <meta name="color-scheme" content="light dark" />
     <meta name="theme-color" content="#171717" />
+    <meta name="description" content="Bible IU — a clean, modern Bible study app. Read scripture, mark up verses, write notes, and discuss in small groups." />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Bible IU" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="/icon-180.png" />
     <title>Bible IU</title>
   </head>
   <body class="bg-paper-soft text-neutral-800 dark:bg-neutral-950 dark:text-neutral-100">

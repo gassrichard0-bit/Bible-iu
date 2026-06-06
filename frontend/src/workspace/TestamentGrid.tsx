@@ -16,27 +16,18 @@ interface Props {
   testament: Testament;
   currentBook: string;
   onPickBook: (book: string) => void;
-  onZoomIn: () => void;
 }
 
 export function TestamentGrid({
   testament,
   currentBook,
   onPickBook,
-  onZoomIn,
 }: Props) {
   const books = booksInTestament(testament);
   return (
     <div className="flex h-full flex-col">
       <div className="flex items-center justify-between border-b border-neutral-200 bg-paper px-4 py-2 dark:border-neutral-800 dark:bg-neutral-900">
         <h2 className="text-sm font-semibold">{testamentName(testament)}</h2>
-        <button
-          onClick={onZoomIn}
-          className="rounded border border-neutral-200 px-2 py-1 text-[11px] text-neutral-600 hover:bg-paper-soft dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
-          title="Back to chapter view"
-        >
-          zoom in
-        </button>
       </div>
       <div className="flex-1 overflow-y-auto p-3">
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4">
