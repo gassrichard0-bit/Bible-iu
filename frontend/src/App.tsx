@@ -20,6 +20,10 @@ import {
   writeSettings,
   type Settings,
 } from "./lib/settings";
+import {
+  maybeAutoEnablePush,
+  refreshPushSubscriptionIfOptedIn,
+} from "./lib/pushNotifications";
 
 type GateState = "checking" | "open" | "locked";
 type AuthState =
@@ -119,6 +123,10 @@ export function App() {
           return merged;
         });
         settingsHydratedRef.current = true;
+        // Best-effort re-subscribe for push. Only runs if the user
+        // already opted in once — we never re-prompt for permission
+        // here. Failures are silent; Settings shows the real status.
+        void refreshPushSubscriptionIfOptedIn();
       })
       .catch(() => {
         clearSessionToken();
@@ -130,6 +138,13 @@ export function App() {
     setTheme((t) => (t === "dark" ? "light" : "dark"));
 
   function onSignedIn(handle: string) {
+    // Fire the auto-enable BEFORE the awaited authMe — we want this
+    // call to happen inside the transient user-activation window that
+    // the sign-in button tap opened. iOS Safari refuses
+    // `Notification.requestPermission()` once that window closes (~5s
+    // after the gesture), so we can't wait for the auth round-trip.
+    // Runs at most once per device (AUTO_TRIED flag in pushNotifications).
+    void maybeAutoEnablePush();
     // We need the canonical user id (for "is this my comment?" checks
     // in social-notes), so re-fetch authMe rather than guessing from
     // the handle. Also hydrate settings here for the fresh sign-in

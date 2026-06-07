@@ -1,10 +1,12 @@
 /**
- * Register the service worker in production builds only. Dev (Vite)
- * skips it because the SW caches `index.html` and would fight HMR.
+ * Register the service worker. We register in dev too — Web Push
+ * needs an active SW or `navigator.serviceWorker.ready` never
+ * resolves. The SW itself short-circuits its install + fetch handlers
+ * when running under Vite's dev port so HMR isn't broken; only its
+ * push + notificationclick handlers stay live there.
  */
 export function registerServiceWorker(): void {
   if (typeof window === "undefined" || !("serviceWorker" in navigator)) return;
-  if (import.meta.env.DEV) return;
   window.addEventListener("load", () => {
     navigator.serviceWorker
       .register("/sw.js", { scope: "/" })

@@ -189,9 +189,14 @@ function FormatToolbar({
     <div
       onMouseDown={stop}
       onPointerDown={stop}
+      // Positioned BELOW the editor (top-full mt-1) so the formatting
+      // strip never floats over the verse text, an adjacent note, or
+      // whatever else sits above this card — the previous `-top-9`
+      // made the toolbar overlap the new note being typed when the
+      // editor was the first thing in the inline panel.
       // Same glass recipe as the annotation toolbar pill so the two
       // surfaces feel like the same material.
-      className="absolute -top-9 right-0 z-30 flex items-center gap-1 rounded-[18px] border border-white/40 bg-paper/55 px-1.5 py-1 shadow-[0_4px_14px_rgba(0,0,0,0.10),inset_0_1px_0_rgba(255,255,255,0.45)] backdrop-blur-2xl backdrop-saturate-200 dark:border-white/10 dark:bg-neutral-900/45 dark:shadow-[0_4px_14px_rgba(0,0,0,0.40),inset_0_1px_0_rgba(255,255,255,0.08)]"
+      className="absolute top-full right-0 z-30 mt-1 flex items-center gap-1 rounded-[18px] border border-white/40 bg-paper/55 px-1.5 py-1 shadow-[0_4px_14px_rgba(0,0,0,0.10),inset_0_1px_0_rgba(255,255,255,0.45)] backdrop-blur-2xl backdrop-saturate-200 dark:border-white/10 dark:bg-neutral-900/45 dark:shadow-[0_4px_14px_rgba(0,0,0,0.40),inset_0_1px_0_rgba(255,255,255,0.08)]"
     >
       <Btn label="B" title="Bold" size={size} weight="font-bold" onTap={() => onCmd("bold")} />
       <Btn

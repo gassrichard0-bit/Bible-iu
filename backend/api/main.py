@@ -57,6 +57,7 @@ from ..data.models import (
     Note,
     NoteComment,
     NoteLike,
+    PushSubscription,
     ReadingPlanEnrollment,
     ReadingPlanProgress,
     RegisteredGroupNote,
@@ -70,9 +71,10 @@ from ..data.models import (
 from ..data.repos import UserNoteRepository
 from .auth import require_password
 from .auth_users import require_user, router as auth_router, resolve_user
+from .push import fanout_to_room, send_push_to_user, vapid_public_key
 from .observability import configure_logging, configure_sentry
 from .rate_limit import rate_limit
-from . import chat_hub, reading_plans, yjs_sync
+from . import chat_hub, reading_plan_scheduler, reading_plans, yjs_sync
 from .schemas import (
     AgentNoteAppended,
     AgentNoteOut,
@@ -109,9 +111,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.ledger = SqlLedger(session_factory=SessionLocal)
     # Yjs CRDT sync server (architecture.MD §3, CLAUDE.md §8).
     await yjs_sync.startup()
+    # Daily reading-plan reminders. Single-instance scheduler; swap
+    # for a job queue when we scale out (see module docstring).
+    await reading_plan_scheduler.startup()
     try:
         yield
     finally:
+        await reading_plan_scheduler.shutdown()
         await yjs_sync.shutdown()
 
 
@@ -241,6 +247,72 @@ class AccentPatch(BaseModel):
     """`null` clears the override and the frontend reverts to the
     auto-derived color. Any other value must be in the palette."""
     accent_color: Optional[str]
+
+
+# ---------------------------------------------------------------------------
+# Web Push — phone notifications for chat + group notes
+# ---------------------------------------------------------------------------
+class PushSubscribeBody(BaseModel):
+    endpoint: str
+    p256dh: str
+    auth: str
+
+
+@app.get("/push/vapid-key", dependencies=[Depends(require_password)])
+def push_vapid_key() -> dict[str, Optional[str]]:
+    """Returns the URL-safe base64 public key the browser passes to
+    `pushManager.subscribe({ applicationServerKey })`. Null when the
+    server isn't configured for push (dev box without VAPID keys)."""
+    return {"public_key": vapid_public_key()}
+
+
+@app.post("/push/subscribe", dependencies=[Depends(require_password)])
+def push_subscribe(
+    payload: PushSubscribeBody,
+    session: Session = Depends(db),
+    user_id: str = Depends(current_user_id),
+) -> dict[str, str]:
+    """Upserts a Web Push subscription for the current user. Endpoint
+    is the unique key — re-subscribing on the same device just refreshes
+    the keys instead of accumulating dead rows."""
+    existing = session.scalar(
+        select(PushSubscription).where(PushSubscription.endpoint == payload.endpoint)
+    )
+    if existing is not None:
+        existing.user_id = user_id
+        existing.p256dh = payload.p256dh
+        existing.auth = payload.auth
+    else:
+        session.add(
+            PushSubscription(
+                id=str(uuid.uuid4()),
+                user_id=user_id,
+                endpoint=payload.endpoint,
+                p256dh=payload.p256dh,
+                auth=payload.auth,
+            )
+        )
+    session.commit()
+    return {"ok": "subscribed"}
+
+
+class PushUnsubscribeBody(BaseModel):
+    endpoint: str
+
+
+@app.post("/push/unsubscribe", dependencies=[Depends(require_password)])
+def push_unsubscribe(
+    payload: PushUnsubscribeBody,
+    session: Session = Depends(db),
+    user_id: str = Depends(current_user_id),
+) -> dict[str, str]:
+    row = session.scalar(
+        select(PushSubscription).where(PushSubscription.endpoint == payload.endpoint)
+    )
+    if row is not None and row.user_id == user_id:
+        session.delete(row)
+        session.commit()
+    return {"ok": "unsubscribed"}
 
 
 @app.post(
@@ -1293,6 +1365,22 @@ def post_chat(
     # The hub is process-local; multi-instance deployments need Redis
     # pub/sub (see WORKSTREAM.md scale-out section).
     chat_hub.publish(room_id, out.model_dump())
+    # Wake phones that aren't currently watching this room. We push to
+    # every member except the sender — the SW notification tag uses
+    # the room_id so multiple messages collapse into one banner.
+    room = session.get(Room, room_id)
+    fanout_to_room(
+        session, room_id,
+        exclude_user_id=user_id,
+        payload={
+            "kind": "chat",
+            "room_id": room_id,
+            "room_name": (room.name if room else "Bible IU"),
+            "sender": (author.display_name or author.handle) if author else "Someone",
+            "body": (payload.body or "")[:140],
+            "url": f"/?room={room_id}",
+        },
+    )
     return out
 
 
@@ -1440,6 +1528,19 @@ async def post_chat_image(
     )
     out = _serialize_chat(msg, author, parent, parent_author)
     chat_hub.publish(room_id, out.model_dump())
+    room = session.get(Room, room_id)
+    fanout_to_room(
+        session, room_id,
+        exclude_user_id=user_id,
+        payload={
+            "kind": "chat",
+            "room_id": room_id,
+            "room_name": (room.name if room else "Bible IU"),
+            "sender": (author.display_name or author.handle) if author else "Someone",
+            "body": (body or "📷 Photo")[:140],
+            "url": f"/?room={room_id}",
+        },
+    )
     return out
 
 
@@ -1498,6 +1599,25 @@ def create_note(
     )
     session.add(note)
     session.commit()
+    # Push only on GROUP notes — personal notes are private to the
+    # author (rule-guide.MD §12) and must never reach another device.
+    if payload.scope == "group":
+        author = session.get(User, user_id)
+        room = session.get(Room, room_id)
+        anchor = (payload.verse_anchors[0] if payload.verse_anchors else None)
+        preview = (payload.snapshot or "")[:140]
+        fanout_to_room(
+            session, room_id,
+            exclude_user_id=user_id,
+            payload={
+                "kind": "note",
+                "room_id": room_id,
+                "room_name": (room.name if room else "Bible IU"),
+                "sender": (author.display_name or author.handle) if author else "Someone",
+                "body": preview or (f"shared a note on {anchor}" if anchor else "shared a note"),
+                "url": f"/?room={room_id}&tab=notes",
+            },
+        )
     return _note_to_read(note)
 
 
@@ -1516,6 +1636,78 @@ def list_notes(
         _note_to_read(n)
         for n in (*repo.list_personal(), *repo.list_group())
     ]
+
+
+# ----------------------------- group-note delete ---------------------------
+# Author-only delete enforced server-side. Personal notes don't need
+# this — the personal Y.Doc is per-user, so no one else can connect
+# to it. For GROUP notes the shared Y.Doc is read/write to every
+# member, so the client UI gate alone is bypassable. This endpoint
+# is the authoritative check: validate authorship from the shared
+# doc, then apply the Y delete on the server's copy. The yjs sync
+# layer broadcasts the change to every connected client, including
+# the originator.
+@app.delete(
+    "/rooms/{room_id}/notes/{note_id}",
+    dependencies=[Depends(require_password)],
+)
+async def delete_group_note(
+    room_id: str,
+    note_id: str,
+    user_id: str = Depends(current_user_id),
+    session: Session = Depends(db),
+) -> dict[str, str]:
+    _require_member(session, room_id, user_id)
+    if yjs_sync._server_ctx is None:
+        raise HTTPException(503, "sync server not ready")
+    # Open (or hydrate) the room's shared notes doc.
+    yjs_room = await yjs_sync._server.get_room(room_id)
+    doc = yjs_room.ydoc
+    from pycrdt import Array  # lazy — pycrdt is a runtime dep
+    notes_arr = doc.get("notes", type=Array)
+    target_index: Optional[int] = None
+    target_author: Optional[str] = None
+    target_by_agent = False
+    for i in range(len(notes_arr)):
+        m = notes_arr[i]
+        try:
+            cur_id = m["id"]
+        except Exception:
+            continue
+        if cur_id == note_id:
+            target_index = i
+            try:
+                target_author = m["author_user_id"]
+            except KeyError:
+                target_author = None
+            try:
+                target_by_agent = bool(m["by_agent"])
+            except KeyError:
+                target_by_agent = False
+            break
+    if target_index is None:
+        raise HTTPException(404, "note not found in shared doc")
+    # Authorship gate. Agent notes have no human owner — allow any
+    # member to remove them (matches the client UI rule). Legacy
+    # notes without `author_user_id` were created before authorship
+    # was recorded; we refuse delete on those to avoid an attacker
+    # wiping pre-rollout notes. The author can re-create them.
+    if not target_by_agent:
+        if target_author is None:
+            raise HTTPException(
+                403,
+                "this note has no recorded author; only the original "
+                "writer could delete it, and they need to re-save it "
+                "first to record ownership",
+            )
+        if target_author != user_id:
+            raise HTTPException(403, "only the author may delete this note")
+    # Authorized. Apply the delete inside a transaction so the
+    # yjs sync layer ships one clean update to every connected
+    # client.
+    with doc.transaction():
+        del notes_arr[target_index]
+    return {"ok": "deleted"}
 
 
 # ---------------------------------------------------------------------------
@@ -2345,7 +2537,35 @@ def complete_reading_plan_day(
                 day_index=day_index,
             )
         )
+        # Clear today's reminder slot so the scheduler stops nagging
+        # for the rest of the day — the sweep would also catch this,
+        # but flipping it inline avoids a window where the user could
+        # get re-pushed after finishing.
+        enrollment_row = session.scalar(
+            select(ReadingPlanEnrollment).where(
+                ReadingPlanEnrollment.user_id == user_id,
+                ReadingPlanEnrollment.plan_id == plan_id,
+            )
+        )
+        if enrollment_row is not None:
+            from datetime import datetime as _dt
+            enrollment_row.last_reminded_date = _dt.utcnow().date().isoformat()
         session.commit()
+        # Celebration push to the user's own devices. Quiet on
+        # purpose — no body preview of the refs, just an attaboy.
+        plan_meta = reading_plans.plan_summary(plan_id)
+        plan_name = plan_meta.get("name") or plan_id
+        send_push_to_user(
+            session, user_id,
+            {
+                "kind": "reading_plan_done",
+                "plan_id": plan_id,
+                "room_name": plan_name,
+                "sender": "✓ Reading done",
+                "body": f"Day {day_index} complete. Keep going!",
+                "url": "/?tab=bible",
+            },
+        )
     return ReadingPlanDayOut(
         plan_id=plan_id,
         day_index=day_index,

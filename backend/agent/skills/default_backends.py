@@ -333,20 +333,107 @@ class SqlRetriever:
                 return 0
 
             group_notes.sort(key=_note_relevance, reverse=True)
+            # Track which verse rows we've already pulled in step 1 so
+            # we don't emit duplicates when notes anchor to the same
+            # verse the user is asking about.
+            note_anchor_pulled: set[str] = set()
             for n in group_notes[: self.notes_limit]:
                 body = _note_body_text(n)
                 if not body:
                     continue
                 anchors = list(n.verse_anchors or [])
                 attribution = "agent" if n.author_is_agent else "human"
+                # Surface the anchor in the chunk TEXT itself, not just
+                # the source header. The header is reliable but the
+                # model reads the body more attentively when summarizing
+                # debate threads — "anchor: GEN.1.1" inline keeps the
+                # verse tied to the note in any quoting / paraphrasing.
+                anchor_tag = f"anchor {anchors[0]} · " if anchors else ""
                 chunks.append(
                     RetrievedChunk(
                         citation_id=f"note:{n.id}",
-                        text=f"[group note, {attribution}] {body}",
+                        text=f"[group note · {anchor_tag}{attribution}] {body}",
                         source_kind="group_note",
                         verse_refs=anchors,
                     )
                 )
+
+                # Also pull the actual scripture text for the note's
+                # primary anchor, so the agent sees the verse the
+                # note/comments are reacting to even when the user's
+                # current question scope is wider (e.g. asking at
+                # "bible" scope about a note anchored to ROM.8.28).
+                # Anchor format is `BOOK.CHAPTER` (chapter notes) or
+                # `BOOK.CHAPTER.VERSE` (verse notes); only the latter
+                # is a Translation row id. Skip already-pulled ids.
+                for a in anchors[:1]:
+                    if a.count(".") != 2:
+                        continue  # chapter-anchored, no single verse row
+                    if a in note_anchor_pulled:
+                        continue
+                    if f"trans:{a}" in seen_ids:
+                        continue
+                    t_row = self.session.scalar(
+                        select(Translation).where(
+                            Translation.verse_id == a,
+                            Translation.name == self.translation_name,
+                        )
+                    )
+                    if t_row is None:
+                        continue
+                    note_anchor_pulled.add(a)
+                    cid = f"trans:{t_row.id}"
+                    if cid in seen_ids:
+                        continue
+                    chunks.append(
+                        RetrievedChunk(
+                            citation_id=cid,
+                            text=t_row.text,
+                            source_kind="translation",
+                            verse_refs=[t_row.verse_id],
+                            license=t_row.license,
+                        )
+                    )
+                    seen_ids.add(cid)
+                # Fold debate threads in. Comments on a group note
+                # share the note's oversight bucket (group-scope =
+                # agent-visible per rule-guide.MD §12.2), and when
+                # users argue back-and-forth on a note the agent
+                # has to see the FULL exchange — not a slice — to
+                # mediate fairly. We don't cap here; the surrounding
+                # `notes_limit` (8 notes) already bounds how many
+                # threads can stack up, and a thread with hundreds
+                # of comments is the exact case the agent needs
+                # complete visibility into.
+                try:
+                    comments = notes_repo.comments_for(n.id)
+                except Exception:
+                    comments = []
+                total_comments = len(comments)
+                anchor_in_comment = (
+                    f" (anchor {anchors[0]})" if anchors else ""
+                )
+                for idx, (comment, handle) in enumerate(comments, start=1):
+                    body_c = (comment.body or "").strip()
+                    if not body_c:
+                        continue
+                    chunks.append(
+                        RetrievedChunk(
+                            citation_id=f"note_comment:{comment.id}",
+                            # `[comment K/N on note <id> by @handle
+                            # (anchor X)]` — turn order, author, full
+                            # thread length, AND the verse the parent
+                            # note is reacting to, all inline so the
+                            # model never strips that context away.
+                            text=(
+                                f"[comment {idx}/{total_comments} on "
+                                f"note {n.id} by @{handle}"
+                                f"{anchor_in_comment}] {body_c}"
+                            ),
+                            source_kind="group_note",
+                            verse_refs=anchors,
+                        )
+                    )
 
         # 3. Keyword expansion across the whole Bible.
         # 2c. Authorship retrieval — when the user asks for verses BY

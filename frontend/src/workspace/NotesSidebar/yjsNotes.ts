@@ -36,6 +36,7 @@ interface YNote {
   body: string;
   verse_anchor?: string;
   by_agent?: boolean;
+  author_user_id?: string;
 }
 
 /** Snapshot a single Y.Array of notes into a plain NoteRow[]. */
@@ -52,12 +53,14 @@ function snapshotArray(arr: Y.Array<Y.Map<unknown>>): NoteRow[] {
         : ((rawBody as string) ?? "");
     const va = m.get("verse_anchor");
     const by = m.get("by_agent");
+    const author = m.get("author_user_id");
     out.push({
       id,
       scope,
       body,
       verse_anchor: typeof va === "string" ? va : undefined,
       by_agent: typeof by === "boolean" ? by : undefined,
+      author_user_id: typeof author === "string" ? author : undefined,
     });
   }
   return out;
@@ -276,6 +279,12 @@ function buildHandle(roomId: string, userId?: string): YjsRoomHandle {
       m.set("body", body);
       if (n.verse_anchor) m.set("verse_anchor", n.verse_anchor);
       if (n.by_agent) m.set("by_agent", n.by_agent);
+      // Stamp authorship so only the author can later delete (the
+      // delete UI gates on `author_user_id === selfUserId`). Personal
+      // notes are also author-only by visibility, but we still set
+      // this for symmetry. Agent-authored notes leave the field unset
+      // — they're system-generated and don't belong to any user.
+      if (userId && !n.by_agent) m.set("author_user_id", userId);
       targetBundle.notes.push([m]);
       // Register group notes with the server so social endpoints
       // (likes / comments) can reject any note_id that wasn't
@@ -312,15 +321,35 @@ function buildHandle(roomId: string, userId?: string): YjsRoomHandle {
       }
     },
     remove: (id) => {
-      const bundles: DocBundle[] = personal ? [personal, group] : [group];
-      for (const bundle of bundles) {
-        const found = findInDoc(bundle, id);
-        if (!found) continue;
-        bundle.doc.transact(() => {
-          found.arr.delete(found.index, 1);
-        });
-        return;
+      // Personal first: those live in a per-user Y.Doc that nobody
+      // else can connect to, so we can drop the row locally and let
+      // Yjs sync push the change up. No server check needed.
+      if (personal) {
+        const found = findInDoc(personal, id);
+        if (found) {
+          personal.doc.transact(() => {
+            found.arr.delete(found.index, 1);
+          });
+          return;
+        }
       }
+      // Group note: defer to the server. The endpoint validates that
+      // we're the author, then applies the delete on the server's
+      // Y.Doc — the sync layer broadcasts the removal back to us via
+      // the WS, so we don't touch the local doc here. If the user
+      // wasn't the author, the API throws a 403 which we surface so
+      // the row STAYS visible (the UI gate should already prevent us
+      // from getting here, but better-safe than letting a stale view
+      // silently drop the row).
+      const found = findInDoc(group, id);
+      if (!found) return;
+      void serverApi
+        .noteDeleteGroup(roomId, id)
+        .catch((e) => {
+          // Best-effort surface; bubble up for callers who want it.
+          // eslint-disable-next-line no-console
+          console.warn("[notes] group delete refused:", (e as Error).message);
+        });
     },
     forVerse: () => [],
     forChapter: () => [],

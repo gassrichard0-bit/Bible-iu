@@ -22,6 +22,7 @@ import type { VerseFocus } from "../Workspace";
 import type { NotesApi } from "../NotesSidebar/notesStore";
 import { NoteSocialBlock } from "../NotesSidebar/NoteSocialBlock";
 import { RichNoteField } from "../NotesSidebar/RichNoteField";
+import { canDeleteNote } from "../NotesSidebar/noteOwnership";
 import { bookColor } from "../../lib/testament";
 import { type AnnotationTarget } from "./AnnotationToolbar";
 import {
@@ -385,14 +386,14 @@ export function BibleView({
     <>
     <div className="flex h-full flex-col bg-paper dark:bg-neutral-900">
       {!hideToolbar && (
-      <div className="flex flex-wrap items-center gap-2 border-b border-neutral-200 px-3 py-2 text-xs dark:border-neutral-800">
+      <div className="flex flex-nowrap items-center gap-2 overflow-x-auto border-b border-neutral-200 px-3 py-2 text-xs [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden dark:border-neutral-800">
         <select
           value={book}
           onChange={(e) => {
             onPickBook(e.target.value);
             onPickChapter(1);
           }}
-          className="rounded-full border border-neutral-200 bg-paper px-3 py-2 text-[14px] font-medium shadow-[0_1px_2px_rgba(0,0,0,0.05),inset_0_1px_0_rgba(255,255,255,0.5)] outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-200/40 dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100 dark:shadow-[0_1px_2px_rgba(0,0,0,0.4),inset_0_1px_0_rgba(255,255,255,0.05)] dark:focus:border-amber-700 dark:focus:ring-amber-800/40"
+          className="shrink-0 rounded-full border border-neutral-200 bg-paper px-2.5 py-1.5 font-medium shadow-[0_1px_2px_rgba(0,0,0,0.05),inset_0_1px_0_rgba(255,255,255,0.5)] outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-200/40 dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100 dark:shadow-[0_1px_2px_rgba(0,0,0,0.4),inset_0_1px_0_rgba(255,255,255,0.05)] dark:focus:border-amber-700 dark:focus:ring-amber-800/40"
         >
           {books.length === 0 ? (
             <option value={book}>{book}</option>
@@ -407,7 +408,7 @@ export function BibleView({
         <select
           value={chapter}
           onChange={(e) => onPickChapter(Number(e.target.value))}
-          className="rounded-full border border-neutral-200 bg-paper px-3 py-2 text-[14px] font-medium shadow-[0_1px_2px_rgba(0,0,0,0.05),inset_0_1px_0_rgba(255,255,255,0.5)] outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-200/40 dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100 dark:shadow-[0_1px_2px_rgba(0,0,0,0.4),inset_0_1px_0_rgba(255,255,255,0.05)] dark:focus:border-amber-700 dark:focus:ring-amber-800/40"
+          className="shrink-0 rounded-full border border-neutral-200 bg-paper px-2.5 py-1.5 font-medium shadow-[0_1px_2px_rgba(0,0,0,0.05),inset_0_1px_0_rgba(255,255,255,0.5)] outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-200/40 dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100 dark:shadow-[0_1px_2px_rgba(0,0,0,0.4),inset_0_1px_0_rgba(255,255,255,0.05)] dark:focus:border-amber-700 dark:focus:ring-amber-800/40"
         >
           {Array.from({ length: chapterCount }, (_, i) => i + 1).map((n) => (
             <option key={n}>{n}</option>
@@ -416,7 +417,7 @@ export function BibleView({
         <select
           value={translation}
           onChange={(e) => onPickTranslation(e.target.value)}
-          className="rounded-full border border-neutral-200 bg-paper px-3 py-2 text-[14px] font-medium shadow-[0_1px_2px_rgba(0,0,0,0.05),inset_0_1px_0_rgba(255,255,255,0.5)] outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-200/40 dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100 dark:shadow-[0_1px_2px_rgba(0,0,0,0.4),inset_0_1px_0_rgba(255,255,255,0.05)] dark:focus:border-amber-700 dark:focus:ring-amber-800/40"
+          className="shrink-0 rounded-full border border-neutral-200 bg-paper px-2.5 py-1.5 font-medium shadow-[0_1px_2px_rgba(0,0,0,0.05),inset_0_1px_0_rgba(255,255,255,0.5)] outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-200/40 dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100 dark:shadow-[0_1px_2px_rgba(0,0,0,0.4),inset_0_1px_0_rgba(255,255,255,0.05)] dark:focus:border-amber-700 dark:focus:ring-amber-800/40"
           title="Public-domain translations only until commercial licenses are wired (CLAUDE.md §7.6)."
         >
           <option value="King James Version">KJV (1611)</option>
@@ -826,24 +827,58 @@ function InlineNotePanel({
   socialNotesEnabled?: boolean;
 }) {
   const [draft, setDraft] = useState("");
-  const [draftScope, setDraftScope] = useState<"personal" | "group">(
-    "personal",
-  );
+  // Single scope toggle drives BOTH the list filter AND the composer
+  // scope, matching the Notes-page model. Seeded from the user's
+  // global default in Settings → Group notes; flipping it here is
+  // local to the panel and doesn't change the global default (the
+  // top-bar toggle on the Notes tab is the canonical way to do that).
+  const [scope, setScope] = useState<"personal" | "group">(() => {
+    try {
+      return readSettings().defaultNoteScope;
+    } catch {
+      return "personal";
+    }
+  });
+  useEffect(() => {
+    const refresh = () => {
+      try {
+        setScope(readSettings().defaultNoteScope);
+      } catch {
+        /* keep current */
+      }
+    };
+    window.addEventListener("storage", refresh);
+    window.addEventListener(SETTINGS_CHANGED, refresh);
+    return () => {
+      window.removeEventListener("storage", refresh);
+      window.removeEventListener(SETTINGS_CHANGED, refresh);
+    };
+  }, []);
   // RichNoteField handles its own autofocus via the `autoFocus` prop;
   // we just need to clear the flag once we've handed it off.
   useEffect(() => {
     if (autoFocus) onAutoFocusHandled?.();
   }, [autoFocus, onAutoFocusHandled]);
 
+  const filteredNotes = verseNotes.filter((n) => n.scope === scope);
+
   return (
     <div
       className={`mb-2 ml-7 mt-1 p-2 text-sm ring-1 ring-violet-300/50 dark:ring-violet-600/30 ${GLASS_CARD_INLINE}`}
     >
-      <div className="mb-1 text-[10px] uppercase tracking-wide text-violet-700 dark:text-violet-300">
-        Notes on {verseId}
+      <div className="mb-1 flex items-center justify-between gap-2">
+        <div className="text-[10px] uppercase tracking-wide text-violet-700 dark:text-violet-300">
+          Notes on {verseId}
+        </div>
+        <ScopePill scope={scope} onChange={setScope} />
       </div>
       <ul className="space-y-1.5">
-        {verseNotes.map((n) => (
+        {filteredNotes.length === 0 && (
+          <li className="px-1 py-0.5 text-[11px] text-neutral-500 dark:text-neutral-400">
+            No {scope} notes on this verse yet.
+          </li>
+        )}
+        {filteredNotes.map((n) => (
           <li
             key={n.id}
             className={`group px-2 py-1.5 ${GLASS_CARD_INLINE} ${
@@ -856,16 +891,18 @@ function InlineNotePanel({
               <span>{n.by_agent ? "Agent" : "You"}</span>
               <div className="flex items-center gap-1">
                 <span>{n.scope}</span>
-                <button
-                  onClick={() => {
-                    if (confirm("Delete this note?")) notes.remove(n.id);
-                  }}
-                  className="rounded px-1 text-neutral-400 opacity-0 hover:bg-red-50 hover:text-red-600 group-hover:opacity-100 dark:hover:bg-red-900/40 dark:hover:text-red-300"
-                  title="Delete note (notes-system.MD §5.9)"
-                  aria-label="Delete note"
-                >
-                  ×
-                </button>
+                {canDeleteNote(n, selfUserId) && (
+                  <button
+                    onClick={() => {
+                      if (confirm("Delete this note?")) notes.remove(n.id);
+                    }}
+                    className="rounded px-1 text-neutral-400 opacity-0 hover:bg-red-50 hover:text-red-600 group-hover:opacity-100 dark:hover:bg-red-900/40 dark:hover:text-red-300"
+                    title="Delete note (notes-system.MD §5.9)"
+                    aria-label="Delete note"
+                  >
+                    ×
+                  </button>
+                )}
               </div>
             </div>
             <RichNoteField
@@ -893,7 +930,7 @@ function InlineNotePanel({
           const trimmed = draft.replace(/<br\s*\/?>/g, "").trim();
           if (!trimmed) return;
           notes.add({
-            scope: draftScope,
+            scope,
             body: draft,
             verse_anchor: verseId,
           });
@@ -905,60 +942,74 @@ function InlineNotePanel({
           <RichNoteField
             value={draft}
             onChange={setDraft}
-            placeholder={`Add a ${draftScope} note on ${verseId}…`}
-            ariaLabel={`New ${draftScope} note on ${verseId}`}
+            placeholder={`Add a ${scope} note on ${verseId}…`}
+            ariaLabel={`New ${scope} note on ${verseId}`}
             autoFocus={!!autoFocus}
           />
         </div>
-        <div className="flex flex-col gap-1">
-          {/* Segmented glass pill matching the rest of the card
-              family — replaces the native <select> which broke the
-              visual line. */}
-          <div
-            role="radiogroup"
-            aria-label="Note scope"
-            className={`flex items-stretch p-0.5 text-[10px] ${GLASS_CARD_INLINE}`}
-          >
-            {(["personal", "group"] as const).map((s) => {
-              const on = draftScope === s;
-              return (
-                <button
-                  key={s}
-                  type="button"
-                  role="radio"
-                  aria-checked={on}
-                  tabIndex={on ? 0 : -1}
-                  onClick={() => setDraftScope(s)}
-                  onKeyDown={(e) => {
-                    if (
-                      e.key === "ArrowRight" ||
-                      e.key === "ArrowDown" ||
-                      e.key === "ArrowLeft" ||
-                      e.key === "ArrowUp"
-                    ) {
-                      e.preventDefault();
-                      setDraftScope(s === "personal" ? "group" : "personal");
-                    }
-                  }}
-                  className={`flex-1 rounded-full px-2 py-1 font-medium capitalize transition ${
-                    on
-                      ? "bg-neutral-900 text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.18)] dark:bg-neutral-100 dark:text-neutral-900"
-                      : "text-neutral-600 hover:text-neutral-900 dark:text-neutral-300 dark:hover:text-neutral-50"
-                  }`}
-                >
-                  {s}
-                </button>
-              );
-            })}
-          </div>
-          <button
-            type="submit"
-            className="rounded-full bg-neutral-900 px-3 py-1.5 text-[11px] font-medium text-white dark:bg-neutral-100 dark:text-neutral-900"
-          >
-            Add
-          </button>
-        </div>
+        <button
+          type="submit"
+          className="rounded-full bg-neutral-900 px-3 py-1.5 text-[11px] font-medium text-white dark:bg-neutral-100 dark:text-neutral-900"
+        >
+          Add
+        </button>
       </form>
+    </div>
+  );
+}
+
+
+/** Small two-state pill, "Personal" ↔ "Group", used by the inline
+ *  note panels under verses + chapter headings. Mirrors the Notes-tab
+ *  top-bar toggle so the model is consistent: one scope toggle drives
+ *  both filter and composer. Colors match the in-app note styling:
+ *  violet for personal, amber for group. */
+function ScopePill({
+  scope,
+  onChange,
+}: {
+  scope: "personal" | "group";
+  onChange: (s: "personal" | "group") => void;
+}) {
+  return (
+    <div
+      role="radiogroup"
+      aria-label="Note scope"
+      className={`flex items-stretch p-0.5 text-[10px] ${GLASS_CARD_INLINE}`}
+    >
+      {(["personal", "group"] as const).map((s) => {
+        const on = scope === s;
+        return (
+          <button
+            key={s}
+            type="button"
+            role="radio"
+            aria-checked={on}
+            tabIndex={on ? 0 : -1}
+            onClick={() => onChange(s)}
+            onKeyDown={(e) => {
+              if (
+                e.key === "ArrowRight" ||
+                e.key === "ArrowDown" ||
+                e.key === "ArrowLeft" ||
+                e.key === "ArrowUp"
+              ) {
+                e.preventDefault();
+                onChange(s === "personal" ? "group" : "personal");
+              }
+            }}
+            className={`min-w-[58px] rounded-full px-2 py-0.5 font-semibold capitalize transition ${
+              on
+                ? s === "personal"
+                  ? "bg-violet-100 text-violet-900 dark:bg-violet-900/40 dark:text-violet-100"
+                  : "bg-amber-100 text-amber-900 dark:bg-amber-900/40 dark:text-amber-100"
+                : "text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-100"
+            }`}
+          >
+            {s}
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -989,19 +1040,50 @@ function ChapterNotePanel({
 }) {
   const anchor = `${book}.${chapter}`;
   const [draft, setDraft] = useState("");
-  const [draftScope, setDraftScope] = useState<"personal" | "group">(
-    "personal",
-  );
+  // Same scope-driven view + composer model as InlineNotePanel. Seeded
+  // from Settings → Group notes default; flipping it here is local.
+  const [scope, setScope] = useState<"personal" | "group">(() => {
+    try {
+      return readSettings().defaultNoteScope;
+    } catch {
+      return "personal";
+    }
+  });
+  useEffect(() => {
+    const refresh = () => {
+      try {
+        setScope(readSettings().defaultNoteScope);
+      } catch {
+        /* keep current */
+      }
+    };
+    window.addEventListener("storage", refresh);
+    window.addEventListener(SETTINGS_CHANGED, refresh);
+    return () => {
+      window.removeEventListener("storage", refresh);
+      window.removeEventListener(SETTINGS_CHANGED, refresh);
+    };
+  }, []);
+
+  const filteredNotes = chapterNotes.filter((n) => n.scope === scope);
 
   return (
     <div
       className={`mb-3 p-2 text-sm ring-1 ring-violet-300/50 dark:ring-violet-600/30 ${GLASS_CARD_INLINE}`}
     >
-      <div className="mb-1 text-[10px] uppercase tracking-wide text-violet-700 dark:text-violet-300">
-        Notes on {book} {chapter}
+      <div className="mb-1 flex items-center justify-between gap-2">
+        <div className="text-[10px] uppercase tracking-wide text-violet-700 dark:text-violet-300">
+          Notes on {book} {chapter}
+        </div>
+        <ScopePill scope={scope} onChange={setScope} />
       </div>
       <ul className="space-y-1.5">
-        {chapterNotes.map((n) => (
+        {filteredNotes.length === 0 && (
+          <li className="px-1 py-0.5 text-[11px] text-neutral-500 dark:text-neutral-400">
+            No {scope} notes on this chapter yet.
+          </li>
+        )}
+        {filteredNotes.map((n) => (
           <li
             key={n.id}
             className={`group px-2 py-1.5 ${GLASS_CARD_INLINE} ${
@@ -1014,16 +1096,18 @@ function ChapterNotePanel({
               <span>{n.by_agent ? "Agent" : "You"}</span>
               <div className="flex items-center gap-1">
                 <span>{n.scope}</span>
-                <button
-                  onClick={() => {
-                    if (confirm("Delete this note?")) notes.remove(n.id);
-                  }}
-                  className="rounded px-1 text-neutral-400 opacity-0 hover:bg-red-50 hover:text-red-600 group-hover:opacity-100 dark:hover:bg-red-900/40 dark:hover:text-red-300"
-                  title="Delete note (notes-system.MD §5.9)"
-                  aria-label="Delete note"
-                >
-                  ×
-                </button>
+                {canDeleteNote(n, selfUserId) && (
+                  <button
+                    onClick={() => {
+                      if (confirm("Delete this note?")) notes.remove(n.id);
+                    }}
+                    className="rounded px-1 text-neutral-400 opacity-0 hover:bg-red-50 hover:text-red-600 group-hover:opacity-100 dark:hover:bg-red-900/40 dark:hover:text-red-300"
+                    title="Delete note (notes-system.MD §5.9)"
+                    aria-label="Delete note"
+                  >
+                    ×
+                  </button>
+                )}
               </div>
             </div>
             <RichNoteField
@@ -1051,7 +1135,7 @@ function ChapterNotePanel({
           const trimmed = draft.replace(/<br\s*\/?>/g, "").trim();
           if (!trimmed) return;
           notes.add({
-            scope: draftScope,
+            scope,
             body: draft,
             verse_anchor: anchor,
           });
@@ -1063,55 +1147,16 @@ function ChapterNotePanel({
           <RichNoteField
             value={draft}
             onChange={setDraft}
-            placeholder={`Add a ${draftScope} note on ${book} ${chapter}…`}
-            ariaLabel={`New ${draftScope} note on ${book} ${chapter}`}
+            placeholder={`Add a ${scope} note on ${book} ${chapter}…`}
+            ariaLabel={`New ${scope} note on ${book} ${chapter}`}
           />
         </div>
-        <div className="flex flex-col gap-1">
-          <div
-            role="radiogroup"
-            aria-label="Note scope"
-            className={`flex items-stretch p-0.5 text-[10px] ${GLASS_CARD_INLINE}`}
-          >
-            {(["personal", "group"] as const).map((s) => {
-              const on = draftScope === s;
-              return (
-                <button
-                  key={s}
-                  type="button"
-                  role="radio"
-                  aria-checked={on}
-                  tabIndex={on ? 0 : -1}
-                  onClick={() => setDraftScope(s)}
-                  onKeyDown={(e) => {
-                    if (
-                      e.key === "ArrowRight" ||
-                      e.key === "ArrowDown" ||
-                      e.key === "ArrowLeft" ||
-                      e.key === "ArrowUp"
-                    ) {
-                      e.preventDefault();
-                      setDraftScope(s === "personal" ? "group" : "personal");
-                    }
-                  }}
-                  className={`flex-1 rounded-full px-2 py-1 font-medium capitalize transition ${
-                    on
-                      ? "bg-neutral-900 text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.18)] dark:bg-neutral-100 dark:text-neutral-900"
-                      : "text-neutral-600 hover:text-neutral-900 dark:text-neutral-300 dark:hover:text-neutral-50"
-                  }`}
-                >
-                  {s}
-                </button>
-              );
-            })}
-          </div>
-          <button
-            type="submit"
-            className="rounded-full bg-neutral-900 px-3 py-1.5 text-[11px] font-medium text-white dark:bg-neutral-100 dark:text-neutral-900"
-          >
-            Add
-          </button>
-        </div>
+        <button
+          type="submit"
+          className="rounded-full bg-neutral-900 px-3 py-1.5 text-[11px] font-medium text-white dark:bg-neutral-100 dark:text-neutral-900"
+        >
+          Add
+        </button>
       </form>
     </div>
   );

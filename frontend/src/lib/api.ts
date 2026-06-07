@@ -465,6 +465,14 @@ export const api = {
       `/rooms/${room_id}/notes/${note_id}/register_group`,
       { method: "POST", body: "{}" },
     ),
+  /** Author-only delete for a GROUP note. The server validates
+   *  authorship from the shared Yjs doc and applies the delete on
+   *  its side; the sync layer then broadcasts the removal to every
+   *  connected client (including this one). Non-authors get 403. */
+  noteDeleteGroup: (room_id: string, note_id: string) =>
+    jsonFetch<{ ok: string }>(`/rooms/${room_id}/notes/${note_id}`, {
+      method: "DELETE",
+    }),
   roomMembers: (room_id: string) =>
     jsonFetch<RoomMemberOut[]>(`/rooms/${room_id}/members`),
   roomMemberPatch: (room_id: string, user_id: string, role: "admin" | "member") =>

@@ -15,6 +15,11 @@ export interface NoteRow {
   body: string;
   verse_anchor?: string;
   by_agent?: boolean;
+  /** User id of whoever created this note. Set when the note is
+   *  added; absent on legacy rows written before this field existed
+   *  (those fall through the delete-permission check as "unknown
+   *  author" and stay deletable so old data doesn't get orphaned). */
+  author_user_id?: string;
 }
 
 export interface NotesApi {

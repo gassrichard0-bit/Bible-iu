@@ -40,6 +40,7 @@ import { useKeyboardInset } from "../lib/useKeyboardInset";
 import { ACCENT_PALETTE, resolveAccent } from "../lib/accentColors";
 import { useYjsNotes } from "../workspace/NotesSidebar/yjsNotes";
 import { NotesSidebar } from "../workspace/NotesSidebar/NotesSidebar";
+import { useUnreadNoteCount } from "../workspace/NotesSidebar/noteReadTracker";
 import { Workspace, type VerseFocus } from "../workspace/Workspace";
 import { Avatar } from "./Profile";
 import { SettingsModal } from "./Settings";
@@ -482,6 +483,10 @@ export function MobileShell({
     handle: string | null;
     displayName: string | null;
     avatarUrl: string | null;
+    /** Layout for this open: chat-avatar taps keep the bottom-sheet
+     *  feel (`sheet`); arriving via Contacts uses a full-page screen
+     *  because the user explicitly navigated to view this person. */
+    mode: "sheet" | "fullPage";
   } | null>(null);
   const [focus, setFocus] = useState<VerseFocus | null>(null);
   const [seededRoomId, setSeededRoomId] = useState<string | null>(null);
@@ -516,6 +521,26 @@ export function MobileShell({
   // (where `position: fixed; bottom: 0` would otherwise sit behind it).
   const keyboardInset = useKeyboardInset();
   const [contactsOpen, setContactsOpen] = useState(false);
+  // In-room chat search. Toggling open shows an inline search field
+  // at the top of the chat panel; the query filters messages by body
+  // (case-insensitive). Cleared when you leave the Chat tab.
+  const [chatSearchOpen, setChatSearchOpen] = useState(false);
+  const [chatSearchQuery, setChatSearchQuery] = useState("");
+  // Bumped each time the user taps the search icon on the Notes tab.
+  // NotesSidebar listens to the value and focuses its search input
+  // when it changes — gives the avatar slot something to do on Notes
+  // (it's now a search button instead of opening the Profile sheet).
+  const [notesSearchTrigger, setNotesSearchTrigger] = useState(0);
+  // Same pattern as `notesSearchTrigger` — bumped when the search
+  // button on the Marks tab top bar is tapped. BookmarksPanel toggles
+  // its search field open/closed on each bump.
+  const [marksSearchTrigger, setMarksSearchTrigger] = useState(0);
+  useEffect(() => {
+    if (tab !== "chat") {
+      setChatSearchOpen(false);
+      setChatSearchQuery("");
+    }
+  }, [tab]);
   // Per-room daily-question quota. Renders inline next to the scope
   // chip on the Bible tab so the user can see "3 left today" before
   // burning their last slot. Best-effort — backend store is
@@ -527,6 +552,11 @@ export function MobileShell({
   // other room members. Without it we still get group notes via the
   // shared doc but the "add personal note" path is a no-op.
   const notesApi = useYjsNotes(activeId, selfUserId);
+  // Unread count for the bottom-nav Notes badge. Same seen-set the
+  // NotesSidebar mutates, so marking-read there updates the badge in
+  // the same tab via the custom `notes-seen-changed` event.
+  const noteIds = useMemo(() => notesApi.notes.map((n) => n.id), [notesApi.notes]);
+  const unreadNoteCount = useUnreadNoteCount(noteIds, activeId, selfUserId);
 
   // Seed focus from a room's scripture_context exactly once per room.
   useEffect(() => {
@@ -705,32 +735,106 @@ export function MobileShell({
           {active?.name ?? "Bible IU"}
         </div>
         <div className="flex items-center gap-1">
-          {/* Header is intentionally minimal — Share + Admin both
-              live inside the Profile sheet under "This room". The
-              avatar is the single entry point. */}
-          <button
-            onClick={() => {
-              setSettingsMode("profile");
-              setSettingsOpen(true);
-            }}
-            className="group grid h-11 w-11 place-items-center rounded-full hover:bg-paper-soft dark:hover:bg-neutral-800"
-            aria-label="Profile"
-          >
-            {/* 3D ring: a thin highlight on top + soft drop shadow
-                below + a subtle inner shadow on the image. Reads as a
-                pressed-into-glass coin rather than a flat circle. */}
-            <span
-              className="grid place-items-center rounded-full p-[1.5px] shadow-[0_2px_6px_rgba(0,0,0,0.18),inset_0_1px_0_rgba(255,255,255,0.55)] transition-transform group-active:scale-95 dark:shadow-[0_2px_6px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.10)]"
-              style={{
-                background:
-                  "linear-gradient(135deg, rgba(255,255,255,0.85), rgba(180,180,180,0.35) 45%, rgba(0,0,0,0.18))",
-              }}
+          {/* On the Chat tab the user's own avatar slot becomes a
+           *  search button — toggles an inline search field at the
+           *  top of the chat panel. On the Notes tab the same slot
+           *  also becomes a search button — bumps a trigger that
+           *  NotesSidebar listens to to focus its existing search
+           *  field. Every other tab keeps the avatar (taps through
+           *  to the Profile sheet). */}
+          {tab === "chat" ? (
+            <button
+              onClick={() => setChatSearchOpen((v) => !v)}
+              aria-label={chatSearchOpen ? "Close search" : "Search messages"}
+              aria-pressed={chatSearchOpen}
+              title={chatSearchOpen ? "Close search" : "Search messages"}
+              className={`grid h-11 w-11 place-items-center rounded-full border shadow-[0_2px_6px_rgba(0,0,0,0.10),inset_0_1px_0_rgba(255,255,255,0.55)] transition-transform active:scale-[0.96] dark:shadow-[0_2px_6px_rgba(0,0,0,0.45),inset_0_1px_0_rgba(255,255,255,0.08)] ${
+                chatSearchOpen
+                  ? "border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-700 dark:bg-amber-900/40 dark:text-amber-100"
+                  : "border-neutral-200 bg-paper text-neutral-700 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-200"
+              }`}
             >
-              <span className="grid place-items-center rounded-full shadow-[inset_0_0_0_1px_rgba(255,255,255,0.45),inset_0_-1px_2px_rgba(0,0,0,0.20)] dark:shadow-[inset_0_0_0_1px_rgba(255,255,255,0.08),inset_0_-1px_2px_rgba(0,0,0,0.55)]">
-                <Avatar handle={handle} url={myAvatarUrl} size={40} />
+              <svg
+                viewBox="0 0 24 24"
+                width="20"
+                height="20"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden
+              >
+                <circle cx="11" cy="11" r="6.5" />
+                <line x1="20" y1="20" x2="16" y2="16" />
+              </svg>
+            </button>
+          ) : tab === "notes" ? (
+            <button
+              onClick={() => setNotesSearchTrigger((n) => n + 1)}
+              aria-label="Search notes"
+              title="Search notes"
+              className="grid h-11 w-11 place-items-center rounded-full border border-neutral-200 bg-paper text-neutral-700 shadow-[0_2px_6px_rgba(0,0,0,0.10),inset_0_1px_0_rgba(255,255,255,0.55)] transition-transform active:scale-[0.96] dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-200 dark:shadow-[0_2px_6px_rgba(0,0,0,0.45),inset_0_1px_0_rgba(255,255,255,0.08)]"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                width="20"
+                height="20"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden
+              >
+                <circle cx="11" cy="11" r="6.5" />
+                <line x1="20" y1="20" x2="16" y2="16" />
+              </svg>
+            </button>
+          ) : tab === "bookmarks" ? (
+            <button
+              onClick={() => setMarksSearchTrigger((n) => n + 1)}
+              aria-label="Search bookmarks"
+              title="Search bookmarks"
+              className="grid h-11 w-11 place-items-center rounded-full border border-neutral-200 bg-paper text-neutral-700 shadow-[0_2px_6px_rgba(0,0,0,0.10),inset_0_1px_0_rgba(255,255,255,0.55)] transition-transform active:scale-[0.96] dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-200 dark:shadow-[0_2px_6px_rgba(0,0,0,0.45),inset_0_1px_0_rgba(255,255,255,0.08)]"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                width="20"
+                height="20"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden
+              >
+                <circle cx="11" cy="11" r="6.5" />
+                <line x1="20" y1="20" x2="16" y2="16" />
+              </svg>
+            </button>
+          ) : (
+            <button
+              onClick={() => {
+                setSettingsMode("profile");
+                setSettingsOpen(true);
+              }}
+              className="group grid h-11 w-11 place-items-center rounded-full hover:bg-paper-soft dark:hover:bg-neutral-800"
+              aria-label="Profile"
+            >
+              <span
+                className="grid place-items-center rounded-full p-[1.5px] shadow-[0_2px_6px_rgba(0,0,0,0.18),inset_0_1px_0_rgba(255,255,255,0.55)] transition-transform group-active:scale-95 dark:shadow-[0_2px_6px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.10)]"
+                style={{
+                  background:
+                    "linear-gradient(135deg, rgba(255,255,255,0.85), rgba(180,180,180,0.35) 45%, rgba(0,0,0,0.18))",
+                }}
+              >
+                <span className="grid place-items-center rounded-full shadow-[inset_0_0_0_1px_rgba(255,255,255,0.45),inset_0_-1px_2px_rgba(0,0,0,0.20)] dark:shadow-[inset_0_0_0_1px_rgba(255,255,255,0.08),inset_0_-1px_2px_rgba(0,0,0,0.55)]">
+                  <Avatar handle={handle} url={myAvatarUrl} size={40} />
+                </span>
               </span>
-            </span>
-          </button>
+            </button>
+          )}
           {tab === "chat" ? (
             <button
               onClick={() => setContactsOpen(true)}
@@ -757,6 +861,67 @@ export function MobileShell({
                 <path d="M19.5 14v3" />
               </svg>
             </button>
+          ) : tab === "notes" ? (
+            (() => {
+              // On the Notes tab the hamburger becomes a single-tap
+              // toggle between Personal and Group note scopes. Each
+              // tap flips `settings.defaultNoteScope`; NotesSidebar
+              // listens for SETTINGS_CHANGED and re-renders.
+              const isGroup = settings.defaultNoteScope === "group";
+              return (
+                <button
+                  onClick={() =>
+                    onChangeSettings({
+                      ...settings,
+                      defaultNoteScope: isGroup ? "personal" : "group",
+                    })
+                  }
+                  aria-pressed={isGroup}
+                  aria-label={
+                    isGroup
+                      ? "Group notes (tap for personal)"
+                      : "Personal notes (tap for group)"
+                  }
+                  title={
+                    isGroup
+                      ? "Group notes — shared with the group"
+                      : "Personal notes — private to you"
+                  }
+                  className={`inline-flex h-11 min-w-[88px] items-center justify-center gap-1.5 rounded-full border px-3 text-[12px] font-semibold shadow-[0_2px_6px_rgba(0,0,0,0.10),inset_0_1px_0_rgba(255,255,255,0.55)] transition-transform active:scale-[0.96] dark:shadow-[0_2px_6px_rgba(0,0,0,0.45),inset_0_1px_0_rgba(255,255,255,0.08)] ${
+                    isGroup
+                      ? "border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-700 dark:bg-amber-900/40 dark:text-amber-100"
+                      : "border-violet-300 bg-violet-50 text-violet-900 dark:border-violet-700 dark:bg-violet-900/40 dark:text-violet-100"
+                  }`}
+                >
+                  <svg
+                    viewBox="0 0 24 24"
+                    width="14"
+                    height="14"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    aria-hidden
+                  >
+                    {isGroup ? (
+                      <>
+                        <circle cx="9" cy="9" r="3" />
+                        <circle cx="17" cy="10" r="2.5" />
+                        <path d="M3.5 18c.6-2.6 2.9-4.5 5.5-4.5s4.9 1.9 5.5 4.5" />
+                        <path d="M15 18c.3-1.6 1.8-2.8 3.5-2.8s3.2 1.2 3.5 2.8" />
+                      </>
+                    ) : (
+                      <>
+                        <circle cx="12" cy="8" r="4" />
+                        <path d="M4 20c.7-3.5 4-6 8-6s7.3 2.5 8 6" />
+                      </>
+                    )}
+                  </svg>
+                  {isGroup ? "Group" : "Personal"}
+                </button>
+              );
+            })()
           ) : (
             <button
               onClick={() => {
@@ -854,6 +1019,7 @@ export function MobileShell({
                 hideComposer
                 socialNotesEnabled={settings.socialNotesEnabled}
                 selfUserId={selfUserId}
+                focusSearchTrigger={notesSearchTrigger}
               />
             )}
             {tab === "chat" && (
@@ -863,6 +1029,13 @@ export function MobileShell({
                 selfUserId={selfUserId}
                 accentKey={accentKey}
                 dark={theme === "dark"}
+                searchOpen={chatSearchOpen}
+                searchQuery={chatSearchQuery}
+                onSearchQueryChange={setChatSearchQuery}
+                onSearchClose={() => {
+                  setChatSearchOpen(false);
+                  setChatSearchQuery("");
+                }}
                 onRead={() =>
                   setRooms((prev) =>
                     prev.map((r) =>
@@ -876,6 +1049,7 @@ export function MobileShell({
                     handle: preview.handle,
                     displayName: preview.displayName,
                     avatarUrl: preview.avatarUrl,
+                    mode: "sheet",
                   });
                 }}
                 onLongPress={(msg) => {
@@ -903,6 +1077,7 @@ export function MobileShell({
                 bookmarks={pickLatestPerBook(bookmarks)}
                 timezone={settings.timezone}
                 dark={theme === "dark"}
+                focusSearchTrigger={marksSearchTrigger}
                 onPick={(b) => {
                   setFocus({
                     book: b.book,
@@ -956,6 +1131,10 @@ export function MobileShell({
                     onLabel: "Bookmarks",
                     offLabel: "Bookmarks",
                   };
+        // Hide the AI pill while the soft keyboard is up unless the
+        // composer is open — when the user is typing anywhere else
+        // (search fields, etc.) the pill would float over their input.
+        if (keyboardInset > 0 && !composerOpen) return null;
         return (
           <div
             className="pointer-events-none fixed right-3 z-40 pt-2"
@@ -1058,7 +1237,7 @@ export function MobileShell({
        *  is behind it. Main content pads its bottom (see <main>) so
        *  scrolled text doesn't tuck permanently behind the bar. */}
       <div
-        className="pointer-events-none fixed inset-x-0 z-40 flex justify-start pl-[20px] pr-[88px] pt-2"
+        className="pointer-events-none fixed inset-x-0 z-40 flex justify-start pl-[20px] pr-[96px] pt-2"
         style={{
           bottom: keyboardInset,
           paddingBottom: "calc(env(safe-area-inset-bottom) + 10px)",
@@ -1083,7 +1262,7 @@ export function MobileShell({
           // Composer open on the current tab → the floating bar
           // becomes a contextual input. The bottom-right pill
           // (rendered above) toggles it back to the tabs view.
-          <div className="pointer-events-auto flex flex-1 flex-col gap-1.5">
+          <div className="pointer-events-auto flex min-w-0 flex-1 flex-col gap-1.5">
             {tab === "chat" && replyTarget && (
               <div
                 className="flex items-start gap-2 rounded-2xl border border-amber-200 bg-amber-50/90 px-3 py-2 text-[12px] shadow-[0_4px_14px_rgba(0,0,0,0.10)] backdrop-blur-md dark:border-amber-800/60 dark:bg-amber-900/40"
@@ -1126,7 +1305,7 @@ export function MobileShell({
             // Exactly the tab bar's outer geometry so the swap from
             // tabs ↔ composer reads as the same panel re-rendering its
             // contents, not two different shapes.
-            className="pointer-events-auto flex h-[64px] flex-1 items-stretch gap-1 rounded-[28px] border border-white/40 px-1 py-1 backdrop-blur-2xl backdrop-saturate-200 dark:border-white/10"
+            className="pointer-events-auto flex h-[64px] w-full items-stretch gap-1 rounded-[28px] border border-white/40 px-1 py-1 backdrop-blur-2xl backdrop-saturate-200 dark:border-white/10"
             style={{
               backgroundImage:
                 theme === "dark"
@@ -1219,6 +1398,13 @@ export function MobileShell({
             </button>
           </form>
           </div>
+        ) : keyboardInset > 0 ? (
+          // Soft keyboard is up → hide the bottom tab bar so it
+          // doesn't get pushed into the visible viewport and crowd
+          // the input the user is typing into. Composer + annotation
+          // toolbar branches above stay visible because the user is
+          // actively interacting with them.
+          null
         ) : (
           <nav
             role="tablist"
@@ -1266,7 +1452,7 @@ export function MobileShell({
               label="Notes"
               active={tab === "notes"}
               onClick={() => setTab("notes")}
-              badge={notesApi.notes.length || undefined}
+              badge={unreadNoteCount || undefined}
             />
             <IOSTabButton
               outline={<ChatOutline />}
@@ -1544,34 +1730,31 @@ export function MobileShell({
       <ContactsSheet
         open={contactsOpen}
         onClose={() => setContactsOpen(false)}
-        onPick={async (uid) => {
+        inviteRoom={
+          active && active.type === "group" && !active.id.startsWith("local-")
+            ? { id: active.id, name: active.name }
+            : null
+        }
+        onPick={(uid, preview) => {
+          // Coming from Contacts is an explicit navigation, not a
+          // peek — open the profile as a full-page screen instead of
+          // the half-sheet used on chat-avatar taps. UserProfileSheet
+          // refetches the full profile from /auth/users/{id}; the
+          // preview keeps the sheet from flashing blank.
           setContactsOpen(false);
-          try {
-            const room = await api.dmOpen(uid);
-            const item: RoomItem = {
-              id: room.id,
-              type: (room.type === "direct" ? "direct" : "group") as
-                | "group"
-                | "direct",
-              name: room.name ?? "(unnamed)",
-              role: room.role,
-              imageUrl: room.image_url ?? null,
-              accent: room.accent_color ?? null,
-              unreadCount: room.unread_count ?? 0,
-            };
-            setRooms((prev) =>
-              prev.some((r) => r.id === item.id) ? prev : [item, ...prev],
-            );
-            setActiveId(room.id);
-            setTab("chat");
-          } catch {
-            // best-effort
-          }
+          setProfileView({
+            userId: uid,
+            handle: preview.handle,
+            displayName: preview.displayName,
+            avatarUrl: preview.avatarUrl,
+            mode: "fullPage",
+          });
         }}
       />
       <UserProfileSheet
         open={!!profileView}
         userId={profileView?.userId ?? null}
+        fullPage={profileView?.mode === "fullPage"}
         preview={{
           handle: profileView?.handle,
           displayName: profileView?.displayName,
@@ -1937,14 +2120,52 @@ function BookmarksPanel({
   onReset,
   timezone,
   dark,
+  focusSearchTrigger,
 }: {
   bookmarks: BookmarkOut[];
   onPick: (b: BookmarkOut) => void;
   onReset: (book: string) => void;
   timezone?: string;
   dark: boolean;
+  /** Bumped by the parent each time the search icon on the top app
+   *  bar is tapped. Each new value flips the search field's open/
+   *  closed state and (when opening) focuses the input. */
+  focusSearchTrigger?: number;
 }) {
   const [editing, setEditing] = useState<string | null>(null);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  useEffect(() => {
+    if (focusSearchTrigger === undefined || focusSearchTrigger === 0) return;
+    setSearchOpen((open) => {
+      const next = !open;
+      if (next) {
+        setTimeout(() => {
+          searchInputRef.current?.focus();
+          searchInputRef.current?.select();
+        }, 30);
+      }
+      return next;
+    });
+  }, [focusSearchTrigger]);
+
+  // Plain-text filter over book code, full name, and the
+  // formatted reference (e.g. "Genesis 1:1"). Empty query =
+  // show everything.
+  const q = query.trim().toLowerCase();
+  const visible = !q
+    ? bookmarks
+    : bookmarks.filter((b) => {
+        const name = (OSIS_TO_BOOK_NAME[b.book] ?? b.book).toLowerCase();
+        const ref = `${name} ${b.chapter}:${b.verse}`;
+        return (
+          b.book.toLowerCase().includes(q) ||
+          name.includes(q) ||
+          ref.includes(q)
+        );
+      });
+
   return (
     <div className="flex h-full flex-col">
       <div className="border-b border-neutral-200 bg-paper-soft px-4 py-3 dark:border-neutral-800 dark:bg-neutral-950">
@@ -1955,6 +2176,38 @@ function BookmarksPanel({
           double-tap a flag there to walk up the stack or remove it.
         </p>
       </div>
+      {searchOpen && (
+        <div className="border-b border-neutral-200 bg-paper-soft px-3 py-1.5 dark:border-neutral-800 dark:bg-neutral-950">
+          <div className="relative">
+            <input
+              ref={searchInputRef}
+              type="search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search bookmarks…"
+              aria-label="Search bookmarks"
+              className="w-full rounded-full border border-neutral-200 bg-paper px-3 py-2 pl-8 text-[14px] text-neutral-800 placeholder:text-neutral-400 outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-200/40 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100 dark:placeholder:text-neutral-500 dark:focus:border-amber-700 dark:focus:ring-amber-800/40"
+            />
+            <span
+              className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-[11px] text-neutral-400"
+              aria-hidden
+            >
+              ⌕
+            </span>
+            {query && (
+              <button
+                type="button"
+                onClick={() => setQuery("")}
+                className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full px-1 text-[10px] text-neutral-500 hover:bg-neutral-200/60 dark:text-neutral-400 dark:hover:bg-neutral-700/60"
+                aria-label="Clear search"
+                title="Clear"
+              >
+                ✕
+              </button>
+            )}
+          </div>
+        </div>
+      )}
       <ul className="flex-1 space-y-2.5 overflow-y-auto p-3">
         {bookmarks.length === 0 && (
           <li className="mx-auto mt-4 max-w-xs rounded-2xl border border-neutral-200 bg-paper px-4 py-6 text-center shadow-[0_1px_2px_rgba(0,0,0,0.04),inset_0_1px_0_rgba(255,255,255,0.6)] dark:border-neutral-800 dark:bg-neutral-900 dark:shadow-[0_1px_2px_rgba(0,0,0,0.2),inset_0_1px_0_rgba(255,255,255,0.04)]">
@@ -1973,8 +2226,14 @@ function BookmarksPanel({
             </p>
           </li>
         )}
-        {bookmarks.map((b) => {
+        {bookmarks.length > 0 && visible.length === 0 && (
+          <li className="px-1 text-[12px] text-neutral-500 dark:text-neutral-400">
+            No bookmarks match “{query.trim()}”.
+          </li>
+        )}
+        {visible.map((b) => {
           const tone = bookColor(b.book);
+          const fullBookName = OSIS_TO_BOOK_NAME[b.book] ?? b.book;
           // Same 3D recipe used in chat bubbles + Settings cards:
           // vertical gradient for the lit-from-above feel, deep drop
           // shadow + inset top highlight + crisp outline ring.
@@ -2000,7 +2259,7 @@ function BookmarksPanel({
                 <button
                   onClick={() => onPick(b)}
                   className="flex flex-1 items-center gap-3 text-left"
-                  aria-label={`Jump to ${b.book} ${b.chapter}:${b.verse}`}
+                  aria-label={`Jump to ${fullBookName} ${b.chapter}:${b.verse}`}
                 >
                   <span
                     className={`grid h-10 w-10 place-items-center rounded-full ${tone.text} shadow-[0_2px_6px_rgba(0,0,0,0.18),inset_0_1px_0_rgba(255,255,255,0.45)]`}
@@ -2013,7 +2272,7 @@ function BookmarksPanel({
                   </span>
                   <div className="min-w-0">
                     <div className="truncate text-[15px] font-semibold text-neutral-900 dark:text-neutral-50">
-                      {b.book} {b.chapter}:{b.verse}
+                      {OSIS_TO_BOOK_NAME[b.book] ?? b.book} {b.chapter}:{b.verse}
                     </div>
                     <div className="truncate text-[11px] text-neutral-500 dark:text-neutral-400">
                       {b.updated_at
@@ -2033,8 +2292,8 @@ function BookmarksPanel({
                       ? "bg-neutral-900 text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.2)] dark:bg-neutral-50 dark:text-neutral-900"
                       : "text-neutral-400 hover:bg-paper-soft hover:text-neutral-700 dark:hover:bg-neutral-800 dark:hover:text-neutral-200"
                   }`}
-                  aria-label={`Edit ${b.book} bookmark`}
-                  title={`Edit ${b.book} bookmark`}
+                  aria-label={`Edit ${fullBookName} bookmark`}
+                  title={`Edit ${fullBookName} bookmark`}
                   aria-expanded={editing === b.book}
                 >
                   <PencilIcon />
@@ -2083,6 +2342,10 @@ function ChatPanel({
   onRead,
   onAvatarTap,
   onLongPress,
+  searchOpen,
+  searchQuery,
+  onSearchQueryChange,
+  onSearchClose,
 }: {
   roomId: string;
   roomName: string;
@@ -2092,6 +2355,13 @@ function ChatPanel({
    *  neutral so it doesn't double up with the top app bar's tint. */
   accentKey: import("../lib/accentColors").AccentKey;
   dark: boolean;
+  /** When true, a search input replaces the room-name header and
+   *  the message list filters to matches. Toggled by the search
+   *  button in the top app bar. */
+  searchOpen?: boolean;
+  searchQuery?: string;
+  onSearchQueryChange?: (q: string) => void;
+  onSearchClose?: () => void;
   /** Fired after the server confirms the room has been marked read.
    *  Parent zeroes the unread badge for this room. */
   onRead?: () => void;
@@ -2202,18 +2472,46 @@ function ChatPanel({
       .catch(() => {});
   }, [roomId, messages.length]);
 
+  const q = (searchQuery ?? "").trim().toLowerCase();
+  const visibleMessages = q
+    ? messages.filter((m) => m.body.toLowerCase().includes(q))
+    : messages;
   return (
     <div className="flex h-full flex-col">
-      <div className="border-b border-neutral-200 bg-paper-soft px-4 py-2 text-[11px] text-neutral-500 dark:border-neutral-800 dark:bg-neutral-950 dark:text-neutral-400">
-        <span>
-          <span className="font-medium text-neutral-700 dark:text-neutral-200">
-            {roomName}
+      {searchOpen ? (
+        <div className="flex items-center gap-2 border-b border-neutral-200 bg-paper-soft px-3 py-2 dark:border-neutral-800 dark:bg-neutral-950">
+          <input
+            autoFocus
+            value={searchQuery ?? ""}
+            onChange={(e) => onSearchQueryChange?.(e.target.value)}
+            placeholder={`Search ${roomName}…`}
+            aria-label="Search messages"
+            className="flex-1 rounded-full border border-neutral-200 bg-paper px-3.5 py-2 text-[14px] outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-200/40 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100 dark:focus:border-amber-700 dark:focus:ring-amber-800/40"
+          />
+          <button
+            type="button"
+            onClick={() => onSearchClose?.()}
+            className="rounded-full px-2 text-[12px] font-semibold text-neutral-600 hover:bg-paper-soft dark:text-neutral-300 dark:hover:bg-neutral-800"
+            aria-label="Close search"
+          >
+            Done
+          </button>
+        </div>
+      ) : (
+        <div className="border-b border-neutral-200 bg-paper-soft px-4 py-2 text-[11px] text-neutral-500 dark:border-neutral-800 dark:bg-neutral-950 dark:text-neutral-400">
+          <span>
+            <span className="font-medium text-neutral-700 dark:text-neutral-200">
+              {roomName}
+            </span>
+            {memberCount !== null && (
+              <span>
+                {" "}
+                · {memberCount} {memberCount === 1 ? "member" : "members"}
+              </span>
+            )}
           </span>
-          {memberCount !== null && (
-            <span> · {memberCount} {memberCount === 1 ? "member" : "members"}</span>
-          )}
-        </span>
-      </div>
+        </div>
+      )}
       <div
         ref={scrollerRef}
         role="log"
@@ -2230,12 +2528,14 @@ function ChatPanel({
           paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 96px)",
         }}
       >
-        {messages.length === 0 ? (
+        {visibleMessages.length === 0 ? (
           <p className="pt-8 text-center text-xs text-neutral-500 dark:text-neutral-400">
-            No messages yet. Be the first to say something.
+            {q
+              ? `No messages match "${searchQuery}".`
+              : "No messages yet. Be the first to say something."}
           </p>
         ) : (
-          messages.map((m) => (
+          visibleMessages.map((m) => (
             <ChatBubble
               key={m.id}
               msg={m}

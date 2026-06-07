@@ -34,6 +34,10 @@ interface Props {
   /** Fired when the user taps "Message". Parent opens (or finds) a
    *  1:1 DM with this user and switches to it. */
   onMessage: (userId: string) => void;
+  /** When true, render as a full-page screen instead of a half-sheet.
+   *  Used when the user arrives via Contacts — that's an explicit
+   *  navigation. Tapping an avatar inline in chat keeps the sheet. */
+  fullPage?: boolean;
 }
 
 export function UserProfileSheet({
@@ -42,6 +46,7 @@ export function UserProfileSheet({
   preview,
   onClose,
   onMessage,
+  fullPage = false,
 }: Props) {
   const [profile, setProfile] = useState<PublicUserView | null>(null);
   const [loading, setLoading] = useState(false);

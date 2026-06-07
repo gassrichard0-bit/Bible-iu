@@ -11,11 +11,20 @@ from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .models import Note
+from .models import Note, NoteComment, User
 
 
 class AgentNoteRepository:
-    """The only note repository the agent code is allowed to import."""
+    """The only note repository the agent code is allowed to import.
+
+    Reads are restricted to `scope='group'` notes (rule-guide.MD
+    §12.1 keeps personal notes invisible to the agent) — and only
+    within `room_id`, so a room can't see another room's notes.
+
+    The agent has NO chat read path at all by design: there is no
+    `list_chat_messages()` method here, and the retriever in
+    `agent/skills/default_backends.py` never imports `ChatMessage`.
+    """
 
     def __init__(self, session: Session, room_id: str) -> None:
         self.session = session
@@ -27,6 +36,26 @@ class AgentNoteRepository:
             Note.scope == "group",
         )
         return list(self.session.scalars(stmt))
+
+    def comments_for(self, note_id: str) -> list[tuple[NoteComment, str]]:
+        """Flat list of comments on a single group note, paired with
+        the commenter's handle for attribution. Comments inherit the
+        oversight rule of the parent note — they live alongside a
+        group-scope note, so they're visible to the agent. Used by
+        the retriever to fold debate threads into agent context."""
+        stmt = (
+            select(NoteComment, User)
+            .outerjoin(User, User.id == NoteComment.author_user_id)
+            .where(
+                NoteComment.note_id == note_id,
+                NoteComment.room_id == self.room_id,
+            )
+            .order_by(NoteComment.created_at.asc())
+        )
+        return [
+            (c, u.handle if u else "deleted user")
+            for c, u in self.session.execute(stmt).all()
+        ]
 
 
 class UserNoteRepository:

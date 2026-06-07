@@ -92,6 +92,13 @@ class ReadingPlanEnrollment(Base, TimestampMixin):
     # The user's day-1 of the plan. The current day is derived from
     # `(today - started_at).days + 1`, capped at plan length.
     started_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+    # Date (YYYY-MM-DD in the user's local tz) we last fired a daily
+    # reminder push for this enrollment. The scheduler skips rows
+    # where this already equals today so we don't double-remind on a
+    # restart, and never push on a day the user already finished.
+    last_reminded_date: Mapped[Optional[str]] = mapped_column(
+        String, nullable=True
+    )
 
 
 class ReadingPlanProgress(Base, TimestampMixin):
@@ -334,6 +341,35 @@ class ChatReaction(Base, TimestampMixin):
         ForeignKey("users.id"), index=True
     )
     emoji: Mapped[str] = mapped_column(String)
+
+
+class PushSubscription(Base, TimestampMixin):
+    """A single Web Push endpoint registered by a user's browser/PWA.
+
+    One user can have many subscriptions (phone PWA, laptop browser,
+    second device). Endpoint is unique — re-subscribing on the same
+    device upserts on the endpoint URL so we don't accumulate dead
+    rows. `p256dh` + `auth` are the ECDH params the push service needs
+    to decrypt our payload; both are URL-safe base64 strings from the
+    PushSubscription.toJSON() shape.
+    """
+    __tablename__ = "push_subscriptions"
+    __table_args__ = (
+        UniqueConstraint("endpoint"),
+    )
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id"), index=True
+    )
+    endpoint: Mapped[str] = mapped_column(String)
+    p256dh: Mapped[str] = mapped_column(String)
+    auth: Mapped[str] = mapped_column(String)
+    # Bumped every time the push service accepts a send; 404/410
+    # responses delete the row instead so we drop dead endpoints
+    # without a separate sweeper job.
+    last_used_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime, nullable=True
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -10,13 +10,21 @@
  * The sidebar is a *view* over the shared `NotesApi` (notes-system.MD
  * §5.6) — editing inline at a verse and editing here update the same row.
  */
-import { useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { VerseFocus } from "../Workspace";
-import type { NotesApi } from "./notesStore";
+import type { NotesApi, NoteRow } from "./notesStore";
 import { NoteSocialBlock } from "./NoteSocialBlock";
 import { GLASS_CARD_INLINE } from "../../lib/glass";
 import { RichNoteField } from "./RichNoteField";
 import { useStickToBottom } from "../../lib/useStickToBottom";
+import { readSettings, SETTINGS_CHANGED } from "../../lib/settings";
+import { OSIS_TO_BOOK_NAME } from "../../lib/api";
+import {
+  consumeInitFlag,
+  loadSeenSet,
+  saveSeenSet,
+} from "./noteReadTracker";
+import { canDeleteNote } from "./noteOwnership";
 
 interface Props {
   focus: VerseFocus | null;
@@ -38,6 +46,10 @@ interface Props {
   /** Current user id — used to detect "my comment" so we show a
    *  delete button on it. */
   selfUserId?: string;
+  /** Counter bumped by the parent when the search icon is tapped on
+   *  the Notes tab's top bar. Each new value focuses the search
+   *  input so the user can start typing immediately. */
+  focusSearchTrigger?: number;
 }
 
 export function NotesSidebar({
@@ -50,11 +62,102 @@ export function NotesSidebar({
   hideComposer,
   socialNotesEnabled,
   selfUserId,
+  focusSearchTrigger,
 }: Props) {
-  const [tab, setTab] = useState<"personal" | "group">("personal");
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
+  // The search field is hidden by default — the top-bar magnifier
+  // toggles it open. Each tap of the icon flips `searchOpen`; opening
+  // also focuses + selects the input so the user can type immediately.
+  const [searchOpen, setSearchOpen] = useState(false);
+  useEffect(() => {
+    if (focusSearchTrigger === undefined || focusSearchTrigger === 0) return;
+    setSearchOpen((open) => {
+      const next = !open;
+      if (next) {
+        // Wait a tick for the input to mount before focusing.
+        setTimeout(() => {
+          searchInputRef.current?.focus();
+          searchInputRef.current?.select();
+        }, 30);
+      }
+      return next;
+    });
+  }, [focusSearchTrigger]);
+  // Scope (personal vs group) is no longer a Notes-page toggle — it
+  // lives in Settings → Group notes → "Default scope" so the page
+  // surfaces a single, intentional view. We subscribe to the
+  // same-tab `SETTINGS_CHANGED` event so flipping the toggle in
+  // Settings updates this page without a reload.
+  const [tab, setTab] = useState<"personal" | "group">(() => {
+    try {
+      return readSettings().defaultNoteScope;
+    } catch {
+      return "personal";
+    }
+  });
+  useEffect(() => {
+    const refresh = () => {
+      try {
+        setTab(readSettings().defaultNoteScope);
+      } catch {
+        // ignore — fall back to current
+      }
+    };
+    window.addEventListener("storage", refresh);
+    window.addEventListener(SETTINGS_CHANGED, refresh);
+    return () => {
+      window.removeEventListener("storage", refresh);
+      window.removeEventListener(SETTINGS_CHANGED, refresh);
+    };
+  }, []);
   const [draft, setDraft] = useState("");
   const [query, setQuery] = useState("");
   const listRef = useRef<HTMLUListElement | null>(null);
+
+  // Unread / All view. Defaults to All so a returning user lands on
+  // the familiar full list. The unread count badge in the tab strip
+  // is the prompt to switch.
+  const [viewMode, setViewMode] = useState<"unread" | "all">("all");
+
+  // Book + chapter filter chips. `null` = no filter. Chapter is only
+  // meaningful when a book is selected; clearing the book also clears
+  // the chapter.
+  const [bookFilter, setBookFilter] = useState<string | null>(null);
+  const [chapterFilter, setChapterFilter] = useState<number | null>(null);
+
+  // Per-(room, user) seen set. First mount snapshots every existing
+  // note id into the set so the Unread view doesn't start at "all
+  // history." Mutating the ref doesn't re-render — we bump a version
+  // counter to trigger derived recalcs.
+  const seenRef = useRef<Set<string>>(new Set());
+  const [seenVersion, setSeenVersion] = useState(0);
+  useEffect(() => {
+    seenRef.current = loadSeenSet(roomId, selfUserId);
+    if (consumeInitFlag(roomId, selfUserId)) {
+      // Brand-new install for this (room, user) — every existing note
+      // counts as already-seen so the badge doesn't scream on day 1.
+      for (const n of notes.notes) seenRef.current.add(n.id);
+      saveSeenSet(roomId, selfUserId, seenRef.current);
+    }
+    setSeenVersion((v) => v + 1);
+    // We intentionally don't depend on `notes.notes` here — the init
+    // snapshot is a one-time effect per (room, user).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [roomId, selfUserId]);
+
+  function markSeen(ids: string[]) {
+    let changed = false;
+    for (const id of ids) {
+      if (!seenRef.current.has(id)) {
+        seenRef.current.add(id);
+        changed = true;
+      }
+    }
+    if (changed) {
+      saveSeenSet(roomId, selfUserId, seenRef.current);
+      setSeenVersion((v) => v + 1);
+    }
+  }
 
   // Plain-text search over the merged in-memory view. Note bodies
   // are sanitized HTML (RichNoteField), so strip tags before matching
@@ -63,9 +166,101 @@ export function NotesSidebar({
   const haystack = (html: string) =>
     html.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").toLowerCase();
   const q = query.trim().toLowerCase();
-  const visible = notes.notes
-    .filter((n) => n.scope === tab)
-    .filter((n) => !q || haystack(n.body).includes(q));
+
+  // Parse a note's anchor into book + chapter. Anchors look like
+  // "GEN.1.1" (verse) or "GEN.1" (chapter). Unanchored notes get
+  // `null` and only match the "All books" view.
+  function parseAnchor(n: NoteRow): { book: string | null; chapter: number | null } {
+    const a = n.verse_anchor;
+    if (!a) return { book: null, chapter: null };
+    const parts = a.split(".");
+    const book = parts[0] || null;
+    const chap = parts[1] ? parseInt(parts[1], 10) : NaN;
+    return { book, chapter: Number.isFinite(chap) ? chap : null };
+  }
+
+  // Scope (existing) → search → book/chapter filter → unread filter.
+  // We compute the scope+search baseline once so the book/chapter
+  // chips can derive their option lists off the same population.
+  const scoped = useMemo(
+    () =>
+      notes.notes
+        .filter((n) => n.scope === tab)
+        .filter((n) => !q || haystack(n.body).includes(q)),
+    [notes.notes, tab, q],
+  );
+
+  // Book chip options — every book present in the scoped list.
+  const bookOptions = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const n of scoped) {
+      const { book } = parseAnchor(n);
+      if (book) counts.set(book, (counts.get(book) ?? 0) + 1);
+    }
+    return Array.from(counts.entries()).sort((a, b) => b[1] - a[1]);
+  }, [scoped]);
+
+  // Chapter chip options — only the chapters of the selected book.
+  const chapterOptions = useMemo(() => {
+    if (!bookFilter) return [] as Array<[number, number]>;
+    const counts = new Map<number, number>();
+    for (const n of scoped) {
+      const { book, chapter } = parseAnchor(n);
+      if (book === bookFilter && chapter != null) {
+        counts.set(chapter, (counts.get(chapter) ?? 0) + 1);
+      }
+    }
+    return Array.from(counts.entries()).sort((a, b) => a[0] - b[0]);
+  }, [scoped, bookFilter]);
+
+  // If the active book/chapter falls out of the option set (e.g. the
+  // user changes scope and the book has no notes there), clear it.
+  useEffect(() => {
+    if (bookFilter && !bookOptions.some(([b]) => b === bookFilter)) {
+      setBookFilter(null);
+      setChapterFilter(null);
+    }
+  }, [bookOptions, bookFilter]);
+  useEffect(() => {
+    if (
+      chapterFilter != null &&
+      !chapterOptions.some(([c]) => c === chapterFilter)
+    ) {
+      setChapterFilter(null);
+    }
+  }, [chapterOptions, chapterFilter]);
+
+  // Final list to render.
+  const seen = seenRef.current;
+  void seenVersion; // make `visible` recompute when seen changes
+  const visible = scoped
+    .filter((n) => {
+      if (!bookFilter) return true;
+      const { book, chapter } = parseAnchor(n);
+      if (book !== bookFilter) return false;
+      if (chapterFilter != null && chapter !== chapterFilter) return false;
+      return true;
+    })
+    .filter((n) => viewMode === "all" || !seen.has(n.id));
+
+  const unreadCount = useMemo(
+    () => scoped.filter((n) => !seen.has(n.id)).length,
+    // seenVersion forces recompute when seen mutates
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [scoped, seenVersion],
+  );
+
+  // Auto-mark notes as seen when the user is looking at the All view
+  // (they've actively browsed). In Unread view we wait for an explicit
+  // "Mark all read" so the user can see what's new before it disappears.
+  useEffect(() => {
+    if (viewMode !== "all") return;
+    if (visible.length === 0) return;
+    const ids = visible.map((n) => n.id);
+    const t = window.setTimeout(() => markSeen(ids), 800);
+    return () => window.clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewMode, visible.length]);
   // Default-to-bottom, matching ChatPanel. Snap to the newest note
   // on first paint, when notes are added, when the user switches
   // between Personal ↔ Group, AND when the keyboard opens (so the
@@ -98,66 +293,18 @@ export function NotesSidebar({
             </button>
           )}
         </div>
-        <div
-          role="radiogroup"
-          aria-label="Note scope"
-          className={`flex items-stretch p-0.5 text-[11px] ${GLASS_CARD_INLINE}`}
-        >
-          {(["personal", "group"] as const).map((s) => {
-            const on = tab === s;
-            return (
-              <button
-                key={s}
-                type="button"
-                role="radio"
-                aria-checked={on}
-                // Roving tabindex: only the selected radio is in the
-                // tab order. Arrow keys (handled below) move focus
-                // between members — the WAI-ARIA radiogroup pattern.
-                tabIndex={on ? 0 : -1}
-                onClick={() => setTab(s)}
-                onKeyDown={(e) => {
-                  if (
-                    e.key === "ArrowRight" ||
-                    e.key === "ArrowDown" ||
-                    e.key === "ArrowLeft" ||
-                    e.key === "ArrowUp"
-                  ) {
-                    e.preventDefault();
-                    setTab(s === "personal" ? "group" : "personal");
-                  }
-                }}
-                className={`rounded-full px-2.5 py-1 font-medium capitalize transition ${
-                  on
-                    ? "bg-neutral-900 text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.18)] dark:bg-neutral-100 dark:text-neutral-900"
-                    : "text-neutral-600 hover:text-neutral-900 dark:text-neutral-300 dark:hover:text-neutral-50"
-                }`}
-                title={
-                  s === "personal"
-                    ? "Private to you. Never readable by the agent."
-                    : "Shared with the room. Agent has read oversight."
-                }
-              >
-                {s}
-              </button>
-            );
-          })}
-        </div>
       </div>
 
-      <div className="border-b border-neutral-200 bg-paper-soft px-3 py-1.5 text-[10px] text-neutral-500 dark:border-neutral-800 dark:bg-neutral-950 dark:text-neutral-400">
-        {tab === "personal"
-          ? "Private. Invisible to the agent (rule-guide.MD §12)."
-          : "Shared. Agent may append with attribution."}
-      </div>
-
-      {/* Search across the current scope. Plain-text — strips HTML
+      {/* Search field — hidden by default. Toggled open by the top-bar
+          magnifier (focusSearchTrigger). Plain-text — strips HTML
           before matching so styled notes still find their words.
           Search stays in the browser; the server never sees the
           contents of personal notes. */}
+      {searchOpen && (
       <div className="border-b border-neutral-200 bg-paper-soft px-2 py-1.5 dark:border-neutral-800 dark:bg-neutral-950">
         <div className="relative">
           <input
+            ref={searchInputRef}
             type="search"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
@@ -184,6 +331,111 @@ export function NotesSidebar({
           )}
         </div>
       </div>
+      )}
+
+      {/* View tabs + book/chapter filter chips. Kept compact so the
+          note list still owns most of the column. */}
+      <div className="border-b border-neutral-200 bg-paper-soft px-2 py-1.5 dark:border-neutral-800 dark:bg-neutral-950">
+        <div className="flex items-center gap-1.5">
+          <button
+            type="button"
+            onClick={() => setViewMode("unread")}
+            className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-semibold transition ${
+              viewMode === "unread"
+                ? "bg-neutral-900 text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.2)] dark:bg-neutral-50 dark:text-neutral-900"
+                : "border border-neutral-200 bg-paper text-neutral-700 hover:bg-paper-soft dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200"
+            }`}
+            aria-pressed={viewMode === "unread"}
+          >
+            Unread
+            {unreadCount > 0 && (
+              <span
+                className={`rounded-full px-1.5 text-[10px] font-bold ${
+                  viewMode === "unread"
+                    ? "bg-white/20 text-white dark:bg-neutral-900/20 dark:text-neutral-900"
+                    : "bg-amber-500 text-white"
+                }`}
+              >
+                {unreadCount}
+              </span>
+            )}
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              // Tapping "All" semantically means "show every note in
+              // this scope." Carry-over book/chapter chips would
+              // silently keep hiding notes (especially unanchored
+              // ones, which fail any non-null book filter), so we
+              // clear them along with the search query. The user can
+              // re-apply filters via the chips immediately afterward.
+              setViewMode("all");
+              setBookFilter(null);
+              setChapterFilter(null);
+              setQuery("");
+            }}
+            className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-semibold transition ${
+              viewMode === "all"
+                ? "bg-neutral-900 text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.2)] dark:bg-neutral-50 dark:text-neutral-900"
+                : "border border-neutral-200 bg-paper text-neutral-700 hover:bg-paper-soft dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200"
+            }`}
+            aria-pressed={viewMode === "all"}
+          >
+            All
+          </button>
+          {viewMode === "unread" && unreadCount > 0 && (
+            <button
+              type="button"
+              onClick={() => markSeen(scoped.map((n) => n.id))}
+              className="ml-auto rounded-full border border-neutral-200 bg-paper px-2 py-1 text-[10px] font-medium text-neutral-600 hover:bg-paper-soft dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300"
+              title="Mark every note as read"
+            >
+              Mark all read
+            </button>
+          )}
+
+          {/* Single compact Book select — replaces the two horizontal
+              chip rows. Chapter narrowing only appears once a book is
+              picked, keeping the unfiltered state to one control. */}
+          {bookOptions.length > 0 && (
+            <select
+              value={bookFilter ?? ""}
+              onChange={(e) => {
+                const v = e.target.value;
+                setBookFilter(v || null);
+                setChapterFilter(null);
+              }}
+              className="ml-auto rounded-full border border-neutral-200 bg-paper px-2.5 py-1 font-medium text-neutral-700 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200"
+              aria-label="Filter notes by book"
+            >
+              <option value="">All books</option>
+              {bookOptions.map(([book, count]) => (
+                <option key={book} value={book}>
+                  {OSIS_TO_BOOK_NAME[book] ?? book} ({count})
+                </option>
+              ))}
+            </select>
+          )}
+          {bookFilter && chapterOptions.length > 0 && (
+            <select
+              value={chapterFilter ?? ""}
+              onChange={(e) => {
+                const v = e.target.value;
+                setChapterFilter(v ? Number(v) : null);
+              }}
+              className="rounded-full border border-neutral-200 bg-paper px-2.5 py-1 font-medium text-neutral-700 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200"
+              aria-label="Filter notes by chapter"
+            >
+              <option value="">All chapters</option>
+              {chapterOptions.map(([ch, count]) => (
+                <option key={ch} value={ch}>
+                  Ch {ch} ({count})
+                </option>
+              ))}
+            </select>
+          )}
+        </div>
+      </div>
 
       <ul
         ref={listRef}
@@ -204,7 +456,11 @@ export function NotesSidebar({
           <li className="text-xs text-neutral-500 dark:text-neutral-400">
             {q
               ? `No ${tab} notes match “${query.trim()}”.`
-              : "No notes yet."}
+              : viewMode === "unread"
+                ? "You're all caught up — no unread notes."
+                : bookFilter
+                  ? `No ${tab} notes for ${OSIS_TO_BOOK_NAME[bookFilter] ?? bookFilter}${chapterFilter != null ? ` ${chapterFilter}` : ""} yet.`
+                  : "No notes yet."}
           </li>
         )}
         {visible.map((n) => (
@@ -223,16 +479,18 @@ export function NotesSidebar({
               </span>
               <div className="flex items-center gap-1">
                 <span>{n.scope}</span>
-                <button
-                  onClick={() => {
-                    if (confirm("Delete this note?")) notes.remove(n.id);
-                  }}
-                  className="rounded px-1 text-neutral-400 opacity-50 hover:bg-red-50 hover:text-red-600 group-hover:opacity-100 md:opacity-0 dark:hover:bg-red-900/40 dark:hover:text-red-300"
-                  title="Delete note (notes-system.MD §5.9)"
-                  aria-label="Delete note"
-                >
-                  ×
-                </button>
+                {canDeleteNote(n, selfUserId) && (
+                  <button
+                    onClick={() => {
+                      if (confirm("Delete this note?")) notes.remove(n.id);
+                    }}
+                    className="rounded px-1 text-neutral-400 opacity-50 hover:bg-red-50 hover:text-red-600 group-hover:opacity-100 md:opacity-0 dark:hover:bg-red-900/40 dark:hover:text-red-300"
+                    title="Delete note (notes-system.MD §5.9)"
+                    aria-label="Delete note"
+                  >
+                    ×
+                  </button>
+                )}
               </div>
             </div>
             <div className="mt-0.5">

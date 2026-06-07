@@ -18,6 +18,12 @@ import { ProfileSection } from "./Profile";
 import { BottomSheet } from "./BottomSheet";
 import { GLASS_CARD_INLINE } from "../lib/glass";
 import { ActionButton, Pill } from "./SettingsButtons";
+import {
+  getPushStatus,
+  subscribeToPush,
+  unsubscribeFromPush,
+  type PushStatus,
+} from "../lib/pushNotifications";
 
 /** Just the fields the Profile/Admin section needs. Avoids forcing
  *  the caller to convert their `RoomItem[]` into a `RoomOut[]`. */
@@ -69,6 +75,7 @@ type SettingsPage =
   | "general"
   | "notes"
   | "plans"
+  | "notifications"
   | "advanced"
   | "admin-other"
   | "account";
@@ -127,6 +134,7 @@ export function SettingsModal({
     "general": "General",
     "notes": "Group notes",
     "plans": "Reading plans",
+    "notifications": "Notifications",
     "advanced": "Advanced",
     "admin-other": `Admin in ${otherAdminRooms.length} other room${otherAdminRooms.length === 1 ? "" : "s"}`,
     "account": "Account",
@@ -181,6 +189,11 @@ export function SettingsModal({
               label="Reading plans"
               hint="Enroll, today's reading"
               onClick={() => setPage("plans")}
+            />
+            <PageRow
+              label="Notifications"
+              hint="Push chat + group notes to this device"
+              onClick={() => setPage("notifications")}
             />
             <PageRow
               label="Advanced"
@@ -401,26 +414,64 @@ export function SettingsModal({
           </>)}
 
           {page === "notes" && (
-          <Section title="Group notes">
-            <Row>
-              <div className="flex-1">
-                <div className="text-sm">Social on group notes</div>
-                <div className="text-[11px] text-neutral-600 dark:text-neutral-300">
-                  Adds a heart and a comment thread under each group
-                  note. Personal notes and agent-authored notes are
-                  never affected — they stay private to you and quiet.
+          <>
+            <Section title="Default scope">
+              <div className="space-y-1.5 p-1">
+                <p className="px-1 text-[11px] text-neutral-500 dark:text-neutral-400">
+                  Which side of Notes shows when you open the tab.
+                  Personal notes stay private to you and never reach
+                  the agent. Group notes are shared with the room.
+                </p>
+                <div
+                  className="flex rounded-2xl border border-neutral-200 bg-neutral-100/60 p-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.5)] dark:border-neutral-700 dark:bg-neutral-800/60 dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]"
+                  role="radiogroup"
+                  aria-label="Default note scope"
+                >
+                  {(["personal", "group"] as const).map((s) => {
+                    const picked = settings.defaultNoteScope === s;
+                    return (
+                      <button
+                        key={s}
+                        type="button"
+                        role="radio"
+                        aria-checked={picked}
+                        onClick={() =>
+                          onChange({ ...settings, defaultNoteScope: s })
+                        }
+                        className={`flex-1 rounded-xl px-3 py-2 text-[13px] font-semibold capitalize transition ${
+                          picked
+                            ? "bg-paper text-neutral-900 shadow-[0_1px_2px_rgba(0,0,0,0.08)] dark:bg-neutral-900 dark:text-neutral-50"
+                            : "text-neutral-500 dark:text-neutral-400"
+                        }`}
+                      >
+                        {s}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
-              <input
-                type="checkbox"
-                checked={settings.socialNotesEnabled}
-                onChange={(e) =>
-                  onChange({ ...settings, socialNotesEnabled: e.target.checked })
-                }
-                className="ml-3 h-4 w-4 accent-amber-600"
-              />
-            </Row>
-          </Section>
+            </Section>
+            <Section title="Social">
+              <Row>
+                <div className="flex-1">
+                  <div className="text-sm">Social on group notes</div>
+                  <div className="text-[11px] text-neutral-600 dark:text-neutral-300">
+                    Adds a heart and a comment thread under each group
+                    note. Personal notes and agent-authored notes are
+                    never affected — they stay private to you and quiet.
+                  </div>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={settings.socialNotesEnabled}
+                  onChange={(e) =>
+                    onChange({ ...settings, socialNotesEnabled: e.target.checked })
+                  }
+                  className="ml-3 h-4 w-4 accent-amber-600"
+                />
+              </Row>
+            </Section>
+          </>
           )}
 
           {/* ── Admin in other rooms ─────────────────────────────────
@@ -485,6 +536,8 @@ export function SettingsModal({
             </Section>
           </>
           )}
+
+          {page === "notifications" && <NotificationsSection />}
 
           {page === "account" && (
             <div className="flex flex-col gap-3 px-1 pt-2">
@@ -578,6 +631,108 @@ function Row({ children }: { children: React.ReactNode }) {
     <div className="flex items-center justify-between gap-3 border-b border-neutral-200 px-3 py-2 text-sm last:border-b-0 dark:border-neutral-800">
       {children}
     </div>
+  );
+}
+
+function NotificationsSection() {
+  const [status, setStatus] = useState<PushStatus | "loading">("loading");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    void getPushStatus().then(setStatus);
+  }, []);
+
+  async function refresh() {
+    setStatus(await getPushStatus());
+  }
+
+  async function turnOn() {
+    setBusy(true);
+    setErr(null);
+    try {
+      const s = await subscribeToPush();
+      setStatus(s);
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function turnOff() {
+    setBusy(true);
+    try {
+      await unsubscribeFromPush();
+      await refresh();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const isStandalone =
+    typeof window !== "undefined" &&
+    ((window.navigator as Navigator & { standalone?: boolean }).standalone ===
+      true ||
+      (typeof window.matchMedia === "function"
+        ? window.matchMedia("(display-mode: standalone)").matches
+        : false));
+
+  return (
+    <Section title="Push to this device">
+      <div className="space-y-2 px-3 py-2 text-sm">
+        <p className="text-[12px] text-neutral-600 dark:text-neutral-300">
+          Wake your phone for new chat messages and shared group notes.
+          Personal notes stay private and never push.
+        </p>
+        {status === "loading" && (
+          <p className="text-[12px] text-neutral-500">Checking…</p>
+        )}
+        {status === "unsupported" && (
+          <p className="text-[12px] text-neutral-500">
+            This browser can't receive push notifications.
+          </p>
+        )}
+        {status === "needs-install" && (
+          <p className="text-[12px] text-amber-700 dark:text-amber-300">
+            iOS only delivers push when the app is installed to your
+            Home Screen. Open Safari's Share sheet → "Add to Home
+            Screen", then open Bible IU from the new icon and try
+            again.
+          </p>
+        )}
+        {status === "permission-denied" && (
+          <p className="text-[12px] text-red-700 dark:text-red-300">
+            Notifications are blocked in your browser settings. Allow
+            them for this site, then come back.
+          </p>
+        )}
+        {status === "not-subscribed" && (
+          <ActionButton fullWidth onClick={() => void turnOn()} disabled={busy}>
+            {busy ? "Turning on…" : "Turn on push notifications"}
+          </ActionButton>
+        )}
+        {status === "subscribed" && (
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[12px] font-medium text-emerald-700 dark:text-emerald-300">
+              ✓ On — this device will receive push
+            </span>
+            <Pill onClick={() => void turnOff()} disabled={busy}>
+              {busy ? "…" : "Turn off"}
+            </Pill>
+          </div>
+        )}
+        {err && (
+          <p className="text-[11px] text-red-700 dark:text-red-300">{err}</p>
+        )}
+        {!isStandalone && status !== "unsupported" && (
+          <p className="text-[10px] text-neutral-400 dark:text-neutral-500">
+            Tip: install the app to your Home Screen for the best
+            notification experience.
+          </p>
+        )}
+      </div>
+    </Section>
   );
 }
 

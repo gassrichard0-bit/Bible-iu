@@ -34,6 +34,11 @@ export interface Settings {
    *  top of the Bible scroller whenever the user is enrolled in a
    *  reading plan. Toggle off to read in peace without the prompt. */
   todaysReadingBanner: boolean;
+  /** Default note scope shown on the Notes page. The page no longer
+   *  carries a Personal/Group radio — the user picks once here and
+   *  the page just shows that scope. `personal` keeps notes invisible
+   *  to the agent (rule-guide.MD §12.1). */
+  defaultNoteScope: "personal" | "group";
 }
 
 const KEY = "bible-iu:settings";
@@ -45,6 +50,7 @@ export const defaultSettings: Settings = {
   socialNotesEnabled: false,
   bypassAgentGate: false,
   todaysReadingBanner: true,
+  defaultNoteScope: "personal",
 };
 
 export function readSettings(): Settings {
@@ -85,6 +91,7 @@ export function settingsToPreferences(s: Settings): { ui: Partial<Settings> } {
       socialNotesEnabled: s.socialNotesEnabled,
       bypassAgentGate: s.bypassAgentGate,
       todaysReadingBanner: s.todaysReadingBanner,
+      defaultNoteScope: s.defaultNoteScope,
     },
   };
 }
@@ -119,5 +126,9 @@ export function settingsFromPreferences(
       typeof ui.todaysReadingBanner === "boolean"
         ? ui.todaysReadingBanner
         : base.todaysReadingBanner,
+    defaultNoteScope:
+      ui.defaultNoteScope === "personal" || ui.defaultNoteScope === "group"
+        ? ui.defaultNoteScope
+        : base.defaultNoteScope,
   };
 }

@@ -9,13 +9,21 @@
  * Cache key is bumped on every release to evict the old shell. When
  * we add a real build pipeline we'll inject the bundle hash here.
  */
-const CACHE = "bible-iu-shell-v1";
+const CACHE = "bible-iu-shell-v2";
 const PRECACHE = ["/", "/manifest.webmanifest"];
 
+// True when this SW is running under Vite's dev server. We register
+// the SW in dev so Web Push works locally, but skip the install
+// precache + the fetch handler — otherwise HMR breaks because we'd
+// intercept `/@vite/`, `/src/...`, and JSX module requests.
+const IS_DEV = self.location.port === "5173";
+
 self.addEventListener("install", (event) => {
-  event.waitUntil(
-    caches.open(CACHE).then((cache) => cache.addAll(PRECACHE)),
-  );
+  if (!IS_DEV) {
+    event.waitUntil(
+      caches.open(CACHE).then((cache) => cache.addAll(PRECACHE)),
+    );
+  }
   // Apply the new SW as soon as the old one's tabs close.
   self.skipWaiting();
 });
@@ -32,6 +40,7 @@ self.addEventListener("activate", (event) => {
 });
 
 self.addEventListener("fetch", (event) => {
+  if (IS_DEV) return;
   const url = new URL(event.request.url);
   if (event.request.method !== "GET") return;
 
@@ -65,5 +74,56 @@ self.addEventListener("fetch", (event) => {
         .catch(() => cached); // offline → fall back to cache
       return cached || fetchPromise;
     }),
+  );
+});
+
+// Web Push — phone wake-up for chat + group notes. Payload shape comes
+// from backend/api/push.py (fanout_to_room): { kind, room_id,
+// room_name, sender, body, url }. iOS Safari delivers these only when
+// the PWA is installed to Home Screen — until then the OS marks the
+// app's notification permission as denied and the subscribe call fails.
+self.addEventListener("push", (event) => {
+  let data = {};
+  try {
+    data = event.data ? event.data.json() : {};
+  } catch (_) {
+    data = { body: event.data ? event.data.text() : "" };
+  }
+  const title = data.room_name
+    ? `${data.sender || "Someone"} · ${data.room_name}`
+    : (data.sender || "Bible IU");
+  const opts = {
+    body: data.body || "",
+    icon: "/icon-192.png",
+    badge: "/icon-192.png",
+    // Tag by room so multiple unread messages collapse into one
+    // banner instead of stacking up on the lock screen.
+    tag: data.room_id ? `room:${data.room_id}` : "bible-iu",
+    renotify: true,
+    data: { url: data.url || "/", room_id: data.room_id || null },
+  };
+  event.waitUntil(self.registration.showNotification(title, opts));
+});
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const targetUrl = (event.notification.data && event.notification.data.url) || "/";
+  event.waitUntil(
+    self.clients
+      .matchAll({ type: "window", includeUncontrolled: true })
+      .then((clientList) => {
+        // Focus an existing tab if one is already open; otherwise
+        // open a fresh window at the room.
+        for (const c of clientList) {
+          if ("focus" in c) {
+            try {
+              c.postMessage({ type: "notification-click", url: targetUrl });
+            } catch (_) {}
+            return c.focus();
+          }
+        }
+        if (self.clients.openWindow) return self.clients.openWindow(targetUrl);
+        return null;
+      }),
   );
 });
