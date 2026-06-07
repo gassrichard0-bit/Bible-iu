@@ -1055,7 +1055,12 @@ def _chat_attachment_url(msg: ChatMessage) -> Optional[str]:
     return f"/rooms/{msg.room_id}/chat/{msg.id}/image?v={token}"
 
 
-def _serialize_chat(msg: ChatMessage, author: User | None) -> ChatMessageRead:
+def _serialize_chat(
+    msg: ChatMessage,
+    author: User | None,
+    parent: ChatMessage | None = None,
+    parent_author: User | None = None,
+) -> ChatMessageRead:
     created = msg.created_at
     if created.tzinfo is None:
         created = created.replace(tzinfo=timezone.utc)
@@ -1070,6 +1075,16 @@ def _serialize_chat(msg: ChatMessage, author: User | None) -> ChatMessageRead:
         author_display_name=(author.display_name if author else None),
         author_avatar_url=_resolved_user_avatar_url(author) if author else None,
         attachment_image_url=_chat_attachment_url(msg),
+        reply_to_id=getattr(msg, "reply_to_id", None),
+        reply_to_body=parent.body if parent else None,
+        reply_to_author_handle=(
+            parent_author.handle if parent_author else None
+        ),
+        reply_to_has_image=(
+            bool(getattr(parent, "attachment_image_token", None))
+            if parent
+            else False
+        ),
         created_at=created.isoformat(),
     )
 
@@ -1109,7 +1124,20 @@ def list_chat(
         .all()
     )
     rows.reverse()
+    # Build the author map AND the parent map in one shot. The parent
+    # map covers any reply_to_id pointing at a message older than our
+    # current window — we still want a preview, just not the whole
+    # parent's payload.
     author_ids = {r.author_user_id for r in rows if r.author_user_id}
+    parent_ids = {r.reply_to_id for r in rows if r.reply_to_id}
+    parents: dict[str, ChatMessage] = {}
+    if parent_ids:
+        for p in session.scalars(
+            select(ChatMessage).where(ChatMessage.id.in_(parent_ids))
+        ):
+            parents[p.id] = p
+            if p.author_user_id:
+                author_ids.add(p.author_user_id)
     authors = (
         {
             u.id: u
@@ -1120,10 +1148,23 @@ def list_chat(
         if author_ids
         else {}
     )
-    return [
-        _serialize_chat(m, authors.get(m.author_user_id) if m.author_user_id else None)
-        for m in rows
-    ]
+    out: list[ChatMessageRead] = []
+    for m in rows:
+        parent = parents.get(m.reply_to_id) if m.reply_to_id else None
+        parent_author = (
+            authors.get(parent.author_user_id)
+            if parent and parent.author_user_id
+            else None
+        )
+        out.append(
+            _serialize_chat(
+                m,
+                authors.get(m.author_user_id) if m.author_user_id else None,
+                parent,
+                parent_author,
+            )
+        )
+    return out
 
 
 @app.post(
@@ -1138,6 +1179,14 @@ def post_chat(
     user_id: str = Depends(current_user_id),
 ) -> ChatMessageRead:
     _require_member(session, room_id, user_id)
+    # Validate the reply target — must exist and belong to the same
+    # room (otherwise a malicious client could quote a private DM in
+    # a public group).
+    parent: ChatMessage | None = None
+    if payload.reply_to_id:
+        parent = session.get(ChatMessage, payload.reply_to_id)
+        if parent is None or parent.room_id != room_id:
+            raise HTTPException(400, "Invalid reply_to_id for this room.")
     msg = ChatMessage(
         id=str(uuid.uuid4()),
         room_id=room_id,
@@ -1145,12 +1194,18 @@ def post_chat(
         author_is_agent=False,  # rule-guide.MD §4.10 — agent never posts to chat
         body=payload.body,
         language=payload.language,
+        reply_to_id=payload.reply_to_id,
     )
     session.add(msg)
     session.commit()
     session.refresh(msg)
     author = session.get(User, user_id)
-    out = _serialize_chat(msg, author)
+    parent_author = (
+        session.get(User, parent.author_user_id)
+        if parent and parent.author_user_id
+        else None
+    )
+    out = _serialize_chat(msg, author, parent, parent_author)
     # Fan out to anyone currently subscribed via /ws/chat/{room_id}.
     # The hub is process-local; multi-instance deployments need Redis
     # pub/sub (see WORKSTREAM.md scale-out section).
@@ -1179,16 +1234,22 @@ async def post_chat_image(
     room_id: str,
     file: UploadFile = File(...),
     body: str = Form(""),
+    reply_to_id: str = Form(""),
     session: Session = Depends(db),
     user_id: str = Depends(current_user_id),
 ) -> ChatMessageRead:
     """Member-only. Sends a chat message with an image attachment.
-    `body` is an optional caption; pass an empty string for plain
-    "image only" messages. The image is re-encoded to webp at <=1280px."""
+    `body` is an optional caption; `reply_to_id` is an optional parent
+    message id when this is a reply. The image is re-encoded to webp."""
     _require_member(session, room_id, user_id)
     raw = await file.read()
     if len(raw) > _CHAT_IMAGE_MAX_BYTES:
         raise HTTPException(413, "Image too large (max 20MB).")
+    parent: ChatMessage | None = None
+    if reply_to_id:
+        parent = session.get(ChatMessage, reply_to_id)
+        if parent is None or parent.room_id != room_id:
+            raise HTTPException(400, "Invalid reply_to_id for this room.")
     from io import BytesIO
     from PIL import Image, UnidentifiedImageError
 
@@ -1199,6 +1260,7 @@ async def post_chat_image(
         author_is_agent=False,
         body=body or "",
         language=None,
+        reply_to_id=reply_to_id or None,
     )
     try:
         with Image.open(BytesIO(raw)) as im:
@@ -1219,7 +1281,12 @@ async def post_chat_image(
     session.commit()
     session.refresh(msg)
     author = session.get(User, user_id)
-    out = _serialize_chat(msg, author)
+    parent_author = (
+        session.get(User, parent.author_user_id)
+        if parent and parent.author_user_id
+        else None
+    )
+    out = _serialize_chat(msg, author, parent, parent_author)
     chat_hub.publish(room_id, out.model_dump())
     return out
 

@@ -44,6 +44,9 @@ class RoomRead(BaseModel):
 class ChatMessageCreate(BaseModel):
     body: str
     language: Optional[str] = None
+    # When the user is replying to a specific message, that message's
+    # id. Server validates it belongs to the same room. Null = top-level.
+    reply_to_id: Optional[str] = None
 
 
 class ChatMessageRead(BaseModel):
@@ -68,6 +71,13 @@ class ChatMessageRead(BaseModel):
     # messages. The token portion of the URL changes on every upload
     # so the browser cache discards old images on re-send.
     attachment_image_url: Optional[str] = None
+    # When this message is a reply, the parent's id + a short text
+    # preview to show inline above the bubble. Authors of the parent
+    # are looked up by the same join used for the message itself.
+    reply_to_id: Optional[str] = None
+    reply_to_body: Optional[str] = None
+    reply_to_author_handle: Optional[str] = None
+    reply_to_has_image: bool = False
     created_at: Optional[str] = None
 
 

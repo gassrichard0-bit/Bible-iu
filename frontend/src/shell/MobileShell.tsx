@@ -47,7 +47,8 @@ import { NewRoomModal, type NewRoomValues } from "./NewRoomModal";
 import { ShareRoomModal } from "./ShareRoomModal";
 import { RoomAvatar } from "./RoomAvatar";
 import { UserProfileSheet } from "./UserProfileSheet";
-import { Pill } from "./SettingsButtons";
+import { ActionButton, Pill } from "./SettingsButtons";
+import { BottomSheet } from "./BottomSheet";
 
 interface RoomItem {
   id: string;
@@ -331,6 +332,20 @@ export function MobileShell({
   const composerInputRef = useRef<HTMLInputElement | null>(null);
   const attachInputRef = useRef<HTMLInputElement | null>(null);
   const [attaching, setAttaching] = useState(false);
+  // Long-press → action sheet → "Reply" target. Holds enough info to
+  // render the quoted preview above the composer without going back
+  // to the message list.
+  const [replyTarget, setReplyTarget] = useState<{
+    id: string;
+    body: string;
+    authorHandle: string | null;
+    hasImage: boolean;
+  } | null>(null);
+  // Long-press → action sheet state. Same shape as replyTarget plus
+  // the user's id (for "Direct message" CTA when not the author).
+  const [actionMessage, setActionMessage] = useState<ChatMessageOut | null>(
+    null,
+  );
 
   async function attachChatImage(file: File) {
     if (!active || tab !== "chat" || attaching) return;
@@ -347,8 +362,14 @@ export function MobileShell({
     setAttaching(true);
     const caption = composerDraft.trim();
     try {
-      await api.chatPostImage(active.id, file, caption);
+      await api.chatPostImage(
+        active.id,
+        file,
+        caption,
+        replyTarget?.id ?? "",
+      );
       setComposerDraft("");
+      setReplyTarget(null);
     } catch (e) {
       console.warn("Attach failed", e);
     } finally {
@@ -396,7 +417,10 @@ export function MobileShell({
       // Real chat — POST to the server. The websocket subscription
       // in ChatPanel will pick the message back up and render it,
       // so we don't optimistically prepend here.
-      void api.chatPost(active.id, text).catch(() => {});
+      void api
+        .chatPost(active.id, text, undefined, replyTarget?.id)
+        .catch(() => {});
+      setReplyTarget(null);
     }
     setComposerDraft("");
     setSending(true);
@@ -824,6 +848,24 @@ export function MobileShell({
                     avatarUrl: preview.avatarUrl,
                   });
                 }}
+                onLongPress={(msg) => {
+                  setActionMessage(msg);
+                  // Soft haptic on supported devices.
+                  if (
+                    typeof navigator !== "undefined" &&
+                    "vibrate" in navigator
+                  ) {
+                    try {
+                      (
+                        navigator as Navigator & {
+                          vibrate?: (p: number) => void;
+                        }
+                      ).vibrate?.(10);
+                    } catch {
+                      // ignored
+                    }
+                  }
+                }}
               />
             )}
             {tab === "bookmarks" && (
@@ -1011,6 +1053,37 @@ export function MobileShell({
           // Composer open on the current tab → the floating bar
           // becomes a contextual input. The bottom-right pill
           // (rendered above) toggles it back to the tabs view.
+          <div className="pointer-events-auto flex flex-1 flex-col gap-1.5">
+            {tab === "chat" && replyTarget && (
+              <div
+                className="flex items-start gap-2 rounded-2xl border border-amber-200 bg-amber-50/90 px-3 py-2 text-[12px] shadow-[0_4px_14px_rgba(0,0,0,0.10)] backdrop-blur-md dark:border-amber-800/60 dark:bg-amber-900/40"
+                role="status"
+                aria-live="polite"
+              >
+                <span className="mt-0.5 inline-block h-full w-[3px] shrink-0 rounded-full bg-amber-500/80" />
+                <div className="min-w-0 flex-1">
+                  <div className="text-[10px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300">
+                    Replying to{" "}
+                    {replyTarget.authorHandle
+                      ? `@${replyTarget.authorHandle}`
+                      : "message"}
+                  </div>
+                  <div className="line-clamp-2 text-neutral-800 dark:text-neutral-100">
+                    {replyTarget.hasImage && !replyTarget.body
+                      ? "📷 Photo"
+                      : replyTarget.body || "(empty message)"}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setReplyTarget(null)}
+                  aria-label="Cancel reply"
+                  className="grid h-7 w-7 shrink-0 place-items-center rounded-full text-amber-700 transition hover:bg-amber-100 dark:text-amber-200 dark:hover:bg-amber-800/40"
+                >
+                  ✕
+                </button>
+              </div>
+            )}
           <form
             onSubmit={(e) => {
               e.preventDefault();
@@ -1115,6 +1188,7 @@ export function MobileShell({
               <SendArrow />
             </button>
           </form>
+          </div>
         ) : (
           <nav
             role="tablist"
@@ -1349,6 +1423,60 @@ export function MobileShell({
           roomName={active.name}
         />
       )}
+      <BottomSheet
+        open={!!actionMessage}
+        onClose={() => setActionMessage(null)}
+        title="Message"
+      >
+        {actionMessage && (
+          <div className="flex flex-col gap-2 px-4 pb-5 pt-2">
+            <div className="rounded-2xl border border-neutral-200 bg-paper-soft px-3 py-2 text-[13px] text-neutral-700 shadow-[inset_0_1px_0_rgba(255,255,255,0.5)] dark:border-neutral-800 dark:bg-neutral-950 dark:text-neutral-300 dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+              <div className="text-[10px] font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
+                {actionMessage.author_handle
+                  ? `@${actionMessage.author_handle}`
+                  : actionMessage.author_is_agent
+                    ? "Agent"
+                    : ""}
+              </div>
+              <div className="line-clamp-3">
+                {actionMessage.attachment_image_url && !actionMessage.body
+                  ? "📷 Photo"
+                  : actionMessage.body || "(empty message)"}
+              </div>
+            </div>
+            <ActionButton
+              onClick={() => {
+                setReplyTarget({
+                  id: actionMessage.id,
+                  body: actionMessage.body,
+                  authorHandle: actionMessage.author_handle,
+                  hasImage: !!actionMessage.attachment_image_url,
+                });
+                setActionMessage(null);
+                setComposerOpen(true);
+                setTimeout(
+                  () => composerInputRef.current?.focus(),
+                  30,
+                );
+              }}
+            >
+              ↩ Reply
+            </ActionButton>
+            <Pill
+              onClick={() => {
+                const text =
+                  actionMessage.body ||
+                  (actionMessage.attachment_image_url ? "(photo)" : "");
+                navigator.clipboard?.writeText(text).catch(() => {});
+                setActionMessage(null);
+              }}
+            >
+              Copy text
+            </Pill>
+            <Pill onClick={() => setActionMessage(null)}>Cancel</Pill>
+          </div>
+        )}
+      </BottomSheet>
       <UserProfileSheet
         open={!!profileView}
         userId={profileView?.userId ?? null}
@@ -1862,6 +1990,7 @@ function ChatPanel({
   dark,
   onRead,
   onAvatarTap,
+  onLongPress,
 }: {
   roomId: string;
   roomName: string;
@@ -1885,6 +2014,9 @@ function ChatPanel({
       avatarUrl: string | null;
     },
   ) => void;
+  /** Long-pressing a bubble fires this so the parent can pop an
+   *  action sheet (Reply / Copy / etc.). */
+  onLongPress?: (msg: ChatMessageOut) => void;
 }) {
   const [messages, setMessages] = useState<ChatMessageOut[]>([]);
   const [memberCount, setMemberCount] = useState<number | null>(null);
@@ -2012,16 +2144,13 @@ function ChatPanel({
               accentKey={accentKey}
               dark={dark}
               onAvatarClick={(userId) => {
-                // Open the profile preview sheet first — the user
-                // can decide there whether to message. Avoids the
-                // "I bumped a stranger's photo and now I'm in a DM
-                // with them" surprise.
                 onAvatarTap?.(userId, {
                   handle: m.author_handle,
                   displayName: m.author_display_name,
                   avatarUrl: m.author_avatar_url,
                 });
               }}
+              onLongPress={() => onLongPress?.(m)}
             />
           ))
         )}
@@ -2036,6 +2165,7 @@ function ChatBubble({
   accentKey,
   dark,
   onAvatarClick,
+  onLongPress,
 }: {
   msg: ChatMessageOut;
   mine: boolean;
@@ -2043,7 +2173,39 @@ function ChatBubble({
   dark: boolean;
   /** Tap the sender avatar → open a 1:1 DM with them. */
   onAvatarClick?: (userId: string) => void;
+  /** Press-and-hold the bubble for ~400ms → opens an action sheet
+   *  (Reply / Copy / etc.). */
+  onLongPress?: () => void;
 }) {
+  // Long-press detection: 400ms hold without > ~8px movement.
+  const pressTimer = useRef<number | null>(null);
+  const pressFired = useRef(false);
+  const pressStart = useRef<{ x: number; y: number } | null>(null);
+  const cancelPress = () => {
+    if (pressTimer.current !== null) {
+      window.clearTimeout(pressTimer.current);
+      pressTimer.current = null;
+    }
+    pressStart.current = null;
+  };
+  const startPress = (e: React.PointerEvent) => {
+    if (!onLongPress) return;
+    pressFired.current = false;
+    pressStart.current = { x: e.clientX, y: e.clientY };
+    cancelPress();
+    pressTimer.current = window.setTimeout(() => {
+      pressFired.current = true;
+      pressTimer.current = null;
+      onLongPress();
+    }, 400);
+  };
+  const movePress = (e: React.PointerEvent) => {
+    const s = pressStart.current;
+    if (!s) return;
+    const dx = e.clientX - s.x;
+    const dy = e.clientY - s.y;
+    if (dx * dx + dy * dy > 64) cancelPress(); // ~8px drift = scroll, not press
+  };
   const side = mine ? "items-end" : "items-start";
   const palette = ACCENT_PALETTE[accentKey];
   // "Mine" bubble: same physical material as the receiver bubble —
@@ -2136,9 +2298,43 @@ function ChatBubble({
           </button>
         )}
         <div
-          className={`overflow-hidden ${mine ? myClass : otherClass}`}
+          className={`overflow-hidden ${mine ? myClass : otherClass} ${
+            onLongPress ? "cursor-pointer select-none" : ""
+          }`}
           style={mine ? myStyle : otherStyle}
+          onPointerDown={startPress}
+          onPointerMove={movePress}
+          onPointerUp={cancelPress}
+          onPointerCancel={cancelPress}
+          onContextMenu={(e) => {
+            // Right-click / long-press menu suppression — we open our
+            // own action sheet instead of the OS context menu.
+            if (onLongPress) {
+              e.preventDefault();
+              onLongPress();
+            }
+          }}
         >
+          {msg.reply_to_id && (
+            <div
+              className={`mx-2 mt-2 rounded-xl border-l-[3px] px-2.5 py-1.5 text-[12px] ${
+                mine
+                  ? "border-amber-500 bg-black/10 dark:bg-white/10"
+                  : "border-amber-500 bg-black/5 dark:bg-white/5"
+              }`}
+            >
+              <div className="text-[10px] font-semibold uppercase tracking-wide opacity-70">
+                {msg.reply_to_author_handle
+                  ? `@${msg.reply_to_author_handle}`
+                  : "Reply"}
+              </div>
+              <div className="line-clamp-2 opacity-80">
+                {msg.reply_to_has_image && !msg.reply_to_body
+                  ? "📷 Photo"
+                  : msg.reply_to_body || "(message)"}
+              </div>
+            </div>
+          )}
           {msg.attachment_image_url && (
             <img
               src={chatImageWithAuth(msg.attachment_image_url)}

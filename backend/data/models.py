@@ -307,6 +307,11 @@ class ChatMessage(Base, TimestampMixin):
     attachment_image_token: Mapped[Optional[str]] = mapped_column(
         String, nullable=True
     )
+    # When this message is a reply, points at the parent. Renders as
+    # the quoted preview above the body. Null = top-level message.
+    reply_to_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("chat_messages.id"), nullable=True
+    )
 
 
 # ---------------------------------------------------------------------------

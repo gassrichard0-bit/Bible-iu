@@ -415,19 +415,26 @@ export const api = {
     jsonFetch<ChatMessageOut[]>(
       `/rooms/${room_id}/chat?limit=${limit}`,
     ),
-  chatPost: (room_id: string, body: string, language?: string) =>
+  chatPost: (
+    room_id: string,
+    body: string,
+    language?: string,
+    reply_to_id?: string,
+  ) =>
     jsonFetch<ChatMessageOut>(`/rooms/${room_id}/chat`, {
       method: "POST",
-      body: JSON.stringify({ body, language }),
+      body: JSON.stringify({ body, language, reply_to_id }),
     }),
   chatPostImage: async (
     room_id: string,
     file: File,
     caption = "",
+    reply_to_id = "",
   ) => {
     const form = new FormData();
     form.append("file", file);
     form.append("body", caption);
+    if (reply_to_id) form.append("reply_to_id", reply_to_id);
     const headers: Record<string, string> = {};
     const pw = getPassword();
     if (pw) headers["X-App-Password"] = pw;
@@ -597,6 +604,13 @@ export interface ChatMessageOut {
    *  server-relative; render through the same withApiPrefix path as
    *  avatars so the deployment password + session token are appended. */
   attachment_image_url: string | null;
+  /** When this message is a reply, the parent's id + hydrated
+   *  preview snippets so the bubble can render the quoted block
+   *  above the body. */
+  reply_to_id: string | null;
+  reply_to_body: string | null;
+  reply_to_author_handle: string | null;
+  reply_to_has_image: boolean;
   created_at: string | null;
 }
 
