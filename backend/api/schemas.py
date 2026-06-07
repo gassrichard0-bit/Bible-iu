@@ -78,7 +78,17 @@ class ChatMessageRead(BaseModel):
     reply_to_body: Optional[str] = None
     reply_to_author_handle: Optional[str] = None
     reply_to_has_image: bool = False
+    # Aggregated reactions on this message. `mine` is True when the
+    # current viewer has applied this emoji — drives the highlighted
+    # state on the reaction pill in chat.
+    reactions: list["ReactionTally"] = Field(default_factory=list)
     created_at: Optional[str] = None
+
+
+class ReactionTally(BaseModel):
+    emoji: str
+    count: int
+    mine: bool
 
 
 class NoteCreate(BaseModel):

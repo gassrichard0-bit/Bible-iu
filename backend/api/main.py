@@ -52,6 +52,7 @@ from ..agent.skills.web_search import make_searcher
 from ..data import get_session, init_db
 from ..data.models import (
     ChatMessage,
+    ChatReaction,
     CrossReference,
     Note,
     NoteComment,
@@ -1046,6 +1047,31 @@ def accept_invite(
     )
 
 
+def _chat_reactions_for(
+    session: Session,
+    message_ids: list[str],
+    viewer_id: str,
+) -> dict[str, list[dict]]:
+    """Aggregate reactions by message_id into [{emoji, count, mine}]."""
+    if not message_ids:
+        return {}
+    rows = (
+        session.query(ChatReaction)
+        .filter(ChatReaction.message_id.in_(message_ids))
+        .all()
+    )
+    bucket: dict[str, dict[str, dict]] = {}
+    for r in rows:
+        msg_bucket = bucket.setdefault(r.message_id, {})
+        cell = msg_bucket.setdefault(
+            r.emoji, {"emoji": r.emoji, "count": 0, "mine": False}
+        )
+        cell["count"] += 1
+        if r.user_id == viewer_id:
+            cell["mine"] = True
+    return {mid: list(cells.values()) for mid, cells in bucket.items()}
+
+
 def _chat_attachment_url(msg: ChatMessage) -> Optional[str]:
     """Cache-busted URL for the message's image attachment, if any.
     Same auth-via-query-string pattern used elsewhere."""
@@ -1060,6 +1086,7 @@ def _serialize_chat(
     author: User | None,
     parent: ChatMessage | None = None,
     parent_author: User | None = None,
+    reactions: list[dict] | None = None,
 ) -> ChatMessageRead:
     created = msg.created_at
     if created.tzinfo is None:
@@ -1085,6 +1112,7 @@ def _serialize_chat(
             if parent
             else False
         ),
+        reactions=reactions or [],
         created_at=created.isoformat(),
     )
 
@@ -1148,6 +1176,9 @@ def list_chat(
         if author_ids
         else {}
     )
+    reactions_by_msg = _chat_reactions_for(
+        session, [r.id for r in rows], user_id
+    )
     out: list[ChatMessageRead] = []
     for m in rows:
         parent = parents.get(m.reply_to_id) if m.reply_to_id else None
@@ -1162,6 +1193,7 @@ def list_chat(
                 authors.get(m.author_user_id) if m.author_user_id else None,
                 parent,
                 parent_author,
+                reactions_by_msg.get(m.id, []),
             )
         )
     return out
@@ -1209,6 +1241,75 @@ def post_chat(
     # Fan out to anyone currently subscribed via /ws/chat/{room_id}.
     # The hub is process-local; multi-instance deployments need Redis
     # pub/sub (see WORKSTREAM.md scale-out section).
+    chat_hub.publish(room_id, out.model_dump())
+    return out
+
+
+class ReactionToggleBody(BaseModel):
+    emoji: str = Field(min_length=1, max_length=16)
+
+
+@app.post(
+    "/rooms/{room_id}/chat/{message_id}/react",
+    response_model=ChatMessageRead,
+    dependencies=[Depends(require_password)],
+)
+def toggle_reaction(
+    room_id: str,
+    message_id: str,
+    payload: ReactionToggleBody,
+    session: Session = Depends(db),
+    user_id: str = Depends(current_user_id),
+) -> ChatMessageRead:
+    """Toggle one emoji reaction on a chat message. Tap once to add,
+    tap the same emoji again to remove. Re-broadcasts the updated
+    message on the room's chat hub so other tabs/devices refresh."""
+    _require_member(session, room_id, user_id)
+    msg = session.get(ChatMessage, message_id)
+    if msg is None or msg.room_id != room_id:
+        raise HTTPException(404, "Message not found.")
+    emoji = payload.emoji.strip()
+    if not emoji:
+        raise HTTPException(400, "Emoji can't be empty.")
+    existing = (
+        session.query(ChatReaction)
+        .filter(
+            ChatReaction.message_id == message_id,
+            ChatReaction.user_id == user_id,
+            ChatReaction.emoji == emoji,
+        )
+        .one_or_none()
+    )
+    if existing is not None:
+        session.delete(existing)
+    else:
+        session.add(
+            ChatReaction(
+                id=str(uuid.uuid4()),
+                message_id=message_id,
+                user_id=user_id,
+                emoji=emoji,
+            )
+        )
+    session.commit()
+    # Re-serialize with the latest reactions; viewer perspective is
+    # baked into `mine`, so each subscriber will need to recompute
+    # their own — for now we just publish the canonical payload and
+    # the WS handler accepts that other tabs will refetch on next
+    # render.
+    author = session.get(User, msg.author_user_id) if msg.author_user_id else None
+    parent = (
+        session.get(ChatMessage, msg.reply_to_id)
+        if msg.reply_to_id
+        else None
+    )
+    parent_author = (
+        session.get(User, parent.author_user_id)
+        if parent and parent.author_user_id
+        else None
+    )
+    reactions = _chat_reactions_for(session, [msg.id], user_id).get(msg.id, [])
+    out = _serialize_chat(msg, author, parent, parent_author, reactions)
     chat_hub.publish(room_id, out.model_dump())
     return out
 

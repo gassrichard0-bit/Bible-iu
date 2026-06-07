@@ -314,6 +314,28 @@ class ChatMessage(Base, TimestampMixin):
     )
 
 
+class ChatReaction(Base, TimestampMixin):
+    """A single emoji reaction on a chat message.
+
+    Unique on (message_id, user_id, emoji) — a user can stack
+    different emojis on the same message (❤️ + 👍) but can't double
+    up the same emoji. Toggling the same one removes it; tapping a
+    new one adds another row.
+    """
+    __tablename__ = "chat_reactions"
+    __table_args__ = (
+        UniqueConstraint("message_id", "user_id", "emoji"),
+    )
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    message_id: Mapped[str] = mapped_column(
+        ForeignKey("chat_messages.id"), index=True
+    )
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id"), index=True
+    )
+    emoji: Mapped[str] = mapped_column(String)
+
+
 # ---------------------------------------------------------------------------
 # Scripture & sources (read-only ground truth) — data-model.MD §3
 # ---------------------------------------------------------------------------

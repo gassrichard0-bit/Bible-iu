@@ -425,6 +425,14 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ body, language, reply_to_id }),
     }),
+  chatReact: (room_id: string, message_id: string, emoji: string) =>
+    jsonFetch<ChatMessageOut>(
+      `/rooms/${room_id}/chat/${message_id}/react`,
+      {
+        method: "POST",
+        body: JSON.stringify({ emoji }),
+      },
+    ),
   chatPostImage: async (
     room_id: string,
     file: File,
@@ -611,6 +619,10 @@ export interface ChatMessageOut {
   reply_to_body: string | null;
   reply_to_author_handle: string | null;
   reply_to_has_image: boolean;
+  /** Aggregated reactions on this message. `mine` is true when the
+   *  viewer has applied this emoji — drives the highlighted state on
+   *  the reaction pill. Empty array when no reactions. */
+  reactions: { emoji: string; count: number; mine: boolean }[];
   created_at: string | null;
 }
 

@@ -1444,6 +1444,40 @@ export function MobileShell({
                   : actionMessage.body || "(empty message)"}
               </div>
             </div>
+            <div
+              className="flex items-center justify-around gap-1 rounded-2xl border border-neutral-200 bg-paper px-2 py-2 shadow-[0_2px_8px_rgba(0,0,0,0.10),inset_0_1px_0_rgba(255,255,255,0.45)] dark:border-neutral-700 dark:bg-neutral-900 dark:shadow-[0_2px_8px_rgba(0,0,0,0.40),inset_0_1px_0_rgba(255,255,255,0.06)]"
+              role="group"
+              aria-label="React with emoji"
+            >
+              {(["❤️", "👍", "👎", "😂", "‼️", "❓"] as const).map((emoji) => {
+                const tally = actionMessage.reactions?.find(
+                  (r) => r.emoji === emoji,
+                );
+                const mine = !!tally?.mine;
+                return (
+                  <button
+                    key={emoji}
+                    type="button"
+                    onClick={() => {
+                      if (!active) return;
+                      void api
+                        .chatReact(active.id, actionMessage.id, emoji)
+                        .catch(() => {});
+                      setActionMessage(null);
+                    }}
+                    className={`grid h-11 w-11 place-items-center rounded-full text-[24px] transition active:scale-90 ${
+                      mine
+                        ? "bg-amber-100 ring-2 ring-amber-300 dark:bg-amber-900/40 dark:ring-amber-700"
+                        : "hover:bg-paper-soft dark:hover:bg-neutral-800"
+                    }`}
+                    aria-label={`React with ${emoji}`}
+                    title={`React with ${emoji}`}
+                  >
+                    {emoji}
+                  </button>
+                );
+              })}
+            </div>
             <ActionButton
               onClick={() => {
                 setReplyTarget({
@@ -2056,9 +2090,16 @@ function ChatPanel({
       ws.onmessage = (event) => {
         try {
           const msg = JSON.parse(event.data) as ChatMessageOut;
-          setMessages((prev) =>
-            prev.some((m) => m.id === msg.id) ? prev : [...prev, msg],
-          );
+          // Replace in place when the message is already in the list
+          // (reaction toggle, edit, etc.); otherwise append. Without
+          // this, reactions would silently fall on the floor.
+          setMessages((prev) => {
+            const idx = prev.findIndex((m) => m.id === msg.id);
+            if (idx === -1) return [...prev, msg];
+            const next = prev.slice();
+            next[idx] = msg;
+            return next;
+          });
         } catch {
           // Ignore malformed frames.
         }
@@ -2151,6 +2192,9 @@ function ChatPanel({
                 });
               }}
               onLongPress={() => onLongPress?.(m)}
+              onReact={(emoji) => {
+                void api.chatReact(roomId, m.id, emoji).catch(() => {});
+              }}
             />
           ))
         )}
@@ -2166,6 +2210,7 @@ function ChatBubble({
   dark,
   onAvatarClick,
   onLongPress,
+  onReact,
 }: {
   msg: ChatMessageOut;
   mine: boolean;
@@ -2176,6 +2221,9 @@ function ChatBubble({
   /** Press-and-hold the bubble for ~400ms → opens an action sheet
    *  (Reply / Copy / etc.). */
   onLongPress?: () => void;
+  /** Tap an existing reaction chip → toggle the viewer's reaction
+   *  for that emoji. */
+  onReact?: (emoji: string) => void;
 }) {
   // Long-press detection: 400ms hold without > ~8px movement.
   const pressTimer = useRef<number | null>(null);
@@ -2347,6 +2395,32 @@ function ChatBubble({
           )}
         </div>
       </div>
+      {msg.reactions && msg.reactions.length > 0 && (
+        <div
+          className={`-mt-2 flex flex-wrap gap-1 ${
+            mine ? "self-end pr-2" : showAvatar ? "ml-11 pl-2" : "pl-2"
+          }`}
+        >
+          {msg.reactions.map((r) => (
+            <button
+              key={r.emoji}
+              type="button"
+              onClick={() => onReact?.(r.emoji)}
+              className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[12px] shadow-[0_2px_6px_rgba(0,0,0,0.10),inset_0_1px_0_rgba(255,255,255,0.45)] transition active:scale-95 dark:shadow-[0_2px_6px_rgba(0,0,0,0.30),inset_0_1px_0_rgba(255,255,255,0.06)] ${
+                r.mine
+                  ? "border-amber-300 bg-amber-50/80 text-amber-900 dark:border-amber-700 dark:bg-amber-900/40 dark:text-amber-100"
+                  : "border-neutral-200 bg-paper text-neutral-700 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200"
+              }`}
+              title={r.mine ? "Tap to remove your reaction" : "Tap to add"}
+              aria-pressed={r.mine}
+              aria-label={`${r.emoji} reacted ${r.count}`}
+            >
+              <span>{r.emoji}</span>
+              <span className="font-semibold tabular-nums">{r.count}</span>
+            </button>
+          ))}
+        </div>
+      )}
       {msg.created_at && (
         <span className="mt-1 px-3 text-[11px] font-medium tracking-tight text-neutral-500 dark:text-neutral-400">
           {formatChatTime(msg.created_at)}
