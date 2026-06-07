@@ -420,6 +420,27 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ body, language }),
     }),
+  chatPostImage: async (
+    room_id: string,
+    file: File,
+    caption = "",
+  ) => {
+    const form = new FormData();
+    form.append("file", file);
+    form.append("body", caption);
+    const headers: Record<string, string> = {};
+    const pw = getPassword();
+    if (pw) headers["X-App-Password"] = pw;
+    const tok = getSessionToken();
+    if (tok) headers["X-Session-Token"] = tok;
+    const r = await fetch(`/api/rooms/${room_id}/chat/image`, {
+      method: "POST",
+      headers,
+      body: form,
+    });
+    if (!r.ok) throw new Error(`Upload failed (${r.status})`);
+    return (await r.json()) as ChatMessageOut;
+  },
   bibleXrefs: (verse_id: string, limit = 25) =>
     jsonFetch<CrossRefOut[]>(
       `/bible/xrefs/${verse_id}?limit=${limit}`,
@@ -572,6 +593,10 @@ export interface ChatMessageOut {
   /** Resolved avatar URL (server-relative). Frontend prepends `/api`
    *  and appends the auth query params via `Avatar`'s prefix helper. */
   author_avatar_url: string | null;
+  /** When set, the message has an image attachment. The URL is
+   *  server-relative; render through the same withApiPrefix path as
+   *  avatars so the deployment password + session token are appended. */
+  attachment_image_url: string | null;
   created_at: string | null;
 }
 

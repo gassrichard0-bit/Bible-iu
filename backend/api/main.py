@@ -22,6 +22,7 @@ from fastapi import (
     Depends,
     FastAPI,
     File,
+    Form,
     HTTPException,
     Request,
     UploadFile,
@@ -1045,6 +1046,15 @@ def accept_invite(
     )
 
 
+def _chat_attachment_url(msg: ChatMessage) -> Optional[str]:
+    """Cache-busted URL for the message's image attachment, if any.
+    Same auth-via-query-string pattern used elsewhere."""
+    token = getattr(msg, "attachment_image_token", None)
+    if not token:
+        return None
+    return f"/rooms/{msg.room_id}/chat/{msg.id}/image?v={token}"
+
+
 def _serialize_chat(msg: ChatMessage, author: User | None) -> ChatMessageRead:
     created = msg.created_at
     if created.tzinfo is None:
@@ -1059,6 +1069,7 @@ def _serialize_chat(msg: ChatMessage, author: User | None) -> ChatMessageRead:
         author_handle=(author.handle if author else None),
         author_display_name=(author.display_name if author else None),
         author_avatar_url=_resolved_user_avatar_url(author) if author else None,
+        attachment_image_url=_chat_attachment_url(msg),
         created_at=created.isoformat(),
     )
 
@@ -1145,6 +1156,100 @@ def post_chat(
     # pub/sub (see WORKSTREAM.md scale-out section).
     chat_hub.publish(room_id, out.model_dump())
     return out
+
+
+# ---------------------------------------------------------------------------
+# Chat image attachments
+# ---------------------------------------------------------------------------
+_CHAT_IMAGES_DIR = _UPLOADS_DIR / "chat"
+_CHAT_IMAGE_MAX_BYTES = 20 * 1024 * 1024
+_CHAT_IMAGE_MAX_SIDE = 1280  # px — generous for chat photos; webp keeps them light
+
+
+def _chat_image_path(message_id: str) -> Path:
+    return _CHAT_IMAGES_DIR / f"{message_id}.webp"
+
+
+@app.post(
+    "/rooms/{room_id}/chat/image",
+    response_model=ChatMessageRead,
+    dependencies=[Depends(require_password)],
+)
+async def post_chat_image(
+    room_id: str,
+    file: UploadFile = File(...),
+    body: str = Form(""),
+    session: Session = Depends(db),
+    user_id: str = Depends(current_user_id),
+) -> ChatMessageRead:
+    """Member-only. Sends a chat message with an image attachment.
+    `body` is an optional caption; pass an empty string for plain
+    "image only" messages. The image is re-encoded to webp at <=1280px."""
+    _require_member(session, room_id, user_id)
+    raw = await file.read()
+    if len(raw) > _CHAT_IMAGE_MAX_BYTES:
+        raise HTTPException(413, "Image too large (max 20MB).")
+    from io import BytesIO
+    from PIL import Image, UnidentifiedImageError
+
+    msg = ChatMessage(
+        id=str(uuid.uuid4()),
+        room_id=room_id,
+        author_user_id=user_id,
+        author_is_agent=False,
+        body=body or "",
+        language=None,
+    )
+    try:
+        with Image.open(BytesIO(raw)) as im:
+            im.load()
+            from PIL.ImageOps import exif_transpose
+
+            im = exif_transpose(im)
+            im.thumbnail((_CHAT_IMAGE_MAX_SIDE, _CHAT_IMAGE_MAX_SIDE))
+            if im.mode not in ("RGB", "RGBA"):
+                im = im.convert("RGB")
+            _CHAT_IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+            im.save(_chat_image_path(msg.id), format="WEBP", quality=82, method=4)
+    except UnidentifiedImageError:
+        raise HTTPException(415, "Unsupported image format.")
+
+    msg.attachment_image_token = uuid.uuid4().hex[:12]
+    session.add(msg)
+    session.commit()
+    session.refresh(msg)
+    author = session.get(User, user_id)
+    out = _serialize_chat(msg, author)
+    chat_hub.publish(room_id, out.model_dump())
+    return out
+
+
+@app.get("/rooms/{room_id}/chat/{message_id}/image")
+def get_chat_image(
+    room_id: str,
+    message_id: str,
+    request: Request,
+    session: Session = Depends(db),
+) -> FileResponse:
+    """Members only — same query-string auth fallback as room/user
+    avatars so browser <img> loaders work."""
+    pw = request.headers.get("X-App-Password") or request.query_params.get("password")
+    expected = os.getenv("BIBLE_IU_PASSWORD") or ""
+    if expected and pw != expected:
+        raise HTTPException(401, "App password required.")
+    token = request.headers.get("X-Session-Token") or request.query_params.get("session")
+    user = resolve_user(token) if token else None
+    if user is None:
+        raise HTTPException(401, "not signed in")
+    _require_member(session, room_id, user.id)
+    path = _chat_image_path(message_id)
+    if not path.exists():
+        raise HTTPException(404, "No image for this message.")
+    return FileResponse(
+        str(path),
+        media_type="image/webp",
+        headers={"Cache-Control": "private, max-age=86400"},
+    )
 
 
 # ---------------------------------------------------------------------------

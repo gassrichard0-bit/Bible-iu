@@ -63,6 +63,11 @@ class ChatMessageRead(BaseModel):
     # else null. Lets the chat UI render the sender's photo without a
     # second round-trip per message.
     author_avatar_url: Optional[str] = None
+    # Cache-busted URL of an image attachment, if any. Same auth-via-
+    # query-string pattern as room/user avatars. Null on plain text
+    # messages. The token portion of the URL changes on every upload
+    # so the browser cache discards old images on re-send.
+    attachment_image_url: Optional[str] = None
     created_at: Optional[str] = None
 
 

@@ -300,6 +300,13 @@ class ChatMessage(Base, TimestampMixin):
     author_is_agent: Mapped[bool] = mapped_column(Boolean, default=False)
     body: Mapped[str] = mapped_column(Text)
     language: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # Optional image attachment. When set, an upload sits at
+    # `data/uploads/chat/{id}.webp` and is served by
+    # `GET /rooms/{room_id}/chat/{message_id}/image?v=<token>`.
+    # The token is also the cache-bust value; null = no attachment.
+    attachment_image_token: Mapped[Optional[str]] = mapped_column(
+        String, nullable=True
+    )
 
 
 # ---------------------------------------------------------------------------

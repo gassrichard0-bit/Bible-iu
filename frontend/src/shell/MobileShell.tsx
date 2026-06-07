@@ -329,6 +329,33 @@ export function MobileShell({
   // the keyboard between messages and the user has to re-tap the
   // input every time. Especially noticeable on the chat tab.
   const composerInputRef = useRef<HTMLInputElement | null>(null);
+  const attachInputRef = useRef<HTMLInputElement | null>(null);
+  const [attaching, setAttaching] = useState(false);
+
+  async function attachChatImage(file: File) {
+    if (!active || tab !== "chat" || attaching) return;
+    if (file.size > 20 * 1024 * 1024) {
+      // Surface via the existing error path? Easier: just bail with a
+      // log. The composer will keep the typed caption.
+      console.warn("Image too large (>20MB) — skipped.");
+      return;
+    }
+    if (!file.type.startsWith("image/")) {
+      console.warn("Non-image dropped on attach — skipped.");
+      return;
+    }
+    setAttaching(true);
+    const caption = composerDraft.trim();
+    try {
+      await api.chatPostImage(active.id, file, caption);
+      setComposerDraft("");
+    } catch (e) {
+      console.warn("Attach failed", e);
+    } finally {
+      setAttaching(false);
+      composerInputRef.current?.focus();
+    }
+  }
   const workspaceRef = useRef<WorkspaceHandle | null>(null);
   // Resolved agent scope — mirrored from Workspace so the chip above
   // the composer can render "Asking · {scope}" without the user
@@ -1023,6 +1050,33 @@ export function MobileShell({
                   : "Send a message"
             }
           >
+            {tab === "chat" && (
+              <>
+                <input
+                  ref={attachInputRef}
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (f) void attachChatImage(f);
+                    e.target.value = "";
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={() => attachInputRef.current?.click()}
+                  disabled={attaching || !active}
+                  className="grid h-[48px] w-[48px] shrink-0 self-center place-items-center rounded-full text-neutral-700 transition disabled:opacity-40 hover:bg-paper-soft dark:text-neutral-200 dark:hover:bg-neutral-800"
+                  aria-label="Attach photo"
+                  title="Attach photo"
+                  onPointerDown={(e) => e.preventDefault()}
+                  onMouseDown={(e) => e.preventDefault()}
+                >
+                  {attaching ? "…" : <PaperclipIcon />}
+                </button>
+              </>
+            )}
             <input
               ref={composerInputRef}
               value={composerDraft}
@@ -1517,6 +1571,40 @@ function BookmarkFilled() {
       aria-hidden="true"
     >
       <path d="M6.5 2.75A1.75 1.75 0 0 0 4.75 4.5v16.43a1.5 1.5 0 0 0 2.33 1.25L12 19l4.92 3.18a1.5 1.5 0 0 0 2.33-1.25V4.5a1.75 1.75 0 0 0-1.75-1.75H6.5Z" />
+    </svg>
+  );
+}
+
+/** Prefix server-relative chat image URLs with `/api` and append the
+ *  deployment password + session token in the query string so the
+ *  browser's <img> loader (which can't send custom headers) gets the
+ *  same auth as jsonFetch. Same pattern as RoomAvatar. */
+function chatImageWithAuth(path: string): string {
+  if (/^https?:\/\//i.test(path)) return path;
+  const base = path.startsWith("/api") ? path : `/api${path}`;
+  const sep = base.includes("?") ? "&" : "?";
+  const auth: string[] = [];
+  const pw = getPassword();
+  const tok = getSessionToken();
+  if (pw) auth.push(`password=${encodeURIComponent(pw)}`);
+  if (tok) auth.push(`session=${encodeURIComponent(tok)}`);
+  return auth.length ? `${base}${sep}${auth.join("&")}` : base;
+}
+
+function PaperclipIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="20"
+      height="20"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M14 7l-7 7a4 4 0 0 0 5.66 5.66l8.5-8.5a6 6 0 0 0-8.49-8.49l-9.2 9.2" />
     </svg>
   );
 }
@@ -2037,8 +2125,8 @@ function ChatBubble({
             type="button"
             onClick={() => onAvatarClick?.(msg.author_user_id!)}
             className="shrink-0 self-end rounded-full focus:outline-none focus:ring-2 focus:ring-amber-400"
-            aria-label={`Direct message ${avatarHandle}`}
-            title={`Message ${avatarHandle}`}
+            aria-label={`View ${avatarHandle}'s profile`}
+            title={`View ${avatarHandle}'s profile`}
           >
             <Avatar
               handle={avatarHandle}
@@ -2048,10 +2136,19 @@ function ChatBubble({
           </button>
         )}
         <div
-          className={`${mine ? "px-3.5 py-2 text-[15px]" : "px-3.5 py-2 text-[15px]"} ${mine ? myClass : otherClass}`}
+          className={`overflow-hidden ${mine ? myClass : otherClass}`}
           style={mine ? myStyle : otherStyle}
         >
-          {msg.body}
+          {msg.attachment_image_url && (
+            <img
+              src={chatImageWithAuth(msg.attachment_image_url)}
+              alt={msg.body || "attachment"}
+              className="block max-h-80 w-full object-cover"
+            />
+          )}
+          {msg.body && (
+            <div className="px-3.5 py-2 text-[15px]">{msg.body}</div>
+          )}
         </div>
       </div>
       {msg.created_at && (
