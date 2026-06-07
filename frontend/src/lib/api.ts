@@ -476,6 +476,11 @@ export const api = {
       method: "POST",
       body: "{}",
     }),
+  dmOpen: (target_user_id: string) =>
+    jsonFetch<RoomOut>(`/dm/${target_user_id}`, {
+      method: "POST",
+      body: "{}",
+    }),
   authImageUpload: async (file: File) => {
     const form = new FormData();
     form.append("file", file);
@@ -554,6 +559,9 @@ export interface ChatMessageOut {
   language: string | null;
   author_handle: string | null;
   author_display_name: string | null;
+  /** Resolved avatar URL (server-relative). Frontend prepends `/api`
+   *  and appends the auth query params via `Avatar`'s prefix helper. */
+  author_avatar_url: string | null;
   created_at: string | null;
 }
 

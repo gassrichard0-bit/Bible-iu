@@ -272,6 +272,81 @@ def create_room(
     return _room_read(room, my_role)
 
 
+@app.post(
+    "/dm/{target_user_id}",
+    response_model=RoomRead,
+    dependencies=[Depends(require_password)],
+)
+def open_direct_message(
+    target_user_id: str,
+    session: Session = Depends(db),
+    user_id: str = Depends(current_user_id),
+) -> RoomRead:
+    """Find-or-create the direct room between the caller and `target_user_id`.
+
+    Idempotent: tapping the same user twice returns the same room.
+    The two participants are stored as `RoomMember(role="member")`
+    rows on a `type="direct"` room — same shape as group rooms, so
+    chat / unread / image features all just work.
+    """
+    if target_user_id == user_id:
+        raise HTTPException(400, "Can't DM yourself.")
+    target = session.get(User, target_user_id)
+    if target is None:
+        raise HTTPException(404, "User not found.")
+    # Look for an existing direct room that contains exactly both
+    # users. SQLite's GROUP BY is fine here; the row count per room
+    # is tiny (1:1 rooms have 2 members).
+    self_rooms = {
+        r.room_id
+        for r in session.query(RoomMember)
+        .filter(RoomMember.user_id == user_id)
+        .all()
+    }
+    if self_rooms:
+        candidate = (
+            session.query(Room)
+            .filter(Room.id.in_(self_rooms), Room.type == "direct")
+            .all()
+        )
+        for room in candidate:
+            members = {
+                m.user_id
+                for m in session.query(RoomMember).filter(
+                    RoomMember.room_id == room.id
+                )
+            }
+            if members == {user_id, target_user_id}:
+                return _room_read(
+                    room, "member", _unread_count(session, room.id, user_id)
+                )
+    # No existing room — create a fresh direct room.
+    room = Room(
+        id=str(uuid.uuid4()),
+        type="direct",
+        name=target.display_name or target.handle,
+    )
+    session.add(room)
+    session.add(
+        RoomMember(
+            id=str(uuid.uuid4()),
+            room_id=room.id,
+            user_id=user_id,
+            role="member",
+        )
+    )
+    session.add(
+        RoomMember(
+            id=str(uuid.uuid4()),
+            room_id=room.id,
+            user_id=target_user_id,
+            role="member",
+        )
+    )
+    session.commit()
+    return _room_read(room, "member", 0)
+
+
 @app.get(
     "/rooms",
     response_model=list[RoomRead],
@@ -983,8 +1058,20 @@ def _serialize_chat(msg: ChatMessage, author: User | None) -> ChatMessageRead:
         language=msg.language,
         author_handle=(author.handle if author else None),
         author_display_name=(author.display_name if author else None),
+        author_avatar_url=_resolved_user_avatar_url(author) if author else None,
         created_at=created.isoformat(),
     )
+
+
+def _resolved_user_avatar_url(user: User) -> Optional[str]:
+    """Mirror of `auth_users._resolved_avatar_url`. Re-implemented
+    here to avoid a circular import — the chat hub already pulls user
+    rows through this serializer thousands of times an hour, so we
+    keep the helper free of any extra dependencies."""
+    token = getattr(user, "avatar_image_token", None)
+    if token:
+        return f"/auth/users/{user.id}/image?v={token}"
+    return user.avatar_url
 
 
 @app.get(

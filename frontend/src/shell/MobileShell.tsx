@@ -779,6 +779,25 @@ export function MobileShell({
                     ),
                   )
                 }
+                onDM={(room) => {
+                  const item: RoomItem = {
+                    id: room.id,
+                    type: (room.type === "direct" ? "direct" : "group") as
+                      | "group"
+                      | "direct",
+                    name: room.name ?? "(unnamed)",
+                    role: room.role,
+                    imageUrl: room.image_url ?? null,
+                    accent: room.accent_color ?? null,
+                    unreadCount: room.unread_count ?? 0,
+                  };
+                  setRooms((prev) =>
+                    prev.some((r) => r.id === item.id)
+                      ? prev
+                      : [item, ...prev],
+                  );
+                  setActiveId(room.id);
+                }}
               />
             )}
             {tab === "bookmarks" && (
@@ -1717,6 +1736,7 @@ function ChatPanel({
   accentKey,
   dark,
   onRead,
+  onDM,
 }: {
   roomId: string;
   roomName: string;
@@ -1729,6 +1749,10 @@ function ChatPanel({
   /** Fired after the server confirms the room has been marked read.
    *  Parent zeroes the unread badge for this room. */
   onRead?: () => void;
+  /** Tapping a sender's avatar opens a 1:1 DM with them. The parent
+   *  inserts the returned room into its `rooms` state and switches
+   *  the active room so the user lands in the conversation. */
+  onDM?: (room: RoomOut) => void;
 }) {
   const [messages, setMessages] = useState<ChatMessageOut[]>([]);
   const [memberCount, setMemberCount] = useState<number | null>(null);
@@ -1855,6 +1879,15 @@ function ChatPanel({
               mine={!!selfUserId && m.author_user_id === selfUserId}
               accentKey={accentKey}
               dark={dark}
+              onAvatarClick={async (userId) => {
+                try {
+                  const room = await api.dmOpen(userId);
+                  onDM?.(room);
+                } catch {
+                  // best-effort — if the DM can't be opened, leave
+                  // the chat alone and let the user retry.
+                }
+              }}
             />
           ))
         )}
@@ -1868,11 +1901,14 @@ function ChatBubble({
   mine,
   accentKey,
   dark,
+  onAvatarClick,
 }: {
   msg: ChatMessageOut;
   mine: boolean;
   accentKey: import("../lib/accentColors").AccentKey;
   dark: boolean;
+  /** Tap the sender avatar → open a 1:1 DM with them. */
+  onAvatarClick?: (userId: string) => void;
 }) {
   const side = mine ? "items-end" : "items-start";
   const palette = ACCENT_PALETTE[accentKey];
@@ -1932,18 +1968,45 @@ function ChatBubble({
     : msg.author_user_id
       ? (msg.author_display_name || msg.author_handle || "?")
       : "(deleted user)";
+  // Show the sender avatar to the LEFT of the bubble row (WhatsApp-
+  // style). Tappable when we have a real user id — pops a 1:1 DM.
+  const showAvatar =
+    !mine && !msg.author_is_agent && !!msg.author_user_id;
+  const avatarHandle =
+    msg.author_handle ?? msg.author_display_name ?? "?";
   return (
     <div className={`flex flex-col gap-0.5 ${side}`}>
       {!mine && (
-        <span className="px-2 text-[10px] font-semibold text-neutral-500 dark:text-neutral-400">
+        <span
+          className={`text-[10px] font-semibold text-neutral-500 dark:text-neutral-400 ${
+            showAvatar ? "ml-11 px-1" : "px-2"
+          }`}
+        >
           {authorLabel}
         </span>
       )}
-      <div
-        className={`max-w-[82%] ${mine ? "px-3.5 py-2 text-[15px]" : "px-3.5 py-2 text-[15px]"} ${mine ? myClass : otherClass}`}
-        style={mine ? myStyle : otherStyle}
-      >
-        {msg.body}
+      <div className={`flex max-w-[82%] items-end gap-2 ${mine ? "self-end" : ""}`}>
+        {showAvatar && (
+          <button
+            type="button"
+            onClick={() => onAvatarClick?.(msg.author_user_id!)}
+            className="shrink-0 self-end rounded-full focus:outline-none focus:ring-2 focus:ring-amber-400"
+            aria-label={`Direct message ${avatarHandle}`}
+            title={`Message ${avatarHandle}`}
+          >
+            <Avatar
+              handle={avatarHandle}
+              url={msg.author_avatar_url}
+              size={36}
+            />
+          </button>
+        )}
+        <div
+          className={`${mine ? "px-3.5 py-2 text-[15px]" : "px-3.5 py-2 text-[15px]"} ${mine ? myClass : otherClass}`}
+          style={mine ? myStyle : otherStyle}
+        >
+          {msg.body}
+        </div>
       </div>
       {msg.created_at && (
         <span className="mt-1 px-3 text-[11px] font-medium tracking-tight text-neutral-500 dark:text-neutral-400">

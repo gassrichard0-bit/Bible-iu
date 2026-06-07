@@ -58,6 +58,11 @@ class ChatMessageRead(BaseModel):
     # deleted their account; "(deleted user)" rendered in the UI.
     author_handle: Optional[str] = None
     author_display_name: Optional[str] = None
+    # Resolved avatar URL — uploaded webp (`/auth/users/{id}/image?v=...`)
+    # if the user uploaded one, else the externally-provided `avatar_url`,
+    # else null. Lets the chat UI render the sender's photo without a
+    # second round-trip per message.
+    author_avatar_url: Optional[str] = None
     created_at: Optional[str] = None
 
 
