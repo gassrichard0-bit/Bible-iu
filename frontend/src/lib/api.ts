@@ -481,6 +481,8 @@ export const api = {
       method: "POST",
       body: "{}",
     }),
+  userPublic: (user_id: string) =>
+    jsonFetch<PublicUserView>(`/auth/users/${user_id}`),
   authImageUpload: async (file: File) => {
     const form = new FormData();
     form.append("file", file);
@@ -548,6 +550,14 @@ export interface ReadingPlanDayOut {
   day_index: number;
   refs: string[];        // OSIS-style: "PSA.23", "JHN.3.16-21"
   completed: boolean;
+}
+
+export interface PublicUserView {
+  id: string;
+  handle: string;
+  display_name: string;
+  avatar_url: string | null;
+  languages: string[];
 }
 
 export interface ChatMessageOut {

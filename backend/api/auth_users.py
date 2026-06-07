@@ -348,6 +348,44 @@ def delete_my_avatar(
     return AvatarImageOut(avatar_url=_resolved_avatar_url(user))
 
 
+class PublicUserView(BaseModel):
+    """Trimmed user view — only what's safe to show to anyone who
+    shares a room with this user. No password hash, no auth provider,
+    no phone (people don't always want their phone broadcast)."""
+    id: str
+    handle: str
+    display_name: str
+    avatar_url: Optional[str] = None
+    languages: list[str] = Field(default_factory=list)
+
+
+@router.get(
+    "/users/{user_id}",
+    response_model=PublicUserView,
+    dependencies=[Depends(require_password)],
+)
+def get_user_public(
+    user_id: str,
+    s: Session = Depends(_db_session),
+    x_session_token: Optional[str] = Header(default=None),
+) -> PublicUserView:
+    """Used by the chat-avatar profile preview. Visible to any
+    authenticated user — same trust boundary as listing room members.
+    """
+    if _resolve_session(s, x_session_token) is None:
+        raise HTTPException(401, "not signed in")
+    user = s.get(User, user_id)
+    if user is None:
+        raise HTTPException(404, "user not found")
+    return PublicUserView(
+        id=user.id,
+        handle=user.handle,
+        display_name=user.display_name,
+        avatar_url=_resolved_avatar_url(user),
+        languages=list(user.languages or []),
+    )
+
+
 @router.get("/users/{user_id}/image")
 def get_user_avatar(
     user_id: str,

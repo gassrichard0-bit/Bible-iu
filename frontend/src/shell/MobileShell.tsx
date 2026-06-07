@@ -46,6 +46,7 @@ import { SettingsModal } from "./Settings";
 import { NewRoomModal, type NewRoomValues } from "./NewRoomModal";
 import { ShareRoomModal } from "./ShareRoomModal";
 import { RoomAvatar } from "./RoomAvatar";
+import { UserProfileSheet } from "./UserProfileSheet";
 import { Pill } from "./SettingsButtons";
 
 interface RoomItem {
@@ -421,6 +422,15 @@ export function MobileShell({
   const [adminOpen, setAdminOpen] = useState(false);
   const [newRoomOpen, setNewRoomOpen] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
+  // Profile-preview sheet opened by tapping a sender avatar in chat.
+  // Holds onto the preview fields off the chat message so the UI
+  // doesn't flash blank while /auth/users/{id} returns.
+  const [profileView, setProfileView] = useState<{
+    userId: string;
+    handle: string | null;
+    displayName: string | null;
+    avatarUrl: string | null;
+  } | null>(null);
   const [focus, setFocus] = useState<VerseFocus | null>(null);
   const [seededRoomId, setSeededRoomId] = useState<string | null>(null);
   // The signed-in user's avatar URL. Fetched on mount and re-pulled
@@ -779,24 +789,13 @@ export function MobileShell({
                     ),
                   )
                 }
-                onDM={(room) => {
-                  const item: RoomItem = {
-                    id: room.id,
-                    type: (room.type === "direct" ? "direct" : "group") as
-                      | "group"
-                      | "direct",
-                    name: room.name ?? "(unnamed)",
-                    role: room.role,
-                    imageUrl: room.image_url ?? null,
-                    accent: room.accent_color ?? null,
-                    unreadCount: room.unread_count ?? 0,
-                  };
-                  setRooms((prev) =>
-                    prev.some((r) => r.id === item.id)
-                      ? prev
-                      : [item, ...prev],
-                  );
-                  setActiveId(room.id);
+                onAvatarTap={(userId, preview) => {
+                  setProfileView({
+                    userId,
+                    handle: preview.handle,
+                    displayName: preview.displayName,
+                    avatarUrl: preview.avatarUrl,
+                  });
                 }}
               />
             )}
@@ -1296,6 +1295,44 @@ export function MobileShell({
           roomName={active.name}
         />
       )}
+      <UserProfileSheet
+        open={!!profileView}
+        userId={profileView?.userId ?? null}
+        preview={{
+          handle: profileView?.handle,
+          displayName: profileView?.displayName,
+          avatarUrl: profileView?.avatarUrl,
+        }}
+        onClose={() => setProfileView(null)}
+        onMessage={async (uid) => {
+          // Close the profile sheet first so the room switch
+          // doesn't fight the sheet animation.
+          setProfileView(null);
+          try {
+            const room = await api.dmOpen(uid);
+            const item: RoomItem = {
+              id: room.id,
+              type: (room.type === "direct" ? "direct" : "group") as
+                | "group"
+                | "direct",
+              name: room.name ?? "(unnamed)",
+              role: room.role,
+              imageUrl: room.image_url ?? null,
+              accent: room.accent_color ?? null,
+              unreadCount: room.unread_count ?? 0,
+            };
+            setRooms((prev) =>
+              prev.some((r) => r.id === item.id)
+                ? prev
+                : [item, ...prev],
+            );
+            setActiveId(room.id);
+            setTab("chat");
+          } catch {
+            // best-effort; user can retry from the profile sheet.
+          }
+        }}
+      />
     </div>
   );
 }
@@ -1736,7 +1773,7 @@ function ChatPanel({
   accentKey,
   dark,
   onRead,
-  onDM,
+  onAvatarTap,
 }: {
   roomId: string;
   roomName: string;
@@ -1749,10 +1786,17 @@ function ChatPanel({
   /** Fired after the server confirms the room has been marked read.
    *  Parent zeroes the unread badge for this room. */
   onRead?: () => void;
-  /** Tapping a sender's avatar opens a 1:1 DM with them. The parent
-   *  inserts the returned room into its `rooms` state and switches
-   *  the active room so the user lands in the conversation. */
-  onDM?: (room: RoomOut) => void;
+  /** Tapping a sender's avatar opens a profile preview sheet (NOT a
+   *  DM). The user can hit Message in the sheet to actually start
+   *  a conversation. Parent owns the sheet state. */
+  onAvatarTap?: (
+    userId: string,
+    preview: {
+      handle: string | null;
+      displayName: string | null;
+      avatarUrl: string | null;
+    },
+  ) => void;
 }) {
   const [messages, setMessages] = useState<ChatMessageOut[]>([]);
   const [memberCount, setMemberCount] = useState<number | null>(null);
@@ -1879,14 +1923,16 @@ function ChatPanel({
               mine={!!selfUserId && m.author_user_id === selfUserId}
               accentKey={accentKey}
               dark={dark}
-              onAvatarClick={async (userId) => {
-                try {
-                  const room = await api.dmOpen(userId);
-                  onDM?.(room);
-                } catch {
-                  // best-effort — if the DM can't be opened, leave
-                  // the chat alone and let the user retry.
-                }
+              onAvatarClick={(userId) => {
+                // Open the profile preview sheet first — the user
+                // can decide there whether to message. Avoids the
+                // "I bumped a stranger's photo and now I'm in a DM
+                // with them" surprise.
+                onAvatarTap?.(userId, {
+                  handle: m.author_handle,
+                  displayName: m.author_display_name,
+                  avatarUrl: m.author_avatar_url,
+                });
               }}
             />
           ))

@@ -108,6 +108,34 @@ class TestDirectMessage:
         assert r.status_code == 404
 
 
+class TestPublicUserView:
+    def test_returns_safe_fields_only(self, client):
+        alice = _register(client, "alice")
+        bob = _register(client, "bob")
+        r = client.get(
+            f"/auth/users/{bob['user_id']}", headers=_hdr(alice["token"])
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["handle"] == "bob"
+        assert body["display_name"] == "bob"
+        # Safe-to-broadcast fields only — no phone, no auth provider,
+        # no password hash, etc.
+        assert "phone_e164" not in body
+        assert "auth_provider" not in body
+        assert "password_hash" not in body
+
+    def test_requires_auth(self, client):
+        alice = _register(client, "alice")
+        r = client.get(f"/auth/users/{alice['user_id']}")
+        assert r.status_code == 401
+
+    def test_unknown_user_404(self, client):
+        alice = _register(client, "alice")
+        r = client.get("/auth/users/does-not-exist", headers=_hdr(alice["token"]))
+        assert r.status_code == 404
+
+
 class TestChatAvatarInPayload:
     def test_message_carries_author_avatar_url(self, client):
         """ChatMessageRead now has `author_avatar_url`. After bob
