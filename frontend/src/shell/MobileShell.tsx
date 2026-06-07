@@ -578,7 +578,7 @@ export function MobileShell({
        *  group's accent color (auto-derived per id, or admin-picked
        *  via AdminPanel) so each group reads as visually distinct. */}
       <header
-        className="relative flex items-center justify-between gap-2 border-b border-neutral-200 bg-paper px-2 py-2 dark:border-neutral-800 dark:bg-neutral-900"
+        className="relative z-30 flex items-center justify-between gap-2 px-2 py-2"
         style={{
           paddingTop:
             "calc(env(safe-area-inset-top, 0px) + 0.5rem)",
@@ -586,9 +586,32 @@ export function MobileShell({
             "calc(env(safe-area-inset-left, 0px) + 0.5rem)",
           paddingRight:
             "calc(env(safe-area-inset-right, 0px) + 0.5rem)",
-          backgroundImage: `linear-gradient(to bottom, var(--biu-accent-band), transparent 110%)`,
-          ["--biu-accent-band" as string]:
-            theme === "dark" ? accent.bandDark : accent.band,
+          // Match the bookmark-card recipe exactly — softer drop
+          // shadow, gentler top highlight, no inset bottom shadow,
+          // 1px outline ring. The "amount of raise" the user signed
+          // off on. Accent tint stays as a fading top overlay.
+          backgroundImage:
+            theme === "dark"
+              ? [
+                  `linear-gradient(to bottom, ${accent.bandDark}, transparent 60%)`,
+                  "linear-gradient(to bottom, #3a3a44, #1f1f25)",
+                ].join(", ")
+              : [
+                  `linear-gradient(to bottom, ${accent.band}, transparent 60%)`,
+                  "linear-gradient(to bottom, #ffffff, #e9ecf2)",
+                ].join(", "),
+          boxShadow:
+            theme === "dark"
+              ? [
+                  "0 6px 18px rgba(0,0,0,0.22)",
+                  "inset 0 1.5px 0 rgba(255,255,255,0.45)",
+                  "0 0 0 1px rgba(255,255,255,0.08)",
+                ].join(", ")
+              : [
+                  "0 6px 18px rgba(0,0,0,0.22)",
+                  "inset 0 1.5px 0 rgba(255,255,255,0.45)",
+                  "0 0 0 1px rgba(0,0,0,0.06)",
+                ].join(", "),
         }}
       >
         <button
@@ -836,11 +859,27 @@ export function MobileShell({
                 borderColor:
                   theme === "dark" ? accent.ringDark : accent.ring,
                 borderWidth: "2px",
+                backgroundImage:
+                  theme === "dark"
+                    ? "linear-gradient(to bottom, #3a3a44, #1f1f25)"
+                    : "linear-gradient(to bottom, #ffffff, #e9ecf2)",
+                boxShadow:
+                  theme === "dark"
+                    ? [
+                        "0 6px 18px rgba(0,0,0,0.22)",
+                        "inset 0 1.5px 0 rgba(255,255,255,0.45)",
+                        "0 0 0 1px rgba(255,255,255,0.08)",
+                      ].join(", ")
+                    : [
+                        "0 6px 18px rgba(0,0,0,0.22)",
+                        "inset 0 1.5px 0 rgba(255,255,255,0.45)",
+                        "0 0 0 1px rgba(0,0,0,0.06)",
+                      ].join(", "),
               }}
               className={`pointer-events-auto grid h-[64px] w-[64px] place-items-center rounded-[28px] backdrop-blur-2xl backdrop-saturate-200 transition-all ${
                 open
-                  ? "bg-white/60 text-neutral-900 shadow-[0_8px_28px_rgba(0,0,0,0.18),inset_0_1px_0_rgba(255,255,255,0.6)] dark:bg-white/15 dark:text-neutral-50 dark:shadow-[0_8px_28px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.10)]"
-                  : "bg-paper/55 text-neutral-700 shadow-[0_8px_28px_rgba(0,0,0,0.10),inset_0_1px_0_rgba(255,255,255,0.45)] dark:bg-neutral-900/45 dark:text-neutral-200 dark:shadow-[0_8px_28px_rgba(0,0,0,0.45),inset_0_1px_0_rgba(255,255,255,0.06)]"
+                  ? "text-neutral-900 dark:text-neutral-50"
+                  : "text-neutral-700 dark:text-neutral-200"
               }`}
               aria-label={open ? meta.onLabel : meta.offLabel}
               aria-pressed={open}
@@ -939,7 +978,25 @@ export function MobileShell({
             // Exactly the tab bar's outer geometry so the swap from
             // tabs ↔ composer reads as the same panel re-rendering its
             // contents, not two different shapes.
-            className="pointer-events-auto flex h-[64px] flex-1 items-stretch gap-1 rounded-[28px] border border-white/40 bg-paper/55 px-1 py-1 shadow-[0_8px_28px_rgba(0,0,0,0.18),inset_0_1px_0_rgba(255,255,255,0.55)] backdrop-blur-2xl backdrop-saturate-200 dark:border-white/10 dark:bg-neutral-900/45 dark:shadow-[0_8px_28px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.10)]"
+            className="pointer-events-auto flex h-[64px] flex-1 items-stretch gap-1 rounded-[28px] border border-white/40 px-1 py-1 backdrop-blur-2xl backdrop-saturate-200 dark:border-white/10"
+            style={{
+              backgroundImage:
+                theme === "dark"
+                  ? "linear-gradient(to bottom, #3a3a44, #1f1f25)"
+                  : "linear-gradient(to bottom, #ffffff, #e9ecf2)",
+              boxShadow:
+                theme === "dark"
+                  ? [
+                      "0 6px 18px rgba(0,0,0,0.22)",
+                      "inset 0 1.5px 0 rgba(255,255,255,0.45)",
+                      "0 0 0 1px rgba(255,255,255,0.08)",
+                    ].join(", ")
+                  : [
+                      "0 6px 18px rgba(0,0,0,0.22)",
+                      "inset 0 1.5px 0 rgba(255,255,255,0.45)",
+                      "0 0 0 1px rgba(0,0,0,0.06)",
+                    ].join(", "),
+            }}
             aria-label={
               tab === "bible"
                 ? "Ask the agent"
@@ -1000,7 +1057,25 @@ export function MobileShell({
               const next = (idx + dir + TAB_ORDER.length) % TAB_ORDER.length;
               setTab(TAB_ORDER[next]);
             }}
-            className="pointer-events-auto flex h-[64px] flex-1 items-stretch rounded-[28px] border border-white/40 bg-paper/55 px-1 py-1 shadow-[0_8px_28px_rgba(0,0,0,0.18),inset_0_1px_0_rgba(255,255,255,0.55)] backdrop-blur-2xl backdrop-saturate-200 dark:border-white/10 dark:bg-neutral-900/45 dark:shadow-[0_8px_28px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.10)]"
+            className="pointer-events-auto flex h-[64px] flex-1 items-stretch rounded-[28px] border border-white/40 px-1 py-1 backdrop-blur-2xl backdrop-saturate-200 dark:border-white/10"
+            style={{
+              backgroundImage:
+                theme === "dark"
+                  ? "linear-gradient(to bottom, #3a3a44, #1f1f25)"
+                  : "linear-gradient(to bottom, #ffffff, #e9ecf2)",
+              boxShadow:
+                theme === "dark"
+                  ? [
+                      "0 6px 18px rgba(0,0,0,0.22)",
+                      "inset 0 1.5px 0 rgba(255,255,255,0.45)",
+                      "0 0 0 1px rgba(255,255,255,0.08)",
+                    ].join(", ")
+                  : [
+                      "0 6px 18px rgba(0,0,0,0.22)",
+                      "inset 0 1.5px 0 rgba(255,255,255,0.45)",
+                      "0 0 0 1px rgba(0,0,0,0.06)",
+                    ].join(", "),
+            }}
           >
             <IOSTabButton
               outline={<BibleOutline />}
@@ -1724,13 +1799,21 @@ function ChatPanel({
   // tab. Fires on mount (opening Chat zeroes the badge) and again
   // each time a new message lands while still viewing the room (so
   // the badge doesn't bounce up while the user is right here).
+  //
+  // `onRead` is held in a ref so a new inline arrow on every render
+  // of the parent doesn't retrigger this effect — that previously
+  // caused a runaway loop hammering POST /read tens of times a second.
+  const onReadRef = useRef(onRead);
+  useEffect(() => {
+    onReadRef.current = onRead;
+  }, [onRead]);
   useEffect(() => {
     if (!roomId) return;
     api
       .roomMarkRead(roomId)
-      .then(() => onRead?.())
+      .then(() => onReadRef.current?.())
       .catch(() => {});
-  }, [roomId, messages.length, onRead]);
+  }, [roomId, messages.length]);
 
   return (
     <div className="flex h-full flex-col">
