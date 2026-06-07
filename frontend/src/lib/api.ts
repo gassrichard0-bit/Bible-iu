@@ -519,6 +519,7 @@ export const api = {
     }),
   userPublic: (user_id: string) =>
     jsonFetch<PublicUserView>(`/auth/users/${user_id}`),
+  contactsList: () => jsonFetch<ContactView[]>(`/contacts`),
   authImageUpload: async (file: File) => {
     const form = new FormData();
     form.append("file", file);
@@ -594,6 +595,13 @@ export interface PublicUserView {
   display_name: string;
   avatar_url: string | null;
   languages: string[];
+}
+
+export interface ContactView {
+  id: string;
+  handle: string;
+  display_name: string;
+  avatar_url: string | null;
 }
 
 export interface ChatMessageOut {

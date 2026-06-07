@@ -47,6 +47,7 @@ import { NewRoomModal, type NewRoomValues } from "./NewRoomModal";
 import { ShareRoomModal } from "./ShareRoomModal";
 import { RoomAvatar } from "./RoomAvatar";
 import { UserProfileSheet } from "./UserProfileSheet";
+import { ContactsSheet } from "./ContactsSheet";
 import { ActionButton, Pill } from "./SettingsButtons";
 import { BottomSheet } from "./BottomSheet";
 
@@ -514,6 +515,7 @@ export function MobileShell({
   // bottom anchor so it stays glued to the top of the keyboard on iOS
   // (where `position: fixed; bottom: 0` would otherwise sit behind it).
   const keyboardInset = useKeyboardInset();
+  const [contactsOpen, setContactsOpen] = useState(false);
   // Per-room daily-question quota. Renders inline next to the scope
   // chip on the Bible tab so the user can see "3 left today" before
   // burning their last slot. Best-effort — backend store is
@@ -729,30 +731,58 @@ export function MobileShell({
               </span>
             </span>
           </button>
-          <button
-            onClick={() => {
-              setSettingsMode("menu");
-              setSettingsOpen(true);
-            }}
-            className="grid h-11 w-11 place-items-center rounded-full border border-neutral-200 bg-paper text-neutral-700 shadow-[0_2px_6px_rgba(0,0,0,0.10),inset_0_1px_0_rgba(255,255,255,0.55)] transition-transform active:scale-[0.96] dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-200 dark:shadow-[0_2px_6px_rgba(0,0,0,0.45),inset_0_1px_0_rgba(255,255,255,0.08)]"
-            aria-label="Open settings"
-            title="Settings"
-          >
-            <svg
-              viewBox="0 0 24 24"
-              width="20"
-              height="20"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              aria-hidden
+          {tab === "chat" ? (
+            <button
+              onClick={() => setContactsOpen(true)}
+              className="grid h-11 w-11 place-items-center rounded-full border border-neutral-200 bg-paper text-neutral-700 shadow-[0_2px_6px_rgba(0,0,0,0.10),inset_0_1px_0_rgba(255,255,255,0.55)] transition-transform active:scale-[0.96] dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-200 dark:shadow-[0_2px_6px_rgba(0,0,0,0.45),inset_0_1px_0_rgba(255,255,255,0.08)]"
+              aria-label="Open contacts"
+              title="Contacts"
             >
-              <line x1="4" y1="7" x2="20" y2="7" />
-              <line x1="4" y1="12" x2="20" y2="12" />
-              <line x1="4" y1="17" x2="20" y2="17" />
-            </svg>
-          </button>
+              <svg
+                viewBox="0 0 24 24"
+                width="20"
+                height="20"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden
+              >
+                {/* iOS-style contact book glyph */}
+                <rect x="4.5" y="3.5" width="14" height="17" rx="2.5" />
+                <circle cx="11.5" cy="10" r="2.5" />
+                <path d="M7.5 17c.6-2 2.2-3 4-3s3.4 1 4 3" />
+                <path d="M19.5 7v3" />
+                <path d="M19.5 14v3" />
+              </svg>
+            </button>
+          ) : (
+            <button
+              onClick={() => {
+                setSettingsMode("menu");
+                setSettingsOpen(true);
+              }}
+              className="grid h-11 w-11 place-items-center rounded-full border border-neutral-200 bg-paper text-neutral-700 shadow-[0_2px_6px_rgba(0,0,0,0.10),inset_0_1px_0_rgba(255,255,255,0.55)] transition-transform active:scale-[0.96] dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-200 dark:shadow-[0_2px_6px_rgba(0,0,0,0.45),inset_0_1px_0_rgba(255,255,255,0.08)]"
+              aria-label="Open settings"
+              title="Settings"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                width="20"
+                height="20"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                aria-hidden
+              >
+                <line x1="4" y1="7" x2="20" y2="7" />
+                <line x1="4" y1="12" x2="20" y2="12" />
+                <line x1="4" y1="17" x2="20" y2="17" />
+              </svg>
+            </button>
+          )}
         </div>
       </header>
 
@@ -1511,6 +1541,34 @@ export function MobileShell({
           </div>
         )}
       </BottomSheet>
+      <ContactsSheet
+        open={contactsOpen}
+        onClose={() => setContactsOpen(false)}
+        onPick={async (uid) => {
+          setContactsOpen(false);
+          try {
+            const room = await api.dmOpen(uid);
+            const item: RoomItem = {
+              id: room.id,
+              type: (room.type === "direct" ? "direct" : "group") as
+                | "group"
+                | "direct",
+              name: room.name ?? "(unnamed)",
+              role: room.role,
+              imageUrl: room.image_url ?? null,
+              accent: room.accent_color ?? null,
+              unreadCount: room.unread_count ?? 0,
+            };
+            setRooms((prev) =>
+              prev.some((r) => r.id === item.id) ? prev : [item, ...prev],
+            );
+            setActiveId(room.id);
+            setTab("chat");
+          } catch {
+            // best-effort
+          }
+        }}
+      />
       <UserProfileSheet
         open={!!profileView}
         userId={profileView?.userId ?? null}

@@ -108,6 +108,36 @@ class TestDirectMessage:
         assert r.status_code == 404
 
 
+class TestContactsList:
+    def test_returns_co_members_only(self, client):
+        alice = _register(client, "alice")
+        bob = _register(client, "bob")
+        carol = _register(client, "carol")
+        # Alice + Bob in a group; Carol is a stranger.
+        client.post(
+            "/rooms",
+            json={
+                "type": "group",
+                "name": "Study",
+                "member_ids": [bob["user_id"]],
+            },
+            headers=_hdr(alice["token"]),
+        )
+        contacts = client.get(
+            "/contacts", headers=_hdr(alice["token"])
+        ).json()
+        handles = [c["handle"] for c in contacts]
+        assert "bob" in handles
+        assert "carol" not in handles
+        assert "alice" not in handles  # never include yourself
+
+    def test_empty_when_no_rooms(self, client):
+        alice = _register(client, "alice")
+        r = client.get("/contacts", headers=_hdr(alice["token"]))
+        assert r.status_code == 200
+        assert r.json() == []
+
+
 class TestPublicUserView:
     def test_returns_safe_fields_only(self, client):
         alice = _register(client, "alice")

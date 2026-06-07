@@ -274,6 +274,57 @@ def create_room(
     return _room_read(room, my_role)
 
 
+class ContactView(BaseModel):
+    id: str
+    handle: str
+    display_name: str
+    avatar_url: Optional[str] = None
+
+
+@app.get(
+    "/contacts",
+    response_model=list[ContactView],
+    dependencies=[Depends(require_password)],
+)
+def list_contacts(
+    session: Session = Depends(db),
+    user_id: str = Depends(current_user_id),
+) -> list[ContactView]:
+    """Everyone the caller shares at least one group/direct room with.
+    Powers the contacts sheet on the Chat tab — tap a contact to open
+    a DM with them. Returns deduped, sorted by display_name."""
+    my_room_ids = {
+        r.room_id
+        for r in session.query(RoomMember.room_id).filter(
+            RoomMember.user_id == user_id
+        )
+    }
+    if not my_room_ids:
+        return []
+    other_ids = {
+        m.user_id
+        for m in session.query(RoomMember).filter(
+            RoomMember.room_id.in_(my_room_ids),
+            RoomMember.user_id != user_id,
+        )
+    }
+    if not other_ids:
+        return []
+    users = session.scalars(
+        select(User).where(User.id.in_(other_ids))
+    ).all()
+    users.sort(key=lambda u: (u.display_name or u.handle).lower())
+    return [
+        ContactView(
+            id=u.id,
+            handle=u.handle,
+            display_name=u.display_name,
+            avatar_url=_resolved_user_avatar_url(u),
+        )
+        for u in users
+    ]
+
+
 @app.post(
     "/dm/{target_user_id}",
     response_model=RoomRead,
