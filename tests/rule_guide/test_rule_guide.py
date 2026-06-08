@@ -410,3 +410,89 @@ def test_wrong_language_revised():
         )
     )
     assert result.decision is Decision.REVISE
+
+
+# ---------------------------------------------------------------------------
+# citation-engine.MD §6 — revision loop: REVISE re-prompts the generator
+# with revision_hints up to max_revision_attempts before giving up.
+# ---------------------------------------------------------------------------
+def test_revision_loop_re_prompts_generator_with_hints():
+    """When the rule layer asks for a revision, the orchestrator re-calls
+    the generator with the hints folded in. A generator that fixes its
+    output on attempt 2 should result in a PASS, not REVISE.
+
+    Trip §7 (bare answer — no reasoning) on attempt 1, fix it on attempt 2."""
+    from backend.agent.orchestrator import AgentOrchestrator, ReasoningRequest
+    from backend.agent.reasoning.citation_engine import EngineConfig
+
+    class RevisingGenerator:
+        def __init__(self):
+            self.calls = []
+
+        def generate(
+            self, verse_ref, question, retrieval, history=None,
+            bypass=False, scope_kind="verse", revision_hints=None,
+        ):
+            self.calls.append(list(revision_hints or []))
+            if revision_hints:
+                # Attempt 2: include reasoning so §7 passes.
+                return ("Here is the walk-through.", "The answer.", [], None)
+            # Attempt 1: empty reasoning, non-empty answer — §7 trips.
+            return ("", "The answer.", [], None)
+
+    gen = RevisingGenerator()
+    ledger = InMemoryLedger()
+    engine = CitationEngine(
+        retriever=FakeRetriever([]),
+        generator=gen,
+        verifier=ScriptedVerifier(),
+        ledger=ledger,
+        config=EngineConfig(max_revision_attempts=2),
+    )
+    orch = AgentOrchestrator(engine=engine, ledger=ledger)
+    turn = orch.reason(ReasoningRequest(
+        room_id="r1", session_id="s1", verse_ref="GEN.3.1", question="?",
+    ))
+    # Generator called twice — once unprompted, once with hints.
+    assert len(gen.calls) == 2
+    assert gen.calls[0] == []          # attempt 1 had no hints
+    assert gen.calls[1]                # attempt 2 received hints
+    # Final decision passed because the second attempt fixed the bare-answer issue.
+    assert turn.decision is Decision.PASS
+
+
+def test_revision_loop_gives_up_after_max_attempts():
+    """A generator that never improves still terminates — it doesn't
+    loop forever, it returns the final REVISE decision."""
+    from backend.agent.orchestrator import AgentOrchestrator, ReasoningRequest
+    from backend.agent.reasoning.citation_engine import EngineConfig
+
+    class StubbornGenerator:
+        def __init__(self):
+            self.call_count = 0
+
+        def generate(
+            self, verse_ref, question, retrieval, history=None,
+            bypass=False, scope_kind="verse", revision_hints=None,
+        ):
+            self.call_count += 1
+            # Always trips §7 (bare answer) — never improves.
+            return ("", "An assertion.", [], None)
+
+    gen = StubbornGenerator()
+    ledger = InMemoryLedger()
+    engine = CitationEngine(
+        retriever=FakeRetriever([]),
+        generator=gen,
+        verifier=ScriptedVerifier(),
+        ledger=ledger,
+        config=EngineConfig(max_revision_attempts=2),
+    )
+    orch = AgentOrchestrator(engine=engine, ledger=ledger)
+    turn = orch.reason(ReasoningRequest(
+        room_id="r1", session_id="s1", verse_ref="GEN.1.1", question="?",
+    ))
+    # 1 initial attempt + max_revision_attempts retries = 3 total
+    assert gen.call_count == 3
+    assert turn.decision is Decision.REVISE
+    assert turn.revision_hints  # hints carried out so caller knows why

@@ -38,9 +38,20 @@ import { useRoomQuota } from "../lib/useRoomQuota";
 import { useStickToBottom } from "../lib/useStickToBottom";
 import { useKeyboardInset } from "../lib/useKeyboardInset";
 import { ACCENT_PALETTE, resolveAccent } from "../lib/accentColors";
+import {
+  PinIcon as PinSvg,
+  BellMuteIcon as BellMuteSvg,
+  SearchIcon as SearchSvg,
+  MenuIcon as MenuSvg,
+  MagicIcon,
+} from "../lib/Icons";
 import { useYjsNotes } from "../workspace/NotesSidebar/yjsNotes";
 import { NotesSidebar } from "../workspace/NotesSidebar/NotesSidebar";
 import { useUnreadNoteCount } from "../workspace/NotesSidebar/noteReadTracker";
+import {
+  speechRecognitionSupported,
+  startSpeech,
+} from "../lib/speechRecognition";
 import { Workspace, type VerseFocus } from "../workspace/Workspace";
 import { Avatar } from "./Profile";
 import { SettingsModal } from "./Settings";
@@ -68,6 +79,12 @@ interface RoomItem {
   /** In-app unread chat-message count. Drives the badge on the rail
    *  row and the bottom Chat tab. */
   unreadCount?: number;
+  /** Latest chat message in this room — used by the rooms rail to
+   *  render WhatsApp-style row previews + sort by activity. Null
+   *  when no chats yet. */
+  lastMessageBody?: string | null;
+  lastMessageAt?: string | null; // ISO-8601 UTC
+  lastMessageAuthorHandle?: string | null;
 }
 
 type Tab = "bible" | "notes" | "chat" | "bookmarks";
@@ -136,6 +153,15 @@ export function MobileShell({
   //   notes → adds a note via notesApi.add
   //   chat  → sends a chat message (placeholder until backend lands)
   const [composerOpen, setComposerOpen] = useState(false);
+  // Long-press + slide gesture on the standalone AI pill (Bible tab):
+  // active = press-and-hold passed the 350ms threshold; dx/dy track
+  // the drag from the original press point so the UI can lean the
+  // pill toward the gesture target.
+  const [aiPillGesture, setAiPillGesture] = useState<{
+    active: boolean;
+    dx: number;
+    dy: number;
+  } | null>(null);
   // Backwards-compat alias: a lot of layout decisions hinge on
   // "is the agent visible" on the Bible tab. Keep the name local.
   const aiVisible = composerOpen;
@@ -158,19 +184,50 @@ export function MobileShell({
   }, []);
   // Verse annotations (highlighter / underline / strikethrough). Per
   // user, room-independent — like marks in a paper Bible they follow
-  // the reader everywhere. Loaded once at mount; mutated locally for
-  // instant feedback when the toolbar applies.
+  // the reader everywhere. Loaded once at mount + re-pulled whenever
+  // the tab regains focus, so an edit on another device propagates
+  // here within seconds of switching back. (A full WS subscription
+  // would be nicer; focus-poll is dramatically cheaper and is the
+  // pattern the rest of the read-only views use too.)
   const [annotations, setAnnotations] = useState<AnnotationOut[]>([]);
   useEffect(() => {
     let alive = true;
-    api
-      .authAnnotationsList()
-      .then((rs) => alive && setAnnotations(rs))
-      .catch(() => {});
+    const refresh = () =>
+      api
+        .authAnnotationsList()
+        .then((rs) => alive && setAnnotations(rs))
+        .catch(() => {});
+    refresh();
+    const onVis = () => {
+      if (document.visibilityState === "visible") refresh();
+    };
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", onVis);
     return () => {
       alive = false;
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", onVis);
     };
   }, []);
+  // Lightweight toast bus. Only used today by the annotation save/
+  // remove paths to surface server errors that were previously
+  // swallowed by empty catch blocks. Auto-dismisses after 3.5s.
+  const [toast, setToast] = useState<{ text: string; kind: "error" | "info" } | null>(null);
+  useEffect(() => {
+    if (!toast) return;
+    const t = window.setTimeout(() => setToast(null), 3500);
+    return () => window.clearTimeout(t);
+  }, [toast]);
+
+  function annotationErrorText(e: unknown): string {
+    const msg = (e as Error)?.message ?? "";
+    if (msg.includes("401")) return "Sign in expired — refresh to keep your marks.";
+    if (msg.includes("503") || msg.toLowerCase().includes("offline")) {
+      return "Couldn't reach the server — mark not saved.";
+    }
+    return "Couldn't save that mark. Try again in a moment.";
+  }
+
   const applyAnnotation = async (
     verseId: string,
     kind: AnnotationKind,
@@ -184,7 +241,9 @@ export function MobileShell({
           (a) => !(a.verse_id === verseId && a.kind === kind),
         ),
       ]);
-    } catch {}
+    } catch (e) {
+      setToast({ text: annotationErrorText(e), kind: "error" });
+    }
   };
   const clearAnnotationKind = async (verseId: string, kind: AnnotationKind) => {
     try {
@@ -192,13 +251,29 @@ export function MobileShell({
       setAnnotations((as) =>
         as.filter((a) => !(a.verse_id === verseId && a.kind === kind)),
       );
-    } catch {}
+    } catch (e) {
+      setToast({
+        text:
+          (e as Error)?.message?.includes("503") || (e as Error)?.message?.toLowerCase()?.includes("offline")
+            ? "Couldn't reach the server — your mark is still here."
+            : "Couldn't remove that mark.",
+        kind: "error",
+      });
+    }
   };
   const clearAnnotations = async (verseId: string) => {
     try {
       await api.authAnnotationClear(verseId);
       setAnnotations((as) => as.filter((a) => a.verse_id !== verseId));
-    } catch {}
+    } catch (e) {
+      setToast({
+        text:
+          (e as Error)?.message?.includes("503")
+            ? "Couldn't reach the server — verse marks unchanged."
+            : "Couldn't clear marks. Try again.",
+        kind: "error",
+      });
+    }
   };
   // The active annotation target lives at the shell level so the
   // bottom panel can swap from tab bar → annotation tool strip when
@@ -516,11 +591,51 @@ export function MobileShell({
     ? resolveAccent(active.accent ?? null, active.id)
     : resolveAccent(null, "default");
   const accent = ACCENT_PALETTE[accentKey];
+  // Sync the OS / browser chrome strip above the page with the
+  // banner's color. Without this the `<meta name="theme-color">` in
+  // index.html stays at its hard-coded #171717, which on Android
+  // Chrome and installed PWAs paints a dark gray bar above the
+  // banner — looks like the banner doesn't reach the top. We
+  // alpha-blend the accent band over the gradient's top stop
+  // (white/dark) so the resulting solid color matches the very top
+  // pixel of the banner.
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    // No top banner anymore (user asked to remove it after the PWA
+    // seam fight — see [[feedback-top-bar-seam-cause]]). Sync the
+    // meta theme-color + html/body bg to MATCH THE CONTENT BG
+    // (paper / neutral-900, not paper-soft / neutral-950) — the home
+    // and notes panels render on bg-paper / dark:bg-neutral-900, so
+    // tinting the PWA status bar to the darker neutral-950 created a
+    // visible "the gray doesn't reach the top" band. Now the safe
+    // area, the floating-buttons strip, and the content all share
+    // one color from top to bottom.
+    const solid = theme === "dark" ? "#171717" : "#f7f3ea";
+    let tag = document.querySelector<HTMLMetaElement>(
+      'meta[name="theme-color"]',
+    );
+    if (!tag) {
+      tag = document.createElement("meta");
+      tag.setAttribute("name", "theme-color");
+      document.head.appendChild(tag);
+    }
+    tag.setAttribute("content", solid);
+    document.body.style.backgroundColor = solid;
+    document.documentElement.style.backgroundColor = solid;
+    return () => {
+      document.body.style.backgroundColor = "";
+      document.documentElement.style.backgroundColor = "";
+    };
+  }, [theme]);
   // How tall the soft keyboard is right now — added to the composer's
   // bottom anchor so it stays glued to the top of the keyboard on iOS
   // (where `position: fixed; bottom: 0` would otherwise sit behind it).
   const keyboardInset = useKeyboardInset();
   const [contactsOpen, setContactsOpen] = useState(false);
+  // "scoped" = members of the active room only (chat-tab top-bar
+  // contacts icon). "all" = every contact across every room the
+  // user shares (rooms-rail header contacts icon).
+  const [contactsMode, setContactsMode] = useState<"scoped" | "all">("scoped");
   // In-room chat search. Toggling open shows an inline search field
   // at the top of the chat panel; the query filters messages by body
   // (case-insensitive). Cleared when you leave the Chat tab.
@@ -590,6 +705,9 @@ export function MobileShell({
           imageUrl: r.image_url ?? null,
           accent: r.accent_color ?? null,
           unreadCount: r.unread_count ?? 0,
+          lastMessageBody: r.last_message_body ?? null,
+          lastMessageAt: r.last_message_at ?? null,
+          lastMessageAuthorHandle: r.last_message_author_handle ?? null,
         }));
         setRooms(mapped);
         if (pendingRoomId && mapped.some((r) => r.id === pendingRoomId)) {
@@ -663,13 +781,19 @@ export function MobileShell({
   }
 
   return (
-    <div className="flex h-full flex-col bg-paper-soft dark:bg-neutral-950">
+    <div className="flex h-full flex-col bg-paper dark:bg-neutral-900">
       {/* Top app bar. `pt-[env(safe-area-inset-top)]` keeps the avatar
        *  + group pill clear of the iOS notch / Dynamic Island and the
        *  Android status bar when the app is installed as a PWA. The
        *  `linear-gradient` overlay tints the band with the active
        *  group's accent color (auto-derived per id, or admin-picked
        *  via AdminPanel) so each group reads as visually distinct. */}
+      {/* Top button row — no bar, no banner. After fighting the
+       *  PWA seam for several iterations, the user asked to drop the
+       *  unified band entirely. Buttons now float on the body bg as
+       *  individual chrome pills (each carries its own border + glass
+       *  shadow recipe). The per-group accent is no longer painted as
+       *  a top band — see [[feedback-top-bar-seam-cause]]. */}
       <header
         className="relative z-30 flex items-center justify-between gap-2 px-2 py-2"
         style={{
@@ -679,32 +803,6 @@ export function MobileShell({
             "calc(env(safe-area-inset-left, 0px) + 0.5rem)",
           paddingRight:
             "calc(env(safe-area-inset-right, 0px) + 0.5rem)",
-          // Match the bookmark-card recipe exactly — softer drop
-          // shadow, gentler top highlight, no inset bottom shadow,
-          // 1px outline ring. The "amount of raise" the user signed
-          // off on. Accent tint stays as a fading top overlay.
-          backgroundImage:
-            theme === "dark"
-              ? [
-                  `linear-gradient(to bottom, ${accent.bandDark}, transparent 60%)`,
-                  "linear-gradient(to bottom, #3a3a44, #1f1f25)",
-                ].join(", ")
-              : [
-                  `linear-gradient(to bottom, ${accent.band}, transparent 60%)`,
-                  "linear-gradient(to bottom, #ffffff, #e9ecf2)",
-                ].join(", "),
-          boxShadow:
-            theme === "dark"
-              ? [
-                  "0 6px 18px rgba(0,0,0,0.22)",
-                  "inset 0 1.5px 0 rgba(255,255,255,0.45)",
-                  "0 0 0 1px rgba(255,255,255,0.08)",
-                ].join(", ")
-              : [
-                  "0 6px 18px rgba(0,0,0,0.22)",
-                  "inset 0 1.5px 0 rgba(255,255,255,0.45)",
-                  "0 0 0 1px rgba(0,0,0,0.06)",
-                ].join(", "),
         }}
       >
         <button
@@ -754,20 +852,7 @@ export function MobileShell({
                   : "border-neutral-200 bg-paper text-neutral-700 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-200"
               }`}
             >
-              <svg
-                viewBox="0 0 24 24"
-                width="20"
-                height="20"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                aria-hidden
-              >
-                <circle cx="11" cy="11" r="6.5" />
-                <line x1="20" y1="20" x2="16" y2="16" />
-              </svg>
+              <SearchSvg className="h-5 w-5" />
             </button>
           ) : tab === "notes" ? (
             <button
@@ -776,20 +861,7 @@ export function MobileShell({
               title="Search notes"
               className="grid h-11 w-11 place-items-center rounded-full border border-neutral-200 bg-paper text-neutral-700 shadow-[0_2px_6px_rgba(0,0,0,0.10),inset_0_1px_0_rgba(255,255,255,0.55)] transition-transform active:scale-[0.96] dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-200 dark:shadow-[0_2px_6px_rgba(0,0,0,0.45),inset_0_1px_0_rgba(255,255,255,0.08)]"
             >
-              <svg
-                viewBox="0 0 24 24"
-                width="20"
-                height="20"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                aria-hidden
-              >
-                <circle cx="11" cy="11" r="6.5" />
-                <line x1="20" y1="20" x2="16" y2="16" />
-              </svg>
+              <SearchSvg className="h-5 w-5" />
             </button>
           ) : tab === "bookmarks" ? (
             <button
@@ -798,20 +870,7 @@ export function MobileShell({
               title="Search bookmarks"
               className="grid h-11 w-11 place-items-center rounded-full border border-neutral-200 bg-paper text-neutral-700 shadow-[0_2px_6px_rgba(0,0,0,0.10),inset_0_1px_0_rgba(255,255,255,0.55)] transition-transform active:scale-[0.96] dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-200 dark:shadow-[0_2px_6px_rgba(0,0,0,0.45),inset_0_1px_0_rgba(255,255,255,0.08)]"
             >
-              <svg
-                viewBox="0 0 24 24"
-                width="20"
-                height="20"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                aria-hidden
-              >
-                <circle cx="11" cy="11" r="6.5" />
-                <line x1="20" y1="20" x2="16" y2="16" />
-              </svg>
+              <SearchSvg className="h-5 w-5" />
             </button>
           ) : (
             <button
@@ -837,10 +896,13 @@ export function MobileShell({
           )}
           {tab === "chat" ? (
             <button
-              onClick={() => setContactsOpen(true)}
+              onClick={() => {
+                setContactsMode("scoped");
+                setContactsOpen(true);
+              }}
               className="grid h-11 w-11 place-items-center rounded-full border border-neutral-200 bg-paper text-neutral-700 shadow-[0_2px_6px_rgba(0,0,0,0.10),inset_0_1px_0_rgba(255,255,255,0.55)] transition-transform active:scale-[0.96] dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-200 dark:shadow-[0_2px_6px_rgba(0,0,0,0.45),inset_0_1px_0_rgba(255,255,255,0.08)]"
-              aria-label="Open contacts"
-              title="Contacts"
+              aria-label="Group members"
+              title="Group members"
             >
               <svg
                 viewBox="0 0 24 24"
@@ -932,20 +994,7 @@ export function MobileShell({
               aria-label="Open settings"
               title="Settings"
             >
-              <svg
-                viewBox="0 0 24 24"
-                width="20"
-                height="20"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                aria-hidden
-              >
-                <line x1="4" y1="7" x2="20" y2="7" />
-                <line x1="4" y1="12" x2="20" y2="12" />
-                <line x1="4" y1="17" x2="20" y2="17" />
-              </svg>
+              <MenuSvg className="h-5 w-5" />
             </button>
           )}
         </div>
@@ -1103,11 +1152,20 @@ export function MobileShell({
        *  view (closed) and a contextual composer (open). */}
       {(() => {
         const open = composerOpen;
+        // Long-press + slide gesture on the Bible tab's AI pill:
+        //   long-press   → enters gesture mode (the pill grows + two
+        //                  affordance icons appear: search above,
+        //                  magic to the left)
+        //   slide up     → search opens (dispatch bible:search)
+        //   slide left   → agent composer toggles (existing behavior)
+        //   no slide     → on release does nothing if gesture was
+        //                  entered; if not entered, taps normally
+        // Other tabs keep classic click-only.
         const meta =
           tab === "bible"
             ? {
-                outline: <SparkleOutline />,
-                filled: <SparkleFilled />,
+                outline: <MagicIcon className="h-4 w-4" />,
+                filled: <MagicIcon className="h-4 w-4" filled />,
                 onLabel: "Hide AI panel",
                 offLabel: "Show AI panel",
               }
@@ -1137,14 +1195,95 @@ export function MobileShell({
         if (keyboardInset > 0 && !composerOpen) return null;
         return (
           <div
-            className="pointer-events-none fixed right-3 z-40 pt-2"
+            className="pointer-events-none fixed right-3 z-40 flex flex-col items-end gap-2 pt-2"
             style={{
               bottom: keyboardInset,
               paddingBottom: "calc(env(safe-area-inset-bottom) + 10px)",
             }}
           >
+            {/* Floating 3D search icon removed — the AI pill's
+             *  press-and-hold + slide-up gesture replaces it. */}
+            {/* Gesture-mode affordances live inside the bottom panel,
+             *  not floating around the pill — see the <nav> block. */}
             <button
-              onClick={toggleComposer}
+              onPointerDown={(e) => {
+                // Gesture detection runs on every tab so the panel +
+                // pill push effect works everywhere. Tab-specific
+                // actions (search vs. composer) are decided on release.
+                const startX = e.clientX;
+                const startY = e.clientY;
+                const pid = e.pointerId;
+                // Try to capture so the pointer keeps firing events on
+                // this button even if the finger leaves its bounds.
+                try {
+                  (e.target as Element).setPointerCapture?.(pid);
+                } catch {
+                  // best-effort
+                }
+                let activated = false;
+                const holdTimer = window.setTimeout(() => {
+                  activated = true;
+                  setAiPillGesture({ active: true, dx: 0, dy: 0 });
+                }, 350);
+                const onMove = (ev: PointerEvent) => {
+                  if (ev.pointerId !== pid) return;
+                  const dx = ev.clientX - startX;
+                  const dy = ev.clientY - startY;
+                  // Movement before activation cancels the long-press
+                  // (the user is just trying to tap / accidental drag).
+                  if (!activated) {
+                    if (Math.abs(dx) > 8 || Math.abs(dy) > 8) {
+                      window.clearTimeout(holdTimer);
+                      cleanup();
+                    }
+                    return;
+                  }
+                  setAiPillGesture({ active: true, dx, dy });
+                };
+                const onUp = (ev: PointerEvent) => {
+                  if (ev.pointerId !== pid) return;
+                  window.clearTimeout(holdTimer);
+                  if (activated) {
+                    const dx = ev.clientX - startX;
+                    const dy = ev.clientY - startY;
+                    const upDrag = -dy > 40 && Math.abs(dy) > Math.abs(dx);
+                    const leftDrag = -dx > 40 && Math.abs(dx) > Math.abs(dy);
+                    if (upDrag && tab === "bible") {
+                      // Search gesture is Bible-only. Other tabs have
+                      // their own search affordances in the top bar.
+                      window.dispatchEvent(new CustomEvent("bible:search"));
+                    } else if (leftDrag) {
+                      // Composer toggle works on every tab.
+                      toggleComposer();
+                    }
+                    // Released without enough drag in either direction
+                    // = no action; the pill quietly returns to rest.
+                  }
+                  // If never activated (released before 350ms), treat
+                  // as a normal tap — open/close the composer.
+                  else {
+                    toggleComposer();
+                  }
+                  cleanup();
+                };
+                const cleanup = () => {
+                  setAiPillGesture(null);
+                  window.removeEventListener("pointermove", onMove);
+                  window.removeEventListener("pointerup", onUp);
+                  window.removeEventListener("pointercancel", onUp);
+                };
+                window.addEventListener("pointermove", onMove);
+                window.addEventListener("pointerup", onUp);
+                window.addEventListener("pointercancel", onUp);
+              }}
+              onClick={(e) => {
+                // The pointer flow above handles both taps (via the
+                // not-yet-activated branch) and long-press gestures, so
+                // we always suppress the synthetic click to avoid
+                // double-triggering. The composer toggle still fires
+                // from the pointer-up handler on every tab.
+                e.preventDefault();
+              }}
               // Square 64x64 pill, squircle corners matching the tab
               // bar (`rounded-[28px]`) so the two glass elements feel
               // like the same material rather than a circle next to a
@@ -1152,27 +1291,34 @@ export function MobileShell({
               // accent so the AI surface reads as "yours" (or
               // "ours" — themed per group).
               style={{
+                // Kill iOS magnifier + callout — the long-press gesture
+                // is OURS, not Safari's.
+                WebkitTouchCallout: "none",
+                WebkitUserSelect: "none",
+                userSelect: "none",
                 borderColor:
                   theme === "dark" ? accent.ringDark : accent.ring,
                 borderWidth: "2px",
-                backgroundImage:
-                  theme === "dark"
-                    ? "linear-gradient(to bottom, #3a3a44, #1f1f25)"
-                    : "linear-gradient(to bottom, #ffffff, #e9ecf2)",
+                // Glass material: translucent so the content layer
+                // beneath shows through. The per-group accent BORDER
+                // still marks the pill as "yours" without painting
+                // over the lensing surface.
                 boxShadow:
                   theme === "dark"
-                    ? [
-                        "0 6px 18px rgba(0,0,0,0.22)",
-                        "inset 0 1.5px 0 rgba(255,255,255,0.45)",
-                        "0 0 0 1px rgba(255,255,255,0.08)",
-                      ].join(", ")
-                    : [
-                        "0 6px 18px rgba(0,0,0,0.22)",
-                        "inset 0 1.5px 0 rgba(255,255,255,0.45)",
-                        "0 0 0 1px rgba(0,0,0,0.06)",
-                      ].join(", "),
+                    ? "0 6px 18px rgba(0,0,0,0.45), inset 0 1.5px 0 rgba(255,255,255,0.10), 0 0 0 1px rgba(255,255,255,0.06), inset 0 -1px 0 rgba(0,0,0,0.25)"
+                    : "0 6px 18px rgba(0,0,0,0.18), inset 0 1.5px 0 rgba(255,255,255,0.55), 0 0 0 1px rgba(0,0,0,0.04), inset 0 -1px 0 rgba(0,0,0,0.06)",
+                // Lean the pill toward the active drag direction so
+                // the user feels the gesture taking hold.
+                transform:
+                  aiPillGesture?.active
+                    ? `translate(${Math.max(-30, Math.min(0, aiPillGesture.dx * 0.4))}px, ${Math.max(-30, Math.min(0, aiPillGesture.dy * 0.4))}px) scale(1.05)`
+                    : undefined,
+                transition: aiPillGesture?.active
+                  ? "transform 0ms"
+                  : "transform 180ms cubic-bezier(0.32, 0.72, 0.0, 1)",
+                touchAction: "none",
               }}
-              className={`pointer-events-auto grid h-[64px] w-[64px] place-items-center rounded-[28px] backdrop-blur-2xl backdrop-saturate-200 transition-all ${
+              className={`glass-specular pointer-events-auto grid h-[64px] w-[64px] place-items-center rounded-[28px] bg-paper/55 backdrop-blur-2xl backdrop-saturate-[1.8] active:scale-[0.97] dark:bg-neutral-900/45 ${
                 open
                   ? "text-neutral-900 dark:text-neutral-50"
                   : "text-neutral-700 dark:text-neutral-200"
@@ -1305,24 +1451,34 @@ export function MobileShell({
             // Exactly the tab bar's outer geometry so the swap from
             // tabs ↔ composer reads as the same panel re-rendering its
             // contents, not two different shapes.
-            className="pointer-events-auto flex h-[64px] w-full items-stretch gap-1 rounded-[28px] border border-white/40 px-1 py-1 backdrop-blur-2xl backdrop-saturate-200 dark:border-white/10"
+            className="glass-specular pointer-events-auto flex h-[64px] w-full items-stretch gap-1 rounded-[28px] border border-white/40 bg-paper/55 px-1 py-1 backdrop-blur-2xl backdrop-saturate-[1.8] dark:border-white/10 dark:bg-neutral-900/45"
             style={{
-              backgroundImage:
-                theme === "dark"
-                  ? "linear-gradient(to bottom, #3a3a44, #1f1f25)"
-                  : "linear-gradient(to bottom, #ffffff, #e9ecf2)",
+              // Liquid-glass shadow stack: outer drop + bright top-edge
+              // specular + soft bottom hairline. Dark mode dims the
+              // highlight per Apple HIG so it stays legible over light
+              // OR dark content beneath the bar.
               boxShadow:
                 theme === "dark"
-                  ? [
-                      "0 6px 18px rgba(0,0,0,0.22)",
-                      "inset 0 1.5px 0 rgba(255,255,255,0.45)",
-                      "0 0 0 1px rgba(255,255,255,0.08)",
-                    ].join(", ")
-                  : [
-                      "0 6px 18px rgba(0,0,0,0.22)",
-                      "inset 0 1.5px 0 rgba(255,255,255,0.45)",
-                      "0 0 0 1px rgba(0,0,0,0.06)",
-                    ].join(", "),
+                  ? "0 6px 18px rgba(0,0,0,0.45), inset 0 1.5px 0 rgba(255,255,255,0.10), 0 0 0 1px rgba(255,255,255,0.06), inset 0 -1px 0 rgba(0,0,0,0.25)"
+                  : "0 6px 18px rgba(0,0,0,0.18), inset 0 1.5px 0 rgba(255,255,255,0.55), 0 0 0 1px rgba(0,0,0,0.04), inset 0 -1px 0 rgba(0,0,0,0.06)",
+              // Same contact-push as the tab nav: when the pill is
+              // long-pressed and dragged left, the composer slides with
+              // it once the colored ring meets its right edge. Mirrors
+              // the nav math (CONTACT_GAP 22). Works on every tab.
+              transform: aiPillGesture?.active
+                ? (() => {
+                    const pillDx = Math.max(
+                      -30,
+                      Math.min(0, aiPillGesture.dx * 0.4),
+                    );
+                    const CONTACT_GAP = 22;
+                    const navDx = Math.min(0, pillDx + CONTACT_GAP);
+                    return `translateX(${navDx}px)`;
+                  })()
+                : undefined,
+              transition: aiPillGesture?.active
+                ? "transform 0ms"
+                : "transform 180ms cubic-bezier(0.32, 0.72, 0.0, 1)",
             }}
             aria-label={
               tab === "bible"
@@ -1381,6 +1537,12 @@ export function MobileShell({
               autoComplete="off"
               autoCapitalize="sentences"
             />
+            <VoiceInputButton
+              onTranscript={(t) =>
+                setComposerDraft((cur) => (cur ? `${cur} ${t}` : t))
+              }
+              language="en-US"
+            />
             <button
               type="submit"
               disabled={!composerDraft.trim() || sending}
@@ -1419,61 +1581,138 @@ export function MobileShell({
               const next = (idx + dir + TAB_ORDER.length) % TAB_ORDER.length;
               setTab(TAB_ORDER[next]);
             }}
-            className="pointer-events-auto flex h-[64px] flex-1 items-stretch rounded-[28px] border border-white/40 px-1 py-1 backdrop-blur-2xl backdrop-saturate-200 dark:border-white/10"
+            className="glass-specular pointer-events-auto relative flex h-[64px] flex-1 items-stretch rounded-[28px] border border-white/40 bg-paper/55 px-1 py-1 backdrop-blur-2xl backdrop-saturate-[1.8] dark:border-white/10 dark:bg-neutral-900/45"
             style={{
-              backgroundImage:
-                theme === "dark"
-                  ? "linear-gradient(to bottom, #3a3a44, #1f1f25)"
-                  : "linear-gradient(to bottom, #ffffff, #e9ecf2)",
+              // No iOS magnifier / selection callout — the panel is
+              // chrome, not content. Same treatment as the standalone
+              // pill so the long-press gesture isn't hijacked.
+              WebkitTouchCallout: "none",
+              WebkitUserSelect: "none",
+              userSelect: "none",
               boxShadow:
                 theme === "dark"
-                  ? [
-                      "0 6px 18px rgba(0,0,0,0.22)",
-                      "inset 0 1.5px 0 rgba(255,255,255,0.45)",
-                      "0 0 0 1px rgba(255,255,255,0.08)",
-                    ].join(", ")
-                  : [
-                      "0 6px 18px rgba(0,0,0,0.22)",
-                      "inset 0 1.5px 0 rgba(255,255,255,0.45)",
-                      "0 0 0 1px rgba(0,0,0,0.06)",
-                    ].join(", "),
+                  ? "0 6px 18px rgba(0,0,0,0.45), inset 0 1.5px 0 rgba(255,255,255,0.10), 0 0 0 1px rgba(255,255,255,0.06), inset 0 -1px 0 rgba(0,0,0,0.25)"
+                  : "0 6px 18px rgba(0,0,0,0.18), inset 0 1.5px 0 rgba(255,255,255,0.55), 0 0 0 1px rgba(0,0,0,0.04), inset 0 -1px 0 rgba(0,0,0,0.06)",
+              // Contact-driven push, no residual gap. Raw geometry is
+              // ~20px between pill's left edge and nav's right edge
+              // (pill right-3 + 64px wide vs. nav container's
+              // pr-[96px]). But the pill's COLORED ring (2px accent
+              // border) + outer shadow rim + 1.05x scale during gesture
+              // all extend its visible edge past 64px, so the contact
+              // moment happens earlier than the raw 20px would suggest.
+              // CONTACT_GAP slightly exceeds the raw distance so the
+              // nav preempts the ring — by the time the pill is fully
+              // displaced, they're flush with zero gap. Vertical drags
+              // don't translate the panel. Works on every tab.
+              transform: aiPillGesture?.active
+                ? (() => {
+                    const pillDx = Math.max(
+                      -30,
+                      Math.min(0, aiPillGesture.dx * 0.4),
+                    );
+                    const CONTACT_GAP = 22;
+                    const navDx = Math.min(0, pillDx + CONTACT_GAP);
+                    return `translateX(${navDx}px)`;
+                  })()
+                : undefined,
+              transition: aiPillGesture?.active
+                ? "transform 0ms"
+                : "transform 180ms cubic-bezier(0.32, 0.72, 0.0, 1)",
             }}
           >
-            <IOSTabButton
-              outline={<BibleOutline />}
-              filled={<BibleFilled />}
-              label="Bible"
-              active={tab === "bible"}
-              onClick={() => setTab("bible")}
-            />
-            <IOSTabButton
-              outline={<NotesOutline />}
-              filled={<NotesFilled />}
-              label="Notes"
-              active={tab === "notes"}
-              onClick={() => setTab("notes")}
-              badge={unreadNoteCount || undefined}
-            />
-            <IOSTabButton
-              outline={<ChatOutline />}
-              filled={<ChatFilled />}
-              label="Chat"
-              active={tab === "chat"}
-              onClick={() => setTab("chat")}
-              badge={active?.unreadCount || undefined}
-            />
-            <IOSTabButton
-              outline={<BookmarkOutline />}
-              filled={<BookmarkFilled />}
-              label="Marks"
-              active={tab === "bookmarks"}
-              onClick={() => setTab("bookmarks")}
-              badge={
-                // Count one per book — flags / past reads in the
-                // same book don't bump the badge.
-                new Set(bookmarks.map((b) => b.book)).size || undefined
-              }
-            />
+            {tab === "bible" && aiPillGesture?.active ? (
+              // Gesture takeover: tab buttons hide, affordances fill the
+              // panel. TOP edge = faded search icon (slide UP), LEFT edge
+              // = arrows + "Activate Agent" (slide LEFT). Both brighten +
+              // scale when the active drag is heading toward them.
+              (() => {
+                const upActive =
+                  aiPillGesture.dy < -20 &&
+                  -aiPillGesture.dy > Math.abs(aiPillGesture.dx);
+                const leftActive =
+                  aiPillGesture.dx < -20 &&
+                  Math.abs(aiPillGesture.dx) > Math.abs(aiPillGesture.dy);
+                return (
+                  <div className="pointer-events-none relative flex h-full w-full items-center">
+                    {/* TOP — faded search icon at the top-right so it
+                     *  doesn't collide horizontally with the
+                     *  "Activate Agent" text on the left. */}
+                    <div
+                      className="absolute right-3 top-1 text-neutral-800 dark:text-neutral-100"
+                      style={{
+                        opacity: upActive ? 0.95 : 0.4,
+                        transform: `scale(${upActive ? 1.3 : 1})`,
+                        transformOrigin: "right top",
+                        transition:
+                          "opacity 140ms ease-out, transform 140ms ease-out",
+                      }}
+                    >
+                      <SearchSvg className="h-5 w-5" />
+                    </div>
+                    {/* LEFT — arrows + label, pinned to left edge. */}
+                    <div
+                      className="absolute inset-y-0 left-3 flex items-center gap-1.5 whitespace-nowrap text-neutral-800 dark:text-neutral-100"
+                      style={{
+                        opacity: leftActive ? 0.95 : 0.5,
+                        transform: `scale(${leftActive ? 1.1 : 1})`,
+                        transformOrigin: "left center",
+                        transition:
+                          "opacity 140ms ease-out, transform 140ms ease-out",
+                      }}
+                    >
+                      <span
+                        aria-hidden
+                        className="text-[16px] leading-none"
+                        style={{ letterSpacing: "-0.05em" }}
+                      >
+                        ‹‹
+                      </span>
+                      <span className="text-[10px] font-semibold uppercase tracking-[0.14em]">
+                        Activate Agent
+                      </span>
+                    </div>
+                  </div>
+                );
+              })()
+            ) : (
+              <>
+                <IOSTabButton
+                  outline={<BibleOutline />}
+                  filled={<BibleFilled />}
+                  label="Bible"
+                  active={tab === "bible"}
+                  onClick={() => setTab("bible")}
+                />
+                <IOSTabButton
+                  outline={<NotesOutline />}
+                  filled={<NotesFilled />}
+                  label="Notes"
+                  active={tab === "notes"}
+                  onClick={() => setTab("notes")}
+                  badge={unreadNoteCount || undefined}
+                />
+                <IOSTabButton
+                  outline={<ChatOutline />}
+                  filled={<ChatFilled />}
+                  label="Chat"
+                  active={tab === "chat"}
+                  onClick={() => setTab("chat")}
+                  badge={active?.unreadCount || undefined}
+                />
+                <IOSTabButton
+                  outline={<BookmarkOutline />}
+                  filled={<BookmarkFilled />}
+                  label="Marks"
+                  active={tab === "bookmarks"}
+                  onClick={() => setTab("bookmarks")}
+                  badge={
+                    // Count one per book — flags / past reads in the
+                    // same book don't bump the badge.
+                    new Set(bookmarks.map((b) => b.book)).size || undefined
+                  }
+                />
+              </>
+            )}
           </nav>
         )}
       </div>
@@ -1489,74 +1728,82 @@ export function MobileShell({
           <aside className="fixed inset-y-0 left-0 z-40 flex w-72 flex-col border-r border-neutral-200 bg-paper shadow-xl dark:border-neutral-800 dark:bg-neutral-900">
             <header className="flex items-center justify-between border-b border-neutral-200 px-3 py-2 dark:border-neutral-800">
               <div className="text-sm font-semibold">Bible IU</div>
-              <button
-                onClick={() => setRailOpen(false)}
-                className="grid h-9 w-9 place-items-center rounded text-neutral-500 hover:bg-paper-soft dark:text-neutral-400 dark:hover:bg-neutral-800"
-                aria-label="Close menu"
-              >
-                ✕
-              </button>
-            </header>
-            <button
-              onClick={() => {
-                setNewRoomOpen(true);
-              }}
-              className="mx-3 mt-3 inline-flex items-center justify-center gap-2 rounded-2xl border border-amber-200 bg-amber-50/70 px-3 py-3 text-[14px] font-semibold text-amber-900 transition hover:bg-amber-100 dark:border-amber-800/60 dark:bg-amber-900/30 dark:text-amber-100 dark:hover:bg-amber-900/40"
-            >
-              <span className="grid h-6 w-6 place-items-center rounded-full bg-amber-200 text-amber-900 dark:bg-amber-700/60 dark:text-amber-100" aria-hidden>
-                +
-              </span>
-              New group
-            </button>
-            <nav className="mt-2 flex-1 overflow-y-auto">
-              {rooms.length === 0 && (
-                <p className="px-3 py-4 text-xs text-neutral-500 dark:text-neutral-400">
-                  No groups yet. Tap "+ New group" to start one.
-                </p>
-              )}
-              {rooms.map((r) => (
+              <div className="flex items-center gap-1">
                 <button
-                  key={r.id}
                   onClick={() => {
-                    setActiveId(r.id);
+                    setContactsMode("all");
+                    setContactsOpen(true);
                     setRailOpen(false);
                   }}
-                  className={`flex w-full items-center gap-3 px-3 py-2.5 text-left hover:bg-paper-soft dark:hover:bg-neutral-800 ${
-                    r.id === activeId
-                      ? "bg-paper-soft dark:bg-neutral-800"
-                      : ""
-                  }`}
+                  className="grid h-9 w-9 place-items-center rounded text-neutral-500 hover:bg-paper-soft dark:text-neutral-400 dark:hover:bg-neutral-800"
+                  aria-label="All contacts across rooms"
+                  title="All contacts"
                 >
-                  <RoomAvatar
-                    id={r.id}
-                    name={r.name}
-                    type={r.type}
-                    imageUrl={r.imageUrl}
-                    size={48}
-                  />
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-[15px] font-medium text-neutral-900 dark:text-neutral-50">
-                      {r.name}
-                    </span>
-                    <span className="block truncate text-[12px] text-neutral-500 dark:text-neutral-400">
-                      {r.type === "direct"
-                        ? "Direct chat"
-                        : r.role === "admin"
-                          ? "Group · admin"
-                          : "Group"}
-                    </span>
-                  </span>
-                  {!!r.unreadCount && r.unreadCount > 0 && (
-                    <span
-                      aria-label={`${r.unreadCount} unread`}
-                      className="ml-2 grid min-h-[22px] min-w-[22px] place-items-center rounded-full bg-red-500 px-1.5 text-[11px] font-bold text-white shadow-[0_2px_6px_rgba(239,68,68,0.45)]"
-                    >
-                      {r.unreadCount > 99 ? "99+" : r.unreadCount}
-                    </span>
-                  )}
+                  <svg
+                    viewBox="0 0 24 24"
+                    width="18"
+                    height="18"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.8"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    aria-hidden
+                  >
+                    {/* Same contact-book glyph as the chat-tab icon
+                        so users connect "this is the contacts UI." */}
+                    <rect x="4.5" y="3.5" width="14" height="17" rx="2.5" />
+                    <circle cx="11.5" cy="10" r="2.5" />
+                    <path d="M7.5 17c.6-2 2.2-3 4-3s3.4 1 4 3" />
+                    <path d="M19.5 7v3" />
+                    <path d="M19.5 14v3" />
+                  </svg>
                 </button>
-              ))}
-            </nav>
+                <button
+                  onClick={() => setRailOpen(false)}
+                  className="grid h-9 w-9 place-items-center rounded text-neutral-500 hover:bg-paper-soft dark:text-neutral-400 dark:hover:bg-neutral-800"
+                  aria-label="Close menu"
+                >
+                  ✕
+                </button>
+              </div>
+            </header>
+            <RoomsRailBody
+              rooms={rooms}
+              activeId={activeId}
+              pinnedRoomIds={settings.pinnedRoomIds}
+              hiddenRoomIds={settings.hiddenRoomIds}
+              mutedRoomIds={settings.mutedRoomIds}
+              timezone={settings.timezone}
+              onPick={(id) => {
+                setActiveId(id);
+                setRailOpen(false);
+              }}
+              onTogglePin={(id) => {
+                const cur = settings.pinnedRoomIds;
+                const next = cur.includes(id)
+                  ? cur.filter((x) => x !== id)
+                  : [id, ...cur];
+                onChangeSettings({ ...settings, pinnedRoomIds: next });
+              }}
+              onToggleHide={(id) => {
+                const cur = settings.hiddenRoomIds;
+                const next = cur.includes(id)
+                  ? cur.filter((x) => x !== id)
+                  : [...cur, id];
+                // Auto-unpin on hide so the pinned section doesn't
+                // show a hidden room when "Show hidden" is off.
+                const nextPinned = next.includes(id)
+                  ? settings.pinnedRoomIds.filter((x) => x !== id)
+                  : settings.pinnedRoomIds;
+                onChangeSettings({
+                  ...settings,
+                  hiddenRoomIds: next,
+                  pinnedRoomIds: nextPinned,
+                });
+              }}
+              onNewRoom={() => setNewRoomOpen(true)}
+            />
           </aside>
         </>
       )}
@@ -1723,6 +1970,35 @@ export function MobileShell({
             >
               Copy text
             </Pill>
+            {active &&
+              active.type === "group" &&
+              active.role === "admin" && (
+                <Pill
+                  variant="amber"
+                  onClick={async () => {
+                    const msg = actionMessage;
+                    setActionMessage(null);
+                    if (!msg) return;
+                    try {
+                      await api.chatPin(active.id, msg.id);
+                    } catch (e) {
+                      setToast({
+                        text: `Couldn't ${msg.pinned_at ? "unpin" : "pin"}: ${(e as Error).message}`,
+                        kind: "error",
+                      });
+                    }
+                  }}
+                >
+                  {actionMessage.pinned_at ? (
+                    "Unpin"
+                  ) : (
+                    <span className="inline-flex items-center gap-1">
+                      <PinSvg className="h-3.5 w-3.5" filled />
+                      Pin to top
+                    </span>
+                  )}
+                </Pill>
+              )}
             <Pill onClick={() => setActionMessage(null)}>Cancel</Pill>
           </div>
         )}
@@ -1735,6 +2011,13 @@ export function MobileShell({
             ? { id: active.id, name: active.name }
             : null
         }
+        // Two opening paths, controlled by `contactsMode`:
+        //   "scoped" (chat-tab top bar) → JUST this group's members.
+        //     Even for `local-` demo rooms — the server returns []
+        //     rather than the cross-room set, because the user explicitly
+        //     asked "who's in THIS group?" and a fallback would lie.
+        //   "all"    (rooms-rail header)  → every contact across rooms.
+        scopeRoomId={contactsMode === "scoped" ? (active?.id ?? null) : null}
         onPick={(uid, preview) => {
           // Coming from Contacts is an explicit navigation, not a
           // peek — open the profile as a full-page screen instead of
@@ -1790,6 +2073,30 @@ export function MobileShell({
           }
         }}
       />
+      {toast && (
+        <div
+          role="status"
+          aria-live="polite"
+          className={`fixed left-1/2 z-[60] flex w-[calc(100%-2rem)] max-w-sm -translate-x-1/2 items-center gap-2 rounded-2xl border px-3 py-2 shadow-[0_8px_24px_rgba(0,0,0,0.18)] backdrop-blur-md ${
+            toast.kind === "error"
+              ? "border-red-300 bg-red-50/95 text-red-900 dark:border-red-800 dark:bg-red-900/85 dark:text-red-100"
+              : "border-neutral-300 bg-paper/95 text-neutral-900 dark:border-neutral-700 dark:bg-neutral-900/95 dark:text-neutral-100"
+          }`}
+          style={{
+            bottom: "calc(env(safe-area-inset-bottom, 0px) + 90px)",
+          }}
+        >
+          <span className="flex-1 text-[13px]">{toast.text}</span>
+          <button
+            type="button"
+            onClick={() => setToast(null)}
+            aria-label="Dismiss"
+            className="shrink-0 rounded-full px-1 text-[12px] opacity-70 hover:opacity-100"
+          >
+            ✕
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -2026,39 +2333,6 @@ function SendArrow() {
   );
 }
 
-function SparkleOutline() {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      width="16"
-      height="16"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.7"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M12 3.5l1.6 4.4L18 9.5l-4.4 1.6L12 15.5l-1.6-4.4L6 9.5l4.4-1.6L12 3.5Z" />
-      <path d="M18 14.5l.8 2.2L21 17.5l-2.2.8L18 20.5l-.8-2.2L15 17.5l2.2-.8L18 14.5Z" />
-    </svg>
-  );
-}
-function SparkleFilled() {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      width="16"
-      height="16"
-      fill="currentColor"
-      aria-hidden="true"
-    >
-      <path d="M12 3.5l1.6 4.4L18 9.5l-4.4 1.6L12 15.5l-1.6-4.4L6 9.5l4.4-1.6L12 3.5Z" />
-      <path d="M18 14.5l.8 2.2L21 17.5l-2.2.8L18 20.5l-.8-2.2L15 17.5l2.2-.8L18 14.5Z" />
-    </svg>
-  );
-}
-
 function ChatFilled() {
   return (
     <svg
@@ -2085,6 +2359,711 @@ function EmptyState({ title, body }: { title: string; body: string }) {
     </div>
   );
 }
+
+/**
+ * Rooms-rail body — the left drawer's scrolling content. Three
+ * sections (Pinned / Direct messages / Groups), a search box, and
+ * per-row last-message preview + long-press to pin.
+ *
+ * Sort: each section by `lastMessageAt` descending; rooms with no
+ * messages fall to the bottom in stable id order.
+ */
+function RoomsRailBody({
+  rooms,
+  activeId,
+  pinnedRoomIds,
+  hiddenRoomIds,
+  mutedRoomIds,
+  timezone,
+  onPick,
+  onTogglePin,
+  onToggleHide,
+  onNewRoom,
+}: {
+  rooms: RoomItem[];
+  activeId: string | null;
+  pinnedRoomIds: string[];
+  hiddenRoomIds: string[];
+  mutedRoomIds: string[];
+  timezone?: string;
+  onPick: (id: string) => void;
+  onTogglePin: (id: string) => void;
+  onToggleHide: (id: string) => void;
+  onNewRoom: () => void;
+}) {
+  const mutedSet = new Set(mutedRoomIds);
+  const [query, setQuery] = useState("");
+  const [showHidden, setShowHidden] = useState(false);
+  const q = query.trim().toLowerCase();
+
+  const matches = (r: RoomItem) =>
+    !q ||
+    r.name.toLowerCase().includes(q) ||
+    (r.lastMessageBody ?? "").toLowerCase().includes(q);
+
+  const byActivity = (a: RoomItem, b: RoomItem) => {
+    // Newest activity first; rooms without any chat fall to the
+    // bottom (lexicographic on id as a stable tiebreaker).
+    const at = a.lastMessageAt ?? "";
+    const bt = b.lastMessageAt ?? "";
+    if (at && !bt) return -1;
+    if (!at && bt) return 1;
+    if (at !== bt) return at < bt ? 1 : -1;
+    return a.id < b.id ? -1 : 1;
+  };
+
+  const pinSet = new Set(pinnedRoomIds);
+  const hiddenSet = new Set(hiddenRoomIds);
+  // Pre-filter by search. Hidden rooms fall away unless the user
+  // flipped "Show hidden" — then we keep them but render the row in
+  // its dedicated section at the bottom so they don't pollute the
+  // main list.
+  const searchFiltered = rooms.filter(matches);
+  const visiblePool = showHidden
+    ? searchFiltered
+    : searchFiltered.filter((r) => !hiddenSet.has(r.id));
+
+  // Pinned: render in the order the user pinned them (most-recent
+  // pin at top), NOT by activity — the whole point of pinning is
+  // manual ordering. Hidden rooms are excluded from pinned even
+  // when "Show hidden" is on; they live in their own section.
+  const pinned: RoomItem[] = [];
+  for (const id of pinnedRoomIds) {
+    if (hiddenSet.has(id)) continue;
+    const r = visiblePool.find((x) => x.id === id);
+    if (r) pinned.push(r);
+  }
+  const unpinned = visiblePool.filter(
+    (r) => !pinSet.has(r.id) && !hiddenSet.has(r.id),
+  );
+  const dms = unpinned.filter((r) => r.type === "direct").sort(byActivity);
+  const groups = unpinned.filter((r) => r.type === "group").sort(byActivity);
+  const hiddenRows = showHidden
+    ? searchFiltered.filter((r) => hiddenSet.has(r.id)).sort(byActivity)
+    : [];
+  const hiddenCount = hiddenRoomIds.length;
+
+  return (
+    <>
+      <button
+        onClick={onNewRoom}
+        className="mx-3 mt-3 inline-flex items-center justify-center gap-2 rounded-2xl border border-amber-200 bg-amber-50/70 px-3 py-3 text-[14px] font-semibold text-amber-900 transition hover:bg-amber-100 dark:border-amber-800/60 dark:bg-amber-900/30 dark:text-amber-100 dark:hover:bg-amber-900/40"
+      >
+        <span
+          className="grid h-6 w-6 place-items-center rounded-full bg-amber-200 text-amber-900 dark:bg-amber-700/60 dark:text-amber-100"
+          aria-hidden
+        >
+          +
+        </span>
+        New group
+      </button>
+      <div className="mx-3 mt-2">
+        <div className="relative">
+          <input
+            type="search"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search rooms…"
+            aria-label="Search rooms"
+            className="w-full rounded-full border border-neutral-200 bg-paper px-3 py-2 pl-8 text-[14px] text-neutral-800 placeholder:text-neutral-400 outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-200/40 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100 dark:placeholder:text-neutral-500"
+          />
+          <span
+            className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-[11px] text-neutral-400"
+            aria-hidden
+          >
+            ⌕
+          </span>
+          {query && (
+            <button
+              type="button"
+              onClick={() => setQuery("")}
+              className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full px-1 text-[10px] text-neutral-500"
+              aria-label="Clear search"
+            >
+              ✕
+            </button>
+          )}
+        </div>
+      </div>
+      {/* `min-h-0` is required so this flex child can shrink and the
+          `overflow-y-auto` actually kicks in — without it the nav
+          inherits min-height: auto and pushes the rail off-screen
+          instead of scrolling. */}
+      <nav
+        className="mt-2 min-h-0 flex-1 overflow-y-auto pb-[env(safe-area-inset-bottom,0px)]"
+      >
+        {rooms.length === 0 && (
+          <p className="px-3 py-4 text-xs text-neutral-500 dark:text-neutral-400">
+            No rooms yet. Tap "+ New group" to start one.
+          </p>
+        )}
+        {q && pinned.length + dms.length + groups.length === 0 && (
+          <p className="px-3 py-4 text-xs text-neutral-500 dark:text-neutral-400">
+            No rooms match "{query.trim()}".
+          </p>
+        )}
+        <RailSection title="Pinned" hidden={pinned.length === 0}>
+          {pinned.map((r) => (
+            <RailRow
+              key={r.id}
+              room={r}
+              active={r.id === activeId}
+              pinned
+              hidden={false}
+              muted={mutedSet.has(r.id)}
+              timezone={timezone}
+              onPick={onPick}
+              onTogglePin={onTogglePin}
+              onToggleHide={onToggleHide}
+            />
+          ))}
+        </RailSection>
+        <RailSection title="Direct messages" hidden={dms.length === 0}>
+          {dms.map((r) => (
+            <RailRow
+              key={r.id}
+              room={r}
+              active={r.id === activeId}
+              pinned={false}
+              hidden={false}
+              muted={mutedSet.has(r.id)}
+              timezone={timezone}
+              onPick={onPick}
+              onTogglePin={onTogglePin}
+              onToggleHide={onToggleHide}
+            />
+          ))}
+        </RailSection>
+        <RailSection title="Groups" hidden={groups.length === 0}>
+          {groups.map((r) => (
+            <RailRow
+              key={r.id}
+              room={r}
+              active={r.id === activeId}
+              pinned={false}
+              hidden={false}
+              muted={mutedSet.has(r.id)}
+              timezone={timezone}
+              onPick={onPick}
+              onTogglePin={onTogglePin}
+              onToggleHide={onToggleHide}
+            />
+          ))}
+        </RailSection>
+        {hiddenCount > 0 && (
+          <button
+            type="button"
+            onClick={() => setShowHidden((v) => !v)}
+            className="mx-3 mt-3 inline-flex w-[calc(100%-1.5rem)] items-center justify-center gap-2 rounded-full border border-neutral-200 bg-paper px-3 py-1.5 text-[11px] font-semibold text-neutral-600 hover:bg-paper-soft dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300"
+            aria-pressed={showHidden}
+          >
+            {showHidden
+              ? `Hide hidden rooms (${hiddenCount})`
+              : `Show hidden rooms (${hiddenCount})`}
+          </button>
+        )}
+        <RailSection title="Hidden" hidden={hiddenRows.length === 0}>
+          {hiddenRows.map((r) => (
+            <RailRow
+              key={r.id}
+              room={r}
+              active={r.id === activeId}
+              pinned={false}
+              hidden
+              muted={mutedSet.has(r.id)}
+              timezone={timezone}
+              onPick={onPick}
+              onTogglePin={onTogglePin}
+              onToggleHide={onToggleHide}
+            />
+          ))}
+        </RailSection>
+      </nav>
+    </>
+  );
+}
+
+function RailSection({
+  title,
+  hidden,
+  children,
+}: {
+  title: string;
+  hidden?: boolean;
+  children: React.ReactNode;
+}) {
+  if (hidden) return null;
+  return (
+    <div>
+      <div className="px-3 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
+        {title}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+// Reveal width when the row is swiped open — two 64px action wells
+// (pin + hide). Matches iOS Messages' swipe-actions feel.
+const RAIL_SWIPE_REVEAL = 128;
+// Drag threshold past which release snaps the row to the open state
+// (otherwise it snaps back closed).
+const RAIL_SWIPE_OPEN_THRESHOLD = 56;
+
+function RailRow({
+  room,
+  active,
+  pinned,
+  hidden,
+  muted,
+  timezone,
+  onPick,
+  onTogglePin,
+  onToggleHide,
+}: {
+  room: RoomItem;
+  active: boolean;
+  pinned: boolean;
+  hidden: boolean;
+  muted: boolean;
+  timezone?: string;
+  onPick: (id: string) => void;
+  onTogglePin: (id: string) => void;
+  onToggleHide: (id: string) => void;
+}) {
+  const preview = (() => {
+    const body = (room.lastMessageBody ?? "").trim();
+    if (!body) return null;
+    const who = room.lastMessageAuthorHandle
+      ? `${room.lastMessageAuthorHandle}: `
+      : "";
+    return `${who}${body}`;
+  })();
+  const stamp = formatRailStamp(room.lastMessageAt, timezone);
+
+  // Swipe-to-reveal state. `offset` is the current X translation of
+  // the foreground content (always 0 or negative — only left-swipe).
+  // `open` is the resting state; while dragging we override with the
+  // live offset. Single tap = open the room. Drag left past the
+  // threshold = snap open; drag right (when open) = snap closed.
+  const [offset, setOffset] = useState(0);
+  const [open, setOpen] = useState(false);
+  const dragStart = useRef<{ x: number; y: number; t: number } | null>(null);
+  const draggingHoriz = useRef(false);
+
+  function handlePointerDown(e: React.PointerEvent) {
+    if (e.button !== 0 && e.pointerType === "mouse") return;
+    dragStart.current = { x: e.clientX, y: e.clientY, t: Date.now() };
+    draggingHoriz.current = false;
+  }
+  function handlePointerMove(e: React.PointerEvent) {
+    const start = dragStart.current;
+    if (!start) return;
+    const dx = e.clientX - start.x;
+    const dy = e.clientY - start.y;
+    // Lock horizontal once the gesture is clearly horizontal — otherwise
+    // a near-vertical scroll would jiggle the row sideways.
+    if (!draggingHoriz.current) {
+      if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
+      if (Math.abs(dx) > Math.abs(dy) + 4) {
+        draggingHoriz.current = true;
+        try {
+          (e.target as Element).setPointerCapture?.(e.pointerId);
+        } catch {
+          // best-effort — pointer capture is nice-to-have
+        }
+      } else {
+        // Vertical scroll wins; cancel the gesture for this row.
+        dragStart.current = null;
+        return;
+      }
+    }
+    const base = open ? -RAIL_SWIPE_REVEAL : 0;
+    const next = Math.min(0, Math.max(-RAIL_SWIPE_REVEAL, base + dx));
+    setOffset(next);
+  }
+  function handlePointerUp(e: React.PointerEvent) {
+    const start = dragStart.current;
+    dragStart.current = null;
+    if (!start) return;
+    const dx = e.clientX - start.x;
+    const elapsed = Date.now() - start.t;
+    const isTap =
+      !draggingHoriz.current && Math.abs(dx) < 8 && elapsed < 500;
+    draggingHoriz.current = false;
+    if (isTap) {
+      // Tap on the foreground while closed = open the room.
+      // Tap on the foreground while open = close the swipe.
+      if (open) {
+        setOpen(false);
+        setOffset(0);
+      } else {
+        onPick(room.id);
+      }
+      return;
+    }
+    // Drag release: snap open or closed depending on final offset.
+    const finalOffset = offset + (open ? 0 : 0); // current visible offset
+    const shouldOpen = finalOffset <= -RAIL_SWIPE_OPEN_THRESHOLD;
+    setOpen(shouldOpen);
+    setOffset(shouldOpen ? -RAIL_SWIPE_REVEAL : 0);
+  }
+  function handlePointerCancel() {
+    dragStart.current = null;
+    draggingHoriz.current = false;
+    setOffset(open ? -RAIL_SWIPE_REVEAL : 0);
+  }
+
+  return (
+    <div
+      // 3D card recipe shared with the chat bubbles, Settings cards,
+      // and the Marks page (vertical-light gradient + deep drop +
+      // inset top highlight + crisp outline ring). `mx-3 mb-2` gives
+      // the cards breathing room so the shadow can read. `overflow
+      // -hidden` keeps the swipe wells inside the rounded edge.
+      className={`relative mx-3 mb-2 overflow-hidden rounded-2xl border border-white/40 bg-gradient-to-b from-white to-[#e9ecf2] shadow-[0_6px_18px_rgba(0,0,0,0.22),inset_0_1.5px_0_rgba(255,255,255,0.45),0_0_0_1px_rgba(0,0,0,0.06)] dark:border-white/10 dark:from-[#3a3a44] dark:to-[#1f1f25] dark:shadow-[0_6px_18px_rgba(0,0,0,0.22),inset_0_1.5px_0_rgba(255,255,255,0.45),0_0_0_1px_rgba(255,255,255,0.08)] ${
+        active ? "ring-2 ring-amber-300/70 dark:ring-amber-500/40" : ""
+      }`}
+    >
+      {/* Action wells revealed underneath when the row slides left.
+          Pin on the inner side (closer to the row), Hide on the
+          outer edge — matches the Messages "Delete on the right" feel
+          while keeping pin one tap closer to thumb travel. */}
+      <div className="absolute inset-y-0 right-0 flex">
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onTogglePin(room.id);
+            // Snap closed after acting on the row.
+            setOpen(false);
+            setOffset(0);
+          }}
+          aria-label={pinned ? "Unpin room" : "Pin room"}
+          className={`flex h-full w-16 flex-col items-center justify-center gap-0.5 text-[10px] font-semibold transition ${
+            pinned
+              ? "bg-amber-500 text-white"
+              : "bg-amber-100 text-amber-800 hover:bg-amber-200 dark:bg-amber-900/40 dark:text-amber-100 dark:hover:bg-amber-900/60"
+          }`}
+        >
+          <PinIcon filled={pinned} />
+          <span>{pinned ? "Unpin" : "Pin"}</span>
+        </button>
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggleHide(room.id);
+            setOpen(false);
+            setOffset(0);
+          }}
+          aria-label={hidden ? "Unhide room" : "Hide room"}
+          className={`flex h-full w-16 flex-col items-center justify-center gap-0.5 text-[10px] font-semibold transition ${
+            hidden
+              ? "bg-neutral-500 text-white hover:bg-neutral-600"
+              : "bg-neutral-200 text-neutral-800 hover:bg-neutral-300 dark:bg-neutral-700/70 dark:text-neutral-100 dark:hover:bg-neutral-700"
+          }`}
+        >
+          {hidden ? <EyeIcon /> : <EyeOffIcon />}
+          <span>{hidden ? "Unhide" : "Hide"}</span>
+        </button>
+      </div>
+      {/* Foreground row content — slides over the action wells. The
+          gradient lives on the wrapper; this layer is transparent so
+          the lit-from-above feel reads through. */}
+      <div
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerCancel}
+        style={{
+          transform: `translateX(${offset}px)`,
+          transition: dragStart.current
+            ? "none"
+            : "transform 180ms cubic-bezier(0.32, 0.72, 0.0, 1)",
+          touchAction: "pan-y",
+          WebkitTapHighlightColor: "transparent",
+        }}
+        className={`glass-specular flex w-full cursor-pointer items-start gap-3 bg-paper/55 px-3 py-2.5 backdrop-blur-2xl backdrop-saturate-[1.8] active:scale-[0.99] dark:bg-neutral-900/45 ${
+          hidden ? "opacity-70" : ""
+        }`}
+        title={hidden ? "Hidden room · tap to open · swipe left for actions" : "Tap to open · swipe left for actions"}
+      >
+        <RoomAvatar
+          id={room.id}
+          name={room.name}
+          type={room.type}
+          imageUrl={room.imageUrl}
+          size={48}
+        />
+        <span className="min-w-0 flex-1">
+          <span className="flex items-center gap-1.5">
+            <span className="block flex-1 truncate text-[15px] font-medium text-neutral-900 dark:text-neutral-50">
+              {room.name}
+            </span>
+            {pinned && (
+              <span
+                aria-label="Pinned"
+                title="Pinned"
+                className="text-amber-600 dark:text-amber-300"
+              >
+                <PinSvg className="h-3 w-3" filled />
+              </span>
+            )}
+            {muted && (
+              <span
+                aria-label="Notifications muted"
+                title="Notifications muted"
+                className="text-neutral-500 dark:text-neutral-400"
+              >
+                <BellMuteSvg className="h-3.5 w-3.5" />
+              </span>
+            )}
+            {stamp && (
+              <span className="shrink-0 text-[11px] text-neutral-400 dark:text-neutral-500">
+                {stamp}
+              </span>
+            )}
+          </span>
+          <span className="mt-0.5 flex items-center gap-2">
+            <span className="block flex-1 truncate text-[12px] text-neutral-500 dark:text-neutral-400">
+              {preview ??
+                (room.type === "direct"
+                  ? "Direct chat"
+                  : room.role === "admin"
+                    ? "Group · admin"
+                    : "Group")}
+            </span>
+            {hidden && (
+              // Always-visible unhide affordance in the Hidden section
+              // — swipe-to-reveal is fine for the main list but it's
+              // not obvious that you can do it again on the already-
+              // dimmed rows here. The button is a regular `<button>`
+              // (not nested in the row's pointer-event area) so it
+              // can't be swallowed by the swipe gesture.
+              <button
+                type="button"
+                onPointerDown={(e) => e.stopPropagation()}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onToggleHide(room.id);
+                }}
+                className="shrink-0 rounded-full border border-neutral-300 bg-paper px-2 py-0.5 text-[10px] font-semibold text-neutral-700 hover:bg-paper-soft dark:border-neutral-600 dark:bg-neutral-800 dark:text-neutral-200"
+                aria-label="Unhide room"
+              >
+                Unhide
+              </button>
+            )}
+            {!!room.unreadCount && room.unreadCount > 0 && (
+              <span
+                aria-label={`${room.unreadCount} unread`}
+                className="shrink-0 grid min-h-[20px] min-w-[20px] place-items-center rounded-full bg-red-500 px-1.5 text-[10px] font-bold text-white shadow-[0_2px_6px_rgba(239,68,68,0.45)]"
+              >
+                {room.unreadCount > 99 ? "99+" : room.unreadCount}
+              </span>
+            )}
+          </span>
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function PinIcon({ filled }: { filled?: boolean }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="14"
+      height="14"
+      fill={filled ? "currentColor" : "none"}
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <path d="M12 17v5" />
+      <path d="M9 4.5l6 0 1 4 -3 2 0 4.5 -2 0 0 -4.5 -3 -2 z" />
+    </svg>
+  );
+}
+
+function EyeIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="14"
+      height="14"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z" />
+      <circle cx="12" cy="12" r="2.5" />
+    </svg>
+  );
+}
+
+function EyeOffIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="14"
+      height="14"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <path d="M4 4l16 16" />
+      <path d="M10.6 6.1A9.6 9.6 0 0 1 12 6c6.5 0 10 7 10 7a17 17 0 0 1-3.1 4.3" />
+      <path d="M6.5 7.6A17 17 0 0 0 2 12s3.5 7 10 7c1.4 0 2.7-.2 3.9-.7" />
+      <path d="M9.9 9.9a3 3 0 0 0 4.2 4.2" />
+    </svg>
+  );
+}
+
+/** Concise activity stamp for a rail row. Today → "5:23 PM", earlier
+ *  this week → "Tue", older → "Jun 3". Empty string when no message.
+ *  Honors the user's IANA timezone preference. */
+function formatRailStamp(iso: string | null | undefined, timezone?: string): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const tz = timezone || undefined;
+  const now = new Date();
+  const sameDay =
+    now.toLocaleDateString(undefined, { timeZone: tz }) ===
+    d.toLocaleDateString(undefined, { timeZone: tz });
+  if (sameDay) {
+    return d.toLocaleTimeString(undefined, {
+      hour: "numeric",
+      minute: "2-digit",
+      timeZone: tz,
+    });
+  }
+  const dayMs = 24 * 60 * 60 * 1000;
+  if (now.getTime() - d.getTime() < 7 * dayMs) {
+    return d.toLocaleDateString(undefined, { weekday: "short", timeZone: tz });
+  }
+  return d.toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    timeZone: tz,
+  });
+}
+
+/** Mic button for voice input. Toggles a SpeechRecognition session;
+ *  while recording, interim transcript chunks stream into the
+ *  composer as the user speaks. Single tap to start, tap again to
+ *  stop. Hides silently when the browser doesn't support speech
+ *  recognition — Firefox is the main miss today. */
+function VoiceInputButton({
+  onTranscript,
+  language,
+}: {
+  onTranscript: (text: string) => void;
+  language: string;
+}) {
+  const [recording, setRecording] = useState(false);
+  const sessionRef = useRef<{ stop: () => void } | null>(null);
+  // Accumulate the final-result chunks so the parent gets one clean
+  // string per turn instead of one per phrase.
+  const finalBufRef = useRef("");
+  const lastInterimRef = useRef("");
+
+  useEffect(() => {
+    return () => {
+      sessionRef.current?.stop();
+      sessionRef.current = null;
+    };
+  }, []);
+
+  if (!speechRecognitionSupported()) return null;
+
+  function start() {
+    finalBufRef.current = "";
+    lastInterimRef.current = "";
+    sessionRef.current = startSpeech(language, {
+      onResult: (t, isFinal) => {
+        if (isFinal) {
+          finalBufRef.current += (finalBufRef.current ? " " : "") + t.trim();
+          lastInterimRef.current = "";
+        } else {
+          lastInterimRef.current = t.trim();
+        }
+      },
+      onEnd: () => {
+        const full = [finalBufRef.current, lastInterimRef.current]
+          .filter(Boolean)
+          .join(" ")
+          .trim();
+        if (full) onTranscript(full);
+        sessionRef.current = null;
+        setRecording(false);
+      },
+      onError: (code) => {
+        // `not-allowed` = user denied mic; `no-speech` = silent
+        // session timed out. Both are quiet failures — no toast.
+        sessionRef.current = null;
+        setRecording(false);
+        if (code !== "no-speech" && code !== "aborted") {
+          // eslint-disable-next-line no-console
+          console.warn("[speech] error:", code);
+        }
+      },
+    });
+    if (sessionRef.current) setRecording(true);
+  }
+
+  function stop() {
+    sessionRef.current?.stop();
+    sessionRef.current = null;
+    setRecording(false);
+  }
+
+  return (
+    <button
+      type="button"
+      onPointerDown={(e) => e.preventDefault()}
+      onClick={(e) => {
+        e.preventDefault();
+        if (recording) stop();
+        else start();
+      }}
+      title={recording ? "Stop voice input" : "Voice input"}
+      aria-label={recording ? "Stop voice input" : "Start voice input"}
+      aria-pressed={recording}
+      className={`grid h-10 w-10 shrink-0 place-items-center self-stretch rounded-full transition ${
+        recording
+          ? "bg-red-500 text-white shadow-[0_2px_6px_rgba(239,68,68,0.45)]"
+          : "text-neutral-500 hover:bg-paper-soft hover:text-neutral-700 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100"
+      }`}
+    >
+      <svg
+        viewBox="0 0 24 24"
+        width="18"
+        height="18"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden
+      >
+        <rect x="9" y="3" width="6" height="11" rx="3" />
+        <path d="M5 11v1a7 7 0 0 0 14 0v-1" />
+        <line x1="12" y1="19" x2="12" y2="22" />
+      </svg>
+    </button>
+  );
+}
+
 
 /** Keep one bookmark per book — the "active" mark, which is the
  *  bookmark at the HIGHEST (chapter, verse) position. Past flags
@@ -2614,28 +3593,26 @@ function ChatBubble({
   };
   const side = mine ? "items-end" : "items-start";
   const palette = ACCENT_PALETTE[accentKey];
-  // "Mine" bubble: same physical material as the receiver bubble —
-  // same neutral edge ring, same drop shadow, same inset highlight.
-  // The ONLY visual distinction is the accent band tint on the
-  // background (matches the top banner's composition) + a slightly
-  // accent-tinted halo. Both bubbles therefore carry equal visual
-  // weight; the sender just reads as the "color side" of the thread.
-  const MINE_SURFACE = dark ? "#171717" : "#ffffff";
-  const MINE_EDGE = dark ? "#101015" : "#9aa3b2";
+  // "Mine" bubble: same 3D recipe as the receiver bubble (vertical
+  // gradient + drop shadow + inset highlight + crisp edge ring + halo)
+  // but painted in the group's accent. Identity is COLOR, not material —
+  // both bubbles carry equal weight and the same physical surface, the
+  // sender is just the "color side" of the thread. Pulls `palette.bubble`
+  // (saturated, white-text-readable) directly so each group's theme
+  // actually shows up instead of fading to neutral.
+  const MINE_TOP = `color-mix(in srgb, ${palette.bubble} 78%, ${dark ? "#ffffff" : "#ffffff"} 22%)`;
+  const MINE_BOT = palette.bubble;
+  const MINE_EDGE = `color-mix(in srgb, ${palette.bubble} 50%, #000000 50%)`;
   const myStyle: React.CSSProperties | undefined = mine
     ? {
-        backgroundColor: MINE_SURFACE,
-        backgroundImage: `linear-gradient(to bottom, ${dark ? palette.bandDark : palette.band}, transparent 110%)`,
-        color: dark ? "#f5f5f5" : "#0f172a",
+        backgroundImage: `linear-gradient(to bottom, ${MINE_TOP}, ${MINE_BOT})`,
+        color: palette.bubbleFg,
         boxShadow: [
           "0 8px 22px rgba(0,0,0,0.28)",
           "inset 0 1.5px 0 rgba(255,255,255,0.45)",
-          // Neutral ring — matches the receiver bubble exactly so
-          // neither side stands out for having a louder outline.
+          // Crisp edge ring in a darker tone of the accent so the bubble
+          // outline reads as themed, not generic.
           `0 0 0 1.5px ${MINE_EDGE}`,
-          // Halo uses the soft `band` tint — same quiet intensity as
-          // the receiver's neutral halo, just in the group's color.
-          `0 0 24px -4px ${dark ? palette.bandDark : palette.band}`,
         ].join(", "),
       }
     : undefined;
@@ -2655,7 +3632,6 @@ function ChatBubble({
           "0 8px 22px rgba(0,0,0,0.28)",
           "inset 0 1.5px 0 rgba(255,255,255,0.45)",
           `0 0 0 1.5px ${NEUTRAL_EDGE}`,
-          `0 0 24px -4px ${NEUTRAL_EDGE}`,
         ].join(", "),
       }
     : undefined;
@@ -2749,7 +3725,13 @@ function ChatBubble({
             />
           )}
           {msg.body && (
-            <div className="px-3.5 py-2 text-[15px]">{msg.body}</div>
+            <div dir="auto" className="px-3.5 py-2 text-[15px]">{msg.body}</div>
+          )}
+          {msg.pinned_at && (
+            <div className="flex items-center gap-1 border-t border-amber-200/60 bg-amber-50/70 px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-amber-800 dark:border-amber-700/40 dark:bg-amber-900/30 dark:text-amber-200">
+              <PinSvg className="h-3 w-3" filled />
+              <span>Pinned</span>
+            </div>
           )}
         </div>
       </div>

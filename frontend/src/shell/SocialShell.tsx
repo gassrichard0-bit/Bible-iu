@@ -30,6 +30,7 @@ import { Grip } from "../lib/Grip";
 import type { Settings } from "../lib/settings";
 import type { Theme } from "../lib/theme";
 import { useIsDesktop } from "../lib/useMediaQuery";
+import { ShareIcon } from "../lib/Icons";
 
 interface RoomItem {
   id: string;
@@ -392,7 +393,7 @@ export function SocialShell({
                 title="Share this group"
                 aria-label="Share group"
               >
-                ↗ Share
+                <ShareIcon className="h-3.5 w-3.5" /> Share
               </button>
             )}
           </div>

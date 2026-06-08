@@ -9,6 +9,13 @@
 import { useEffect, useState } from "react";
 import type { Settings } from "../lib/settings";
 import type { Theme } from "../lib/theme";
+import { TTS_VOICES } from "../lib/tts";
+import {
+  BellIcon,
+  BellMuteIcon,
+  FlameIcon,
+  JumpIcon,
+} from "../lib/Icons";
 import {
   api,
   type ReadingPlanDayOut,
@@ -53,7 +60,12 @@ interface Props {
    *  with Share + Admin shortcuts. `role` is the caller's authoritative
    *  role and supersedes the `rooms` array if both are present —
    *  rooms may not have loaded yet when the sheet opens. */
-  activeRoom?: { id: string; name: string; role?: "admin" | "member" } | null;
+  activeRoom?: {
+    id: string;
+    name: string;
+    role?: "admin" | "member";
+    type?: string;
+  } | null;
   /** Open the share-link modal for the active room. */
   onShareRoom?: () => void;
   /** Switch to a room and open its admin panel. Called from the
@@ -73,12 +85,10 @@ type SettingsPage =
   | "profile"
   | "this-room"
   | "general"
-  | "notes"
-  | "plans"
+  | "notes-reading"
   | "notifications"
   | "advanced"
-  | "admin-other"
-  | "account";
+  | "admin-other";
 
 /** When the sheet opens straight into a detail page (e.g. the avatar
  *  taps right into Profile), the back chevron should close instead of
@@ -128,16 +138,21 @@ export function SettingsModal({
   }, [open, initialPage]);
 
   // Catalog of routable detail pages, in the order they appear on root.
+  // Reorganized from 10 pages to 6 by merging related concerns:
+  //   - "notes" (group-notes social toggle), "all-notes" (cross-room
+  //     browser), and "plans" (reading plans) collapsed into a single
+  //     "notes-reading" page since they're all about written content
+  //     + study habits.
+  //   - "account" (just a Sign out button) folded into "profile" at the
+  //     bottom — they belong to the same identity stack.
   const PAGE_TITLES: Record<Exclude<SettingsPage, null>, string> = {
     "profile": "Profile",
     "this-room": "This room",
     "general": "General",
-    "notes": "Group notes",
-    "plans": "Reading plans",
+    "notes-reading": "Notes & Reading",
     "notifications": "Notifications",
     "advanced": "Advanced",
     "admin-other": `Admin in ${otherAdminRooms.length} other room${otherAdminRooms.length === 1 ? "" : "s"}`,
-    "account": "Account",
   };
   const title = page ? PAGE_TITLES[page] : "Settings";
 
@@ -167,8 +182,8 @@ export function SettingsModal({
             )}
             {activeRoom && isAdminHere && onOpenRoomAdmin && (
               <PageRow
-                label="Group photo"
-                hint="Change or remove the group's image"
+                label="Group admin"
+                hint="Photo, members, and agent settings"
                 onClick={() => {
                   onClose();
                   onOpenRoomAdmin(activeRoom.id);
@@ -181,14 +196,9 @@ export function SettingsModal({
               onClick={() => setPage("general")}
             />
             <PageRow
-              label="Group notes"
-              hint={settings.socialNotesEnabled ? "Social: on" : "Social: off"}
-              onClick={() => setPage("notes")}
-            />
-            <PageRow
-              label="Reading plans"
-              hint="Enroll, today's reading"
-              onClick={() => setPage("plans")}
+              label="Notes & Reading"
+              hint="Group-note social · All my notes · Reading plans"
+              onClick={() => setPage("notes-reading")}
             />
             <PageRow
               label="Notifications"
@@ -197,7 +207,7 @@ export function SettingsModal({
             />
             <PageRow
               label="Advanced"
-              hint="Debug + engine bypass"
+              hint="Debug + engine bypass + audit"
               onClick={() => setPage("advanced")}
             />
             {otherAdminRooms.length > 0 && (
@@ -207,12 +217,6 @@ export function SettingsModal({
                 onClick={() => setPage("admin-other")}
               />
             )}
-            <PageRow
-              label="Account"
-              hint="Sign out"
-              onClick={() => setPage("account")}
-              destructive
-            />
           </ul>
         )}
         {page !== null && (
@@ -222,13 +226,35 @@ export function SettingsModal({
               account-level controls (password, backup codes, phone,
               delete). */}
           {page === "profile" && (
-            <ProfileSection
-              onProfile={onProfile}
-              onDeleted={() => {
-                onClose();
-                onDeleted();
-              }}
-            />
+            <>
+              <ProfileSection
+                onProfile={onProfile}
+                onDeleted={() => {
+                  onClose();
+                  onDeleted();
+                }}
+              />
+              {/* Sign-out used to be its own "Account" page — folded
+               *  here so the identity stack lives in one place. */}
+              <Section title="Account">
+                <div className="flex flex-col gap-3 px-1 py-2">
+                  <p className="text-[12px] text-neutral-500 dark:text-neutral-400">
+                    Signing out clears your local session. Notes you wrote
+                    stay safe on the server.
+                  </p>
+                  <ActionButton
+                    variant="destructive"
+                    fullWidth
+                    onClick={() => {
+                      onClose();
+                      onSignOut();
+                    }}
+                  >
+                    Sign out
+                  </ActionButton>
+                </div>
+              </Section>
+            </>
           )}
 
           {/* ── This room (Share + Admin) ────────────────────────────
@@ -249,7 +275,7 @@ export function SettingsModal({
                     className={`flex w-full items-center gap-2 px-2.5 py-2 text-left text-sm transition hover:ring-1 hover:ring-neutral-400/40 dark:hover:ring-neutral-500/40 ${GLASS_CARD_INLINE}`}
                   >
                     <span className="text-neutral-500 dark:text-neutral-400" aria-hidden>
-                      ↗
+                      <JumpIcon className="h-4 w-4" />
                     </span>
                     <span className="flex-1">Share room link</span>
                     <span className="text-neutral-400" aria-hidden>
@@ -273,6 +299,92 @@ export function SettingsModal({
                       admin
                     </span>
                     <span className="text-neutral-400" aria-hidden>
+                      ›
+                    </span>
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    const cur = settings.mutedRoomIds;
+                    const next = cur.includes(activeRoom.id)
+                      ? cur.filter((x) => x !== activeRoom.id)
+                      : [...cur, activeRoom.id];
+                    onChange({ ...settings, mutedRoomIds: next });
+                  }}
+                  className={`flex w-full items-center gap-2 px-2.5 py-2 text-left text-sm transition hover:ring-1 hover:ring-neutral-400/40 dark:hover:ring-neutral-500/40 ${GLASS_CARD_INLINE}`}
+                >
+                  <span className="text-neutral-500 dark:text-neutral-400" aria-hidden>
+                    {settings.mutedRoomIds.includes(activeRoom.id) ? (
+                      <BellMuteIcon className="h-4 w-4" />
+                    ) : (
+                      <BellIcon className="h-4 w-4" />
+                    )}
+                  </span>
+                  <span className="flex-1">
+                    {settings.mutedRoomIds.includes(activeRoom.id)
+                      ? "Notifications muted"
+                      : "Mute notifications"}
+                  </span>
+                  <span className="text-neutral-400" aria-hidden>
+                    ›
+                  </span>
+                </button>
+                {activeRoom.type === "group" && (
+                  <button
+                    onClick={async () => {
+                      const confirmText = isAdminHere
+                        ? "You're an admin here. Promote another admin first or you'll be blocked."
+                        : "Leave this group? You can rejoin later from an invite link.";
+                      if (!confirm(confirmText)) return;
+                      try {
+                        await api.leaveRoom(activeRoom.id);
+                        onClose();
+                        // Caller pages re-fetch rooms on next mount; the
+                        // user sees the room drop out of the rail.
+                      } catch (e) {
+                        alert(`Couldn't leave: ${(e as Error).message}`);
+                      }
+                    }}
+                    className={`flex w-full items-center gap-2 px-2.5 py-2 text-left text-sm text-red-700 transition hover:ring-1 hover:ring-red-400/40 dark:text-red-300 dark:hover:ring-red-500/40 ${GLASS_CARD_INLINE}`}
+                  >
+                    <span className="text-red-600 dark:text-red-300" aria-hidden>
+                      ⎋
+                    </span>
+                    <span className="flex-1">Leave group</span>
+                    <span className="text-red-400" aria-hidden>
+                      ›
+                    </span>
+                  </button>
+                )}
+                {activeRoom.type === "group" && isAdminHere && (
+                  <button
+                    onClick={async () => {
+                      if (
+                        !confirm(
+                          `Permanently delete "${activeRoom.name || "this group"}"? ` +
+                            "Members lose access, and every chat message + note " +
+                            "in this room is removed. This can't be undone.",
+                        )
+                      )
+                        return;
+                      try {
+                        await api.deleteRoom(activeRoom.id);
+                        onClose();
+                      } catch (e) {
+                        alert(`Couldn't delete: ${(e as Error).message}`);
+                      }
+                    }}
+                    className={`flex w-full items-center gap-2 px-2.5 py-2 text-left text-sm text-red-800 transition hover:ring-1 hover:ring-red-500/50 dark:text-red-300 dark:hover:ring-red-500/40 ${GLASS_CARD_INLINE}`}
+                  >
+                    <span className="text-red-700 dark:text-red-300" aria-hidden>
+                      🗑
+                    </span>
+                    <span className="flex-1 font-semibold">Delete group</span>
+                    <span className="rounded-full bg-red-100 px-1.5 text-[9px] font-semibold uppercase text-red-700 dark:bg-red-900/40 dark:text-red-200">
+                      admin
+                    </span>
+                    <span className="text-red-400" aria-hidden>
                       ›
                     </span>
                   </button>
@@ -324,6 +436,126 @@ export function SettingsModal({
                 <option value="Asia/Tokyo">Tokyo</option>
                 <option value="Australia/Sydney">Sydney</option>
               </select>
+            </Row>
+            <Row>
+              <div className="flex-1">
+                <div>Default translation</div>
+                <div className="text-[11px] text-neutral-500 dark:text-neutral-400">
+                  The Bible reader opens with this translation. Until
+                  more public-domain texts ship, the only options are
+                  KJV and WEB.
+                </div>
+              </div>
+              <select
+                value={settings.defaultTranslation}
+                onChange={(e) =>
+                  onChange({
+                    ...settings,
+                    defaultTranslation: e.target.value,
+                  })
+                }
+                aria-label="Default translation"
+                className="ml-3 max-w-[50%] rounded-xl border border-neutral-200 bg-paper px-2.5 py-2 text-[12px] outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-200/40 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100 dark:focus:border-amber-700 dark:focus:ring-amber-800/40"
+              >
+                <option value="King James Version">KJV (1611)</option>
+                <option value="World English Bible">WEB (modern)</option>
+              </select>
+            </Row>
+            <Row>
+              <div className="flex-1">
+                <div>Voice</div>
+                <div className="text-[11px] text-neutral-500 dark:text-neutral-400">
+                  Used by the Bible reader and the "Read aloud" button on
+                  agent answers. Female and male options from Deepgram Aura.
+                </div>
+              </div>
+              <select
+                value={settings.ttsVoice}
+                onChange={(e) => {
+                  onChange({ ...settings, ttsVoice: e.target.value });
+                  void import("../lib/tts").then((m) => {
+                    m.speak(
+                      "This is the voice that will read scripture and agent answers.",
+                      { voice: e.target.value, language: "en-US" },
+                    );
+                  });
+                }}
+                className="ml-3 rounded-md border border-neutral-300 bg-paper px-2 py-1 text-[12px] dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-100"
+              >
+                <optgroup label="Female">
+                  {TTS_VOICES.filter((v) => v.gender === "F").map((v) => (
+                    <option key={v.id} value={v.id}>
+                      {v.label}
+                    </option>
+                  ))}
+                </optgroup>
+                <optgroup label="Male">
+                  {TTS_VOICES.filter((v) => v.gender === "M").map((v) => (
+                    <option key={v.id} value={v.id}>
+                      {v.label}
+                    </option>
+                  ))}
+                </optgroup>
+              </select>
+            </Row>
+            <Row>
+              <div className="flex-1">
+                <div>Read agent answers aloud</div>
+                <div className="text-[11px] text-neutral-500 dark:text-neutral-400">
+                  Speaks each agent response automatically with the same
+                  natural voice as the Bible reader.
+                </div>
+              </div>
+              <input
+                type="checkbox"
+                checked={settings.autoSpeakAgentAnswers}
+                onChange={(e) => {
+                  if (e.target.checked) {
+                    void import("../lib/tts").then((m) => m.armAudioSession());
+                  }
+                  onChange({
+                    ...settings,
+                    autoSpeakAgentAnswers: e.target.checked,
+                  });
+                }}
+                className="ml-3 h-4 w-4 accent-amber-600"
+              />
+            </Row>
+            <Row>
+              <div className="flex-1">
+                <div>Default note scope</div>
+                <div className="text-[11px] text-neutral-500 dark:text-neutral-400">
+                  Which side of Notes opens by default. Personal stays
+                  private to you; Group is shared with the room.
+                </div>
+              </div>
+              <div
+                className="ml-3 flex rounded-2xl border border-neutral-200 bg-neutral-100/60 p-0.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.5)] dark:border-neutral-700 dark:bg-neutral-800/60 dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]"
+                role="radiogroup"
+                aria-label="Default note scope"
+              >
+                {(["personal", "group"] as const).map((s) => {
+                  const picked = settings.defaultNoteScope === s;
+                  return (
+                    <button
+                      key={s}
+                      type="button"
+                      role="radio"
+                      aria-checked={picked}
+                      onClick={() =>
+                        onChange({ ...settings, defaultNoteScope: s })
+                      }
+                      className={`rounded-xl px-2.5 py-1 text-[11px] font-semibold capitalize transition ${
+                        picked
+                          ? "bg-paper text-neutral-900 shadow-[0_1px_2px_rgba(0,0,0,0.08)] dark:bg-neutral-900 dark:text-neutral-50"
+                          : "text-neutral-500 dark:text-neutral-400"
+                      }`}
+                    >
+                      {s}
+                    </button>
+                  );
+                })}
+              </div>
             </Row>
           </Section>
           )}
@@ -413,44 +645,13 @@ export function SettingsModal({
           </Section>
           </>)}
 
-          {page === "notes" && (
+          {/* ── Notes & Reading (consolidated from 3 old pages) ─────
+              Group-note social toggle, default scope, the cross-room
+              All-my-notes browser, reading-plan enrollment, and the
+              "Today's reading" banner + daily reminder all live here
+              now so written content + study habits share a page. */}
+          {page === "notes-reading" && (
           <>
-            <Section title="Default scope">
-              <div className="space-y-1.5 p-1">
-                <p className="px-1 text-[11px] text-neutral-500 dark:text-neutral-400">
-                  Which side of Notes shows when you open the tab.
-                  Personal notes stay private to you and never reach
-                  the agent. Group notes are shared with the room.
-                </p>
-                <div
-                  className="flex rounded-2xl border border-neutral-200 bg-neutral-100/60 p-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.5)] dark:border-neutral-700 dark:bg-neutral-800/60 dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]"
-                  role="radiogroup"
-                  aria-label="Default note scope"
-                >
-                  {(["personal", "group"] as const).map((s) => {
-                    const picked = settings.defaultNoteScope === s;
-                    return (
-                      <button
-                        key={s}
-                        type="button"
-                        role="radio"
-                        aria-checked={picked}
-                        onClick={() =>
-                          onChange({ ...settings, defaultNoteScope: s })
-                        }
-                        className={`flex-1 rounded-xl px-3 py-2 text-[13px] font-semibold capitalize transition ${
-                          picked
-                            ? "bg-paper text-neutral-900 shadow-[0_1px_2px_rgba(0,0,0,0.08)] dark:bg-neutral-900 dark:text-neutral-50"
-                            : "text-neutral-500 dark:text-neutral-400"
-                        }`}
-                      >
-                        {s}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            </Section>
             <Section title="Social">
               <Row>
                 <div className="flex-1">
@@ -470,6 +671,14 @@ export function SettingsModal({
                   className="ml-3 h-4 w-4 accent-amber-600"
                 />
               </Row>
+            </Section>
+            <Section title="All my notes">
+              <AllNotesSection />
+            </Section>
+            <Section title="Reading plans">
+              <div className="p-1">
+                <ReadingPlansSection />
+              </div>
             </Section>
           </>
           )}
@@ -505,66 +714,84 @@ export function SettingsModal({
               </Section>
           )}
 
-          {page === "plans" && (
-          <>
-            <Section title="Reading plans">
-              <div className="p-1">
-                <ReadingPlansSection />
-              </div>
-            </Section>
-            <Section title="Banner">
-              <Row>
-                <div className="flex-1">
-                  <div>Show "Today's reading" banner</div>
-                  <div className="text-[11px] text-neutral-500 dark:text-neutral-400">
-                    Pinned to the top of the Bible scroller while you're
-                    enrolled. Toggle off to read in peace.
+          {page === "notifications" && (
+            <>
+              <NotificationsSection />
+              <QuietHoursSection
+                settings={settings}
+                onChange={onChange}
+              />
+              <Section title="Daily reading reminder">
+                <Row>
+                  <div className="flex-1">
+                    <div>Show "Today's reading" banner</div>
+                    <div className="text-[11px] text-neutral-500 dark:text-neutral-400">
+                      Pinned to the top of the Bible scroller while you're
+                      enrolled in a reading plan.
+                    </div>
                   </div>
-                </div>
-                <input
-                  type="checkbox"
-                  checked={settings.todaysReadingBanner}
-                  onChange={(e) =>
-                    onChange({
-                      ...settings,
-                      todaysReadingBanner: e.target.checked,
-                    })
-                  }
-                  className="ml-3 h-4 w-4 accent-amber-600"
-                />
-              </Row>
-            </Section>
-          </>
-          )}
-
-          {page === "notifications" && <NotificationsSection />}
-
-          {page === "account" && (
-            <div className="flex flex-col gap-3 px-1 pt-2">
-              <p className="text-[12px] text-neutral-500 dark:text-neutral-400">
-                Signing out clears your local session. Notes you wrote
-                stay safe on the server.
-              </p>
-              <ActionButton
-                variant="destructive"
-                fullWidth
-                onClick={() => {
-                  onClose();
-                  onSignOut();
-                }}
-              >
-                Sign out
-              </ActionButton>
-            </div>
+                  <input
+                    type="checkbox"
+                    checked={settings.todaysReadingBanner}
+                    onChange={(e) =>
+                      onChange({
+                        ...settings,
+                        todaysReadingBanner: e.target.checked,
+                      })
+                    }
+                    className="ml-3 h-4 w-4 accent-amber-600"
+                  />
+                </Row>
+                <Row>
+                  <div className="flex-1">
+                    <div>Reminder time</div>
+                    <div className="text-[11px] text-neutral-500 dark:text-neutral-400">
+                      Push notification arrives at this hour in your local
+                      timezone, only on days the reading isn't already done.
+                    </div>
+                  </div>
+                  <select
+                    value={settings.readingReminderHour}
+                    onChange={(e) =>
+                      onChange({
+                        ...settings,
+                        readingReminderHour: Number(e.target.value),
+                      })
+                    }
+                    aria-label="Daily reminder hour"
+                    className="ml-3 rounded-xl border border-neutral-200 bg-paper px-2.5 py-2 text-[12px] outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-200/40 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100 dark:focus:border-amber-700 dark:focus:ring-amber-800/40"
+                  >
+                    {Array.from({ length: 24 }, (_, h) => h).map((h) => (
+                      <option key={h} value={h}>
+                        {h === 0
+                          ? "12 AM"
+                          : h < 12
+                            ? `${h} AM`
+                            : h === 12
+                              ? "12 PM"
+                              : `${h - 12} PM`}
+                      </option>
+                    ))}
+                  </select>
+                </Row>
+              </Section>
+            </>
           )}
 
           {page === "advanced" && (
-            <p className="mt-4 text-[10px] text-neutral-400 dark:text-neutral-500">
-              Debug mode reveals the citation pipeline's intermediate state
-              without changing the output. "Disable citation engine" skips
-              claim parsing + verification only; the rule layer
-              (rule-guide.MD) is non-bypassable and always runs.
-            </p>
+            <>
+              <p className="mt-4 text-[10px] text-neutral-400 dark:text-neutral-500">
+                Debug mode reveals the citation pipeline's intermediate state
+                without changing the output. "Disable citation engine" skips
+                claim parsing + verification only; the rule layer
+                (rule-guide.MD) is non-bypassable and always runs.
+              </p>
+              {settings.debugMode && (
+                <Section title="Audit log (last 50 claims)">
+                  <ProvenanceViewer />
+                </Section>
+              )}
+            </>
           )}
           </div>
         )}
@@ -619,7 +846,7 @@ function Section({
       <h3 className="mb-1.5 px-1 text-[11px] font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
         {title}
       </h3>
-      <div className="overflow-hidden rounded-2xl border border-neutral-200 bg-paper shadow-[0_1px_2px_rgba(0,0,0,0.04),inset_0_1px_0_rgba(255,255,255,0.6)] dark:border-neutral-800 dark:bg-neutral-900 dark:shadow-[0_1px_2px_rgba(0,0,0,0.2),inset_0_1px_0_rgba(255,255,255,0.04)]">
+      <div className="glass-specular overflow-hidden rounded-[18px] border border-white/40 bg-paper/55 shadow-[0_4px_14px_rgba(0,0,0,0.10),inset_0_1px_0_rgba(255,255,255,0.55),inset_0_-1px_0_rgba(0,0,0,0.05)] backdrop-blur-2xl backdrop-saturate-[1.8] dark:border-white/10 dark:bg-neutral-900/45 dark:shadow-[0_4px_14px_rgba(0,0,0,0.40),inset_0_1px_0_rgba(255,255,255,0.10),inset_0_-1px_0_rgba(0,0,0,0.20)]">
         {children}
       </div>
     </section>
@@ -631,6 +858,309 @@ function Row({ children }: { children: React.ReactNode }) {
     <div className="flex items-center justify-between gap-3 border-b border-neutral-200 px-3 py-2 text-sm last:border-b-0 dark:border-neutral-800">
       {children}
     </div>
+  );
+}
+
+/** Lightweight viewer over the agent's Provenance ledger. Each row
+ *  is one verified/inferred/dropped claim with its source
+ *  citations, verification verdict, and timestamp. Sourced from
+ *  GET /admin/provenance — the same gate as every other endpoint
+ *  (deployment password + signed-in session). Surfaced in Settings
+ *  → Advanced when debug mode is on so non-debug users aren't
+ *  flooded with engine internals. */
+function ProvenanceViewer() {
+  const [rows, setRows] = useState<
+    import("../lib/api").ProvenanceRow[] | null
+  >(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    api
+      .provenanceList(50)
+      .then((r) => alive && setRows(r))
+      .catch((e) => alive && setErr((e as Error).message));
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  if (err) {
+    return (
+      <p className="px-1 py-2 text-[12px] text-red-700 dark:text-red-300">
+        Couldn't load audit log: {err}
+      </p>
+    );
+  }
+  if (rows === null) {
+    return (
+      <p className="px-1 py-2 text-[12px] text-neutral-500 dark:text-neutral-400">
+        Loading…
+      </p>
+    );
+  }
+  if (rows.length === 0) {
+    return (
+      <p className="px-1 py-2 text-[12px] text-neutral-500 dark:text-neutral-400">
+        No reasoning turns logged yet.
+      </p>
+    );
+  }
+  return (
+    <div className="max-h-[60vh] space-y-1.5 overflow-y-auto p-1 font-mono text-[11px]">
+      {rows.map((r) => {
+        const verdictColor =
+          r.verification_result === "supported"
+            ? "text-emerald-700 dark:text-emerald-300"
+            : r.verification_result === "dropped"
+              ? "text-red-700 dark:text-red-300"
+              : "text-amber-700 dark:text-amber-300";
+        return (
+          <div
+            key={r.id}
+            className="rounded-xl border border-neutral-200 bg-paper px-2 py-1.5 dark:border-neutral-800 dark:bg-neutral-900"
+          >
+            <div className="flex items-center gap-2 text-[10px] text-neutral-500 dark:text-neutral-400">
+              <span className={`font-semibold ${verdictColor}`}>
+                {r.verification_result}
+              </span>
+              <span>· {r.kind}</span>
+              {r.tradition && <span>· {r.tradition}</span>}
+              <span className="ml-auto">
+                {r.created_at
+                  ? new Date(r.created_at).toLocaleString()
+                  : ""}
+              </span>
+            </div>
+            {r.verse_refs.length > 0 && (
+              <div className="mt-0.5 text-neutral-700 dark:text-neutral-200">
+                refs: {r.verse_refs.join(", ")}
+              </div>
+            )}
+            {r.source_refs.length > 0 && (
+              <div className="mt-0.5 text-neutral-500 dark:text-neutral-400">
+                sources: {r.source_refs.join(", ")}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/** Cross-room note review page. Lists every note the caller can see
+ *  (personal: own only; group: every room they're a member of) with
+ *  a search bar that calls the dedicated server-side notes-search
+ *  endpoint when typed in. Tap a row → opens the room rail to that
+ *  room (the caller can then navigate to the note inside).
+ *  Privacy: gated at the data layer by `/notes/all` and
+ *  `/notes/search` (rule-guide §12.1). */
+function AllNotesSection() {
+  const [hits, setHits] = useState<
+    import("../lib/api").NoteSearchHit[] | null
+  >(null);
+  const [query, setQuery] = useState("");
+  const [scope, setScope] = useState<"personal" | "group" | "both">("both");
+  const [err, setErr] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    const q = query.trim();
+    setLoading(true);
+    setErr(null);
+    const scopeArg = scope === "both" ? undefined : scope;
+    const promise =
+      q.length >= 2
+        ? api.notesSearch(q, { scope: scopeArg, limit: 100 })
+        : api.notesAll({ scope: scopeArg, limit: 200 });
+    const timer = window.setTimeout(() => {
+      promise
+        .then((rows) => alive && setHits(rows))
+        .catch((e) => alive && setErr((e as Error).message))
+        .finally(() => alive && setLoading(false));
+    }, 200);
+    return () => {
+      alive = false;
+      window.clearTimeout(timer);
+    };
+  }, [query, scope]);
+
+  return (
+    <Section title="Your notes across rooms">
+      <div className="space-y-2 p-1">
+        <div className="relative">
+          <input
+            type="search"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search your notes…"
+            aria-label="Search your notes"
+            className="w-full rounded-full border border-neutral-200 bg-paper px-3 py-2 pl-8 text-[14px] outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-200/40 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100 dark:focus:border-amber-700 dark:focus:ring-amber-800/40"
+          />
+          <span
+            className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-[11px] text-neutral-400"
+            aria-hidden
+          >
+            ⌕
+          </span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          {(["both", "personal", "group"] as const).map((s) => (
+            <button
+              key={s}
+              type="button"
+              onClick={() => setScope(s)}
+              className={`rounded-full px-2.5 py-0.5 text-[11px] font-semibold capitalize transition ${
+                scope === s
+                  ? "bg-neutral-900 text-white dark:bg-neutral-50 dark:text-neutral-900"
+                  : "border border-neutral-200 bg-paper text-neutral-700 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200"
+              }`}
+            >
+              {s}
+            </button>
+          ))}
+        </div>
+        {err && (
+          <p className="text-[12px] text-red-700 dark:text-red-300">{err}</p>
+        )}
+        {loading && hits === null && (
+          <p className="text-[12px] text-neutral-500 dark:text-neutral-400">
+            Loading…
+          </p>
+        )}
+        {hits && hits.length === 0 && (
+          <p className="text-[12px] text-neutral-500 dark:text-neutral-400">
+            {query.trim().length >= 2
+              ? `No notes match "${query.trim()}".`
+              : "No notes yet."}
+          </p>
+        )}
+        {hits && hits.length > 0 && (
+          <ul className="max-h-[60vh] space-y-1.5 overflow-y-auto pr-1">
+            {hits.map((h) => (
+              <li
+                key={h.note_id}
+                className={`rounded-xl border border-neutral-200 bg-paper px-3 py-2 dark:border-neutral-800 dark:bg-neutral-900`}
+              >
+                <div className="flex items-center gap-2 text-[10px] text-neutral-500 dark:text-neutral-400">
+                  <span
+                    className={`rounded-full px-1.5 py-0.5 font-semibold uppercase tracking-wide ${
+                      h.scope === "personal"
+                        ? "bg-violet-100 text-violet-800 dark:bg-violet-900/40 dark:text-violet-200"
+                        : "bg-amber-100 text-amber-900 dark:bg-amber-900/40 dark:text-amber-200"
+                    }`}
+                  >
+                    {h.scope}
+                  </span>
+                  {h.by_agent && (
+                    <span className="rounded-full bg-neutral-200 px-1.5 py-0.5 font-semibold uppercase tracking-wide text-neutral-700 dark:bg-neutral-700/70 dark:text-neutral-200">
+                      agent
+                    </span>
+                  )}
+                  {h.room_name && <span>· {h.room_name}</span>}
+                  {h.verse_anchors.length > 0 && (
+                    <span>· {h.verse_anchors[0]}</span>
+                  )}
+                  <span className="ml-auto">
+                    {h.updated_at
+                      ? new Date(h.updated_at).toLocaleDateString()
+                      : ""}
+                  </span>
+                </div>
+                <div className="mt-1 text-[13px] text-neutral-800 dark:text-neutral-100">
+                  {h.body || (
+                    <span className="italic text-neutral-400">(empty)</span>
+                  )}
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </Section>
+  );
+}
+
+/** Do-not-disturb window control. Backend `_is_quiet_hours_for` in
+ *  `backend/api/push.py` reads these three preferences and skips
+ *  push fan-out for the recipient when the window is open. Same
+ *  setting controls reading-plan reminders since they go through
+ *  the same fan-out path. */
+function QuietHoursSection({
+  settings,
+  onChange,
+}: {
+  settings: Settings;
+  onChange: (s: Settings) => void;
+}) {
+  const hourOpts = Array.from({ length: 24 }, (_, h) => h);
+  const fmt = (h: number) =>
+    h === 0 ? "12 AM" : h < 12 ? `${h} AM` : h === 12 ? "12 PM" : `${h - 12} PM`;
+  return (
+    <Section title="Quiet hours">
+      <Row>
+        <div className="flex-1">
+          <div>Silence push during a window</div>
+          <div className="text-[11px] text-neutral-500 dark:text-neutral-400">
+            Skips push notifications between the two times below in your
+            local timezone. Messages still arrive — your phone just
+            doesn't buzz.
+          </div>
+        </div>
+        <input
+          type="checkbox"
+          checked={settings.quietHoursEnabled}
+          onChange={(e) =>
+            onChange({ ...settings, quietHoursEnabled: e.target.checked })
+          }
+          className="ml-3 h-4 w-4 accent-amber-600"
+        />
+      </Row>
+      {settings.quietHoursEnabled && (
+        <Row>
+          <div className="flex-1">From</div>
+          <select
+            value={settings.quietStartHour}
+            onChange={(e) =>
+              onChange({
+                ...settings,
+                quietStartHour: Number(e.target.value),
+              })
+            }
+            aria-label="Quiet hours start"
+            className="ml-3 rounded-xl border border-neutral-200 bg-paper px-2.5 py-2 text-[12px] outline-none dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+          >
+            {hourOpts.map((h) => (
+              <option key={h} value={h}>
+                {fmt(h)}
+              </option>
+            ))}
+          </select>
+          <span className="mx-2 text-[11px] text-neutral-500 dark:text-neutral-400">
+            to
+          </span>
+          <select
+            value={settings.quietEndHour}
+            onChange={(e) =>
+              onChange({
+                ...settings,
+                quietEndHour: Number(e.target.value),
+              })
+            }
+            aria-label="Quiet hours end"
+            className="rounded-xl border border-neutral-200 bg-paper px-2.5 py-2 text-[12px] outline-none dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+          >
+            {hourOpts.map((h) => (
+              <option key={h} value={h}>
+                {fmt(h)}
+              </option>
+            ))}
+          </select>
+        </Row>
+      )}
+    </Section>
   );
 }
 
@@ -836,9 +1366,20 @@ function ReadingPlansSection() {
                   {p.summary} ({p.length_days} days)
                 </p>
                 {p.enrolled && (
-                  <p className="mt-1 text-[11px] text-neutral-600 dark:text-neutral-300">
-                    Day {p.current_day} of {p.length_days} · {p.completed_days}{" "}
-                    done
+                  <p className="mt-1 flex items-center gap-1.5 text-[11px] text-neutral-600 dark:text-neutral-300">
+                    <span>
+                      Day {p.current_day} of {p.length_days} ·{" "}
+                      {p.completed_days} done
+                    </span>
+                    {p.streak_days > 0 && (
+                      <span
+                        className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-1.5 py-0.5 font-semibold text-amber-900 dark:bg-amber-900/50 dark:text-amber-100"
+                        title={`${p.streak_days}-day streak`}
+                      >
+                        <FlameIcon className="h-3 w-3" filled />
+                        {p.streak_days}-day streak
+                      </span>
+                    )}
                   </p>
                 )}
               </div>

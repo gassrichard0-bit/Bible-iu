@@ -133,8 +133,15 @@ These map directly to the adversarial eval suite (`CLAUDE.md` §12):
 
 ## 10. Build notes
 
-- The engine sits **between the reasoning model and the response**; **no agent skill
-  output bypasses it.**
+- The engine sits **between the reasoning model and the response**; no agent skill output
+  bypasses it **by default**.
+- **One opt-in escape hatch.** A user-controlled toggle (Settings → Advanced → "Bypass
+  citation engine") sets `ReasoningRequest.bypass_citation_engine=true` per request. When
+  true, the orchestrator returns raw LLM output without classify/verify/gate. The toggle
+  is off by default; the response carries `decision="bypassed"` so the UI can render an
+  explicit "uncited / unverified" badge. The provenance ledger still records the turn
+  (`verification_result="bypassed"`) so the audit trail survives. Any other bypass path
+  is a violation (see `CLAUDE.md` §13).
 - Verification is a distinct pass from generation — do not merge them.
 - Keep it local-first where possible; document the entailment-model choice.
 - Build it before the agent's user-facing skills (`CLAUDE.md` §13: rule layer + this engine

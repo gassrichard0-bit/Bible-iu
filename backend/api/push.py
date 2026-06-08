@@ -145,6 +145,58 @@ def send_push_to_user(
     return sent
 
 
+def _is_room_muted_for(user, room_id: str) -> bool:
+    """Read the user's `preferences.ui.mutedRoomIds`. Treat any
+    parse failure as not-muted — better to over-notify a corrupt
+    pref than silently lose messages."""
+    try:
+        prefs = dict(user.preferences or {})
+        ui = prefs.get("ui", {}) or {}
+        muted = ui.get("mutedRoomIds") or []
+        if not isinstance(muted, list):
+            return False
+        return room_id in muted
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _is_quiet_hours_for(user) -> bool:
+    """Check the user's quiet-hours window against their local
+    clock. Returns True when a push should be SILENCED. Wrap-around
+    windows (start > end) are interpreted as "from start through
+    midnight through end the next morning" — the typical sleep
+    schedule. Failure modes (corrupt pref, missing timezone) fall
+    through to False so silence is never enforced on bad data."""
+    try:
+        prefs = dict(user.preferences or {})
+        ui = prefs.get("ui", {}) or {}
+        if not ui.get("quietHoursEnabled"):
+            return False
+        start = ui.get("quietStartHour")
+        end = ui.get("quietEndHour")
+        if not isinstance(start, int) or not isinstance(end, int):
+            return False
+        tz_name = (ui.get("timezone") or "").strip()
+        tz: Any = timezone.utc
+        if tz_name:
+            try:
+                from zoneinfo import ZoneInfo
+                tz = ZoneInfo(tz_name)
+            except Exception:  # noqa: BLE001
+                tz = timezone.utc
+        hour = datetime.now(tz).hour
+        if start == end:
+            return False  # zero-length window
+        if start < end:
+            # Same-day: silence when start <= hour < end (e.g. 13-15)
+            return start <= hour < end
+        # Wrap-around: silence when hour >= start OR hour < end
+        # (e.g. 22-7 silences 22, 23, 0, 1, 2, 3, 4, 5, 6).
+        return hour >= start or hour < end
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def fanout_to_room(
     session: Session,
     room_id: str,
@@ -152,10 +204,10 @@ def fanout_to_room(
     exclude_user_id: Optional[str],
     payload: dict[str, Any],
 ) -> int:
-    """Push `payload` to every member of `room_id` except the actor.
-    Used by chat-send and note-create. Returns the total successful
-    pushes across all members."""
-    from ..data.models import RoomMember  # local import keeps cycles out
+    """Push `payload` to every member of `room_id` except the actor
+    and except users who have muted this specific room. Used by
+    chat-send and note-create. Returns the total successful pushes."""
+    from ..data.models import RoomMember, User  # local — cycles out
 
     rows = list(
         session.scalars(
@@ -166,5 +218,14 @@ def fanout_to_room(
     for m in rows:
         if exclude_user_id is not None and m.user_id == exclude_user_id:
             continue
+        # One extra `get` per member is cheap; this runs off the chat
+        # send path which is already doing a DB write, and we cap
+        # member counts to small groups today.
+        recipient = session.get(User, m.user_id)
+        if recipient is not None:
+            if _is_room_muted_for(recipient, room_id):
+                continue
+            if _is_quiet_hours_for(recipient):
+                continue
         total += send_push_to_user(session, m.user_id, payload)
     return total

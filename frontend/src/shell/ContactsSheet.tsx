@@ -10,6 +10,7 @@ import { useEffect, useState } from "react";
 import { api, type ContactView } from "../lib/api";
 import { Avatar } from "./Profile";
 import { BottomSheet } from "./BottomSheet";
+import { JumpIcon } from "../lib/Icons";
 
 interface Props {
   open: boolean;
@@ -32,9 +33,21 @@ interface Props {
    *  automatically after signup. Null = fall back to a generic
    *  app URL (no auto-join). */
   inviteRoom?: { id: string; name: string } | null;
+  /** When set, the contact list is scoped to JUST this room's
+   *  members. The chat Contacts sheet passes the currently-open
+   *  room here so the list always matches what the user is looking
+   *  at. Without it, falls back to the user's full cross-room
+   *  contact set. */
+  scopeRoomId?: string | null;
 }
 
-export function ContactsSheet({ open, onClose, onPick, inviteRoom }: Props) {
+export function ContactsSheet({
+  open,
+  onClose,
+  onPick,
+  inviteRoom,
+  scopeRoomId,
+}: Props) {
   const [contacts, setContacts] = useState<ContactView[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
@@ -46,14 +59,15 @@ export function ContactsSheet({ open, onClose, onPick, inviteRoom }: Props) {
     setError(null);
     setQuery("");
     setInviteCopied(false);
+    setContacts(null);
     api
-      .contactsList()
+      .contactsList(scopeRoomId ?? undefined)
       .then((c) => alive && setContacts(c))
       .catch((e) => alive && setError((e as Error).message));
     return () => {
       alive = false;
     };
-  }, [open]);
+  }, [open, scopeRoomId]);
 
   const [inviteBusy, setInviteBusy] = useState(false);
 
@@ -162,7 +176,7 @@ export function ContactsSheet({ open, onClose, onPick, inviteRoom }: Props) {
             </span>
           </span>
           <span className="text-amber-700/80 dark:text-amber-200/70" aria-hidden>
-            ↗
+            <JumpIcon className="h-4 w-4" />
           </span>
         </button>
         <input

@@ -13,7 +13,7 @@ from sqlalchemy import case, func, or_, select
 from sqlalchemy.orm import Session
 
 from ..reasoning.types import GeneratedStatement, RetrievedChunk
-from ...data.models import CrossReference, Resource, Translation
+from ...data.models import CrossReference, OriginalToken, Resource, Translation
 from ...data.repos import AgentNoteRepository
 from .web_search import WebSearcher, _NoopWebSearcher
 
@@ -275,6 +275,52 @@ class SqlRetriever:
                     )
                 )
                 seen_ids.add(cid)
+
+            # 1c. Per-word morphology + lemma + Strong's for the anchor
+            #     verse. This is the "ground truth" anchor the rule
+            #     layer's §2.1 invariant wants (rule-guide.MD): when
+            #     the agent makes an original-language claim ("the
+            #     verb here is qatal, perfective aspect…") we now
+            #     have a citable source row that pins the claim to a
+            #     specific lemma and morph code. Compressed into one
+            #     chunk so the prompt isn't drowned in 20 separate
+            #     citation IDs per verse.
+            tok_rows = list(
+                self.session.scalars(
+                    select(OriginalToken)
+                    .where(OriginalToken.verse_id == verse_ref)
+                    .order_by(OriginalToken.position)
+                )
+            )
+            if tok_rows:
+                # `[1] בְּ/רֵאשִׁ֖ית | lemma=b/7225 strongs=H7225 morph=HR/Ncfsa`
+                lines = []
+                for r in tok_rows:
+                    bits = [f"[{r.position}] {r.surface_form}"]
+                    bits.append(f"lemma={r.lemma}")
+                    if r.strongs:
+                        bits.append(f"strongs={r.strongs}")
+                    if r.morphology:
+                        bits.append(f"morph={r.morphology}")
+                    lines.append("  ".join(bits))
+                cid = f"morph:{verse_ref}"
+                if cid not in seen_ids:
+                    chunks.append(
+                        RetrievedChunk(
+                            citation_id=cid,
+                            text=(
+                                f"Per-word morphology for {verse_ref} "
+                                f"(OSHB Hebrew / MorphGNT Greek):\n"
+                                + "\n".join(lines)
+                            ),
+                            source_kind="original_language",
+                            verse_refs=[verse_ref],
+                            license=(
+                                "OSHB CC-BY-4.0 (OT) / MorphGNT CC-BY-SA-3.0 (NT)"
+                            ),
+                        )
+                    )
+                    seen_ids.add(cid)
 
         # 2. Cross-references for the focused verse (CLAUDE.md §7.4).
         # Skip in topic-mode — xrefs are focus-specific and would crowd
@@ -608,19 +654,50 @@ class SqlRetriever:
                 if (len(chunks) - 1) >= result_limit:
                     break
 
-        # 3. A few commentary stubs (none seeded yet — `TODO(spec)` for
-        #    real commentary + licenses, CLAUDE.md §7.6).
-        for r in self.session.scalars(select(Resource).limit(3)):
+        # 3. Verse-anchored commentary across traditions.
+        #    Strategy: match the anchor verse (via the `[on <ref>]`
+        #    prefix the seed script bakes into bodies) and pull up to
+        #    one entry per `tradition_tag` so the prompt sees a
+        #    diverse perspective. This is the input the rule-layer's
+        #    §5 fairness gate evaluates over — when only one
+        #    tradition is present the gate has to either downgrade
+        #    confidence or refuse, depending on the claim.
+        if verse_ref:
+            anchor_marker = f"[on {verse_ref}]"
+            commentary_rows = list(
+                self.session.scalars(
+                    select(Resource)
+                    .where(
+                        Resource.type == "commentary",
+                        Resource.body.like(f"{anchor_marker}%"),
+                    )
+                )
+            )
+        else:
+            commentary_rows = []
+        # Cap at 5 commentary chunks per turn so a hot verse with many
+        # entries doesn't drown out scripture + xrefs + group notes.
+        seen_traditions: set[str] = set()
+        for r in commentary_rows:
+            tag = r.tradition_tag or "unknown"
+            # Prefer one per tradition first; if room, allow seconds.
+            if tag in seen_traditions and len(
+                [c for c in chunks if c.source_kind == "commentary"]
+            ) >= 3:
+                continue
+            seen_traditions.add(tag)
             chunks.append(
                 RetrievedChunk(
                     citation_id=f"res:{r.id}",
                     text=r.body,
-                    source_kind="commentary" if r.type == "commentary" else "lexicon",
-                    tradition=r.tradition_tag,
+                    source_kind="commentary",
+                    tradition=tag,
                     reliability=r.reliability_flag,
                     license=r.license_attribution,
                 )
             )
+            if len([c for c in chunks if c.source_kind == "commentary"]) >= 5:
+                break
 
         # 4. Rule-bounded web search for commentary (CLAUDE.md §6.2,
         #    rule-guide.MD §8). Each result is allowlist-checked,
@@ -661,11 +738,12 @@ class PlaceholderGenerator:
         history=None,
         bypass: bool = False,
         scope_kind: str = "verse",
+        revision_hints: list[str] | None = None,
     ):
-        # scope_kind is accepted for protocol compatibility but the
-        # placeholder doesn't tailor its output by scope — that's a
-        # job for the real generator.
-        del scope_kind
+        # scope_kind + revision_hints are accepted for protocol
+        # compatibility but the placeholder doesn't tailor its output —
+        # the real generator handles both.
+        del scope_kind, revision_hints
         reasoning = (
             f"Considering {verse_ref} in light of {len(retrieval)} retrieved "
             "source(s). No reasoning model is wired yet (CLAUDE.md §8 TODO)."

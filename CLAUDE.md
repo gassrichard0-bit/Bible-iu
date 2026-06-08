@@ -449,6 +449,15 @@ Each case has an expected-behavior assertion. CI fails if any case regresses.
 - When the spec is ambiguous, leave a `TODO(spec):` marker rather than inventing behavior
   that could violate the rule-guide.
 - Do not weaken or "interpret away" any rule in `rule-guide.MD` for convenience.
+- **One sanctioned escape hatch — the citation-engine bypass.**
+  Users may toggle off the citation engine (Settings → Advanced → "Bypass citation
+  engine"). When set, `ReasoningRequest.bypass_citation_engine=true` and the orchestrator
+  returns raw LLM output without claim parsing, verification, or rule gating. The bypass
+  is **opt-in per request**, **never default**, and the response carries
+  `decision="bypassed"` so the UI can flag it. The provenance ledger still records the
+  turn (with `verification_result="bypassed"`) so the audit trail remains intact even
+  when the safety gate is off. This is the only documented path that exits the citation
+  engine; any other bypass is a violation.
 
 ---
 

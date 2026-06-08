@@ -83,7 +83,7 @@ export function UserProfileSheet({
   const languages = profile?.languages ?? [];
 
   return (
-    <BottomSheet open={open} onClose={onClose} title="Profile">
+    <BottomSheet open={open} onClose={onClose} title="Profile" fullPage={fullPage}>
       <div className="flex flex-col items-center gap-3 px-5 pb-6 pt-3">
         <div className="grid place-items-center rounded-full p-[2px] shadow-[0_4px_14px_rgba(0,0,0,0.18)]">
           <Avatar handle={handle || "?"} url={avatarUrl} size={96} />

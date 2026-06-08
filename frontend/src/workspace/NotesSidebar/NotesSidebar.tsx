@@ -499,6 +499,7 @@ export function NotesSidebar({
                 onChange={(html) => notes.update(n.id, html)}
                 ariaLabel={`Edit ${n.scope} note`}
                 compact
+                roomId={roomId}
               />
             </div>
             {socialNotesEnabled &&
@@ -538,6 +539,7 @@ export function NotesSidebar({
                 focus ? `Note on ${focus.ref} (${tab})…` : `New ${tab} note…`
               }
               ariaLabel={`New ${tab} note`}
+              roomId={roomId}
             />
           </div>
           <div className="mt-1 flex items-center justify-end gap-2 text-[10px] text-neutral-500 dark:text-neutral-400">

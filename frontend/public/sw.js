@@ -9,7 +9,7 @@
  * Cache key is bumped on every release to evict the old shell. When
  * we add a real build pipeline we'll inject the bundle hash here.
  */
-const CACHE = "bible-iu-shell-v2";
+const CACHE = "bible-iu-shell-v5";
 const PRECACHE = ["/", "/manifest.webmanifest"];
 
 // True when this SW is running under Vite's dev server. We register
@@ -26,6 +26,16 @@ self.addEventListener("install", (event) => {
   }
   // Apply the new SW as soon as the old one's tabs close.
   self.skipWaiting();
+});
+
+// When the client calls `activateWaitingServiceWorker()` the
+// registerServiceWorker module posts {type: "SKIP_WAITING"} to this
+// worker; we promote it to active so the new build takes over without
+// waiting for every tab to close.
+self.addEventListener("message", (event) => {
+  if (event.data && event.data.type === "SKIP_WAITING") {
+    self.skipWaiting();
+  }
 });
 
 self.addEventListener("activate", (event) => {
@@ -74,6 +84,49 @@ self.addEventListener("fetch", (event) => {
         .catch(() => cached); // offline → fall back to cache
       return cached || fetchPromise;
     }),
+  );
+});
+
+// Offline Bible reader: cache the per-chapter scripture API calls
+// (the multi-translation endpoint the reader actually hits) under a
+// separate cache so they don't churn with the SPA shell. Strategy is
+// network-first — when online the user gets fresh data, when offline
+// we fall back to whatever the last successful fetch left behind.
+// This sits BEFORE the `return` in the API-bypass list above; the
+// route-matching is duplicated here so the bypass list keeps its
+// "API never cached" guarantee for non-Bible endpoints.
+const BIBLE_CACHE = "bible-iu-scripture-v1";
+self.addEventListener("fetch", (event) => {
+  if (event.request.method !== "GET") return;
+  const url = new URL(event.request.url);
+  // Only target the multi-translation chapter endpoint — that's
+  // what the BibleView component requests. Books list + verse-level
+  // endpoints stay network-only to keep the cache tame.
+  if (!/^\/bible\/[^/]+\/\d+\/multi/.test(url.pathname)) return;
+  event.respondWith(
+    (async () => {
+      try {
+        const fresh = await fetch(event.request);
+        if (fresh.ok) {
+          const cache = await caches.open(BIBLE_CACHE);
+          cache.put(event.request, fresh.clone());
+        }
+        return fresh;
+      } catch (_) {
+        const cache = await caches.open(BIBLE_CACHE);
+        const cached = await cache.match(event.request);
+        if (cached) return cached;
+        // No cached copy + offline → standard error response so the
+        // app's loading state resolves to "Couldn't load" cleanly.
+        return new Response(
+          JSON.stringify({ error: "offline and no cached chapter" }),
+          {
+            status: 503,
+            headers: { "Content-Type": "application/json" },
+          },
+        );
+      }
+    })(),
   );
 });
 

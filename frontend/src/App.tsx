@@ -24,6 +24,10 @@ import {
   maybeAutoEnablePush,
   refreshPushSubscriptionIfOptedIn,
 } from "./lib/pushNotifications";
+import {
+  SW_UPDATE_EVENT,
+  activateWaitingServiceWorker,
+} from "./lib/registerServiceWorker";
 
 type GateState = "checking" | "open" | "locked";
 type AuthState =
@@ -285,17 +289,66 @@ export function App() {
   }
   const Shell = isDesktop ? SocialShell : MobileShell;
   return (
-    <Shell
-      handle={auth.handle}
-      selfUserId={auth.userId}
-      onSignOut={signOut}
-      onDeleted={onDeleted}
-      theme={theme}
-      onToggleTheme={toggleTheme}
-      settings={settings}
-      onChangeSettings={setSettings}
-      pendingRoomId={joinedRoomId}
-      onPendingRoomConsumed={() => setJoinedRoomId(null)}
-    />
+    <>
+      <Shell
+        handle={auth.handle}
+        selfUserId={auth.userId}
+        onSignOut={signOut}
+        onDeleted={onDeleted}
+        theme={theme}
+        onToggleTheme={toggleTheme}
+        settings={settings}
+        onChangeSettings={setSettings}
+        pendingRoomId={joinedRoomId}
+        onPendingRoomConsumed={() => setJoinedRoomId(null)}
+      />
+      <UpdateAvailableBanner />
+    </>
+  );
+}
+
+/** Toast that appears when the SW has a new build waiting. One tap →
+ *  activates the waiting worker and reloads. Auto-dismisses if the
+ *  user reloads the tab through any other route (the banner state
+ *  doesn't persist across reloads). */
+function UpdateAvailableBanner() {
+  const [show, setShow] = useState(false);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const onReady = () => setShow(true);
+    window.addEventListener(SW_UPDATE_EVENT, onReady);
+    return () => window.removeEventListener(SW_UPDATE_EVENT, onReady);
+  }, []);
+  if (!show) return null;
+  return (
+    <div
+      role="status"
+      className="fixed left-1/2 z-[60] flex w-[calc(100%-2rem)] max-w-sm -translate-x-1/2 items-center gap-2 rounded-2xl border border-amber-300 bg-amber-50/95 px-3 py-2 shadow-[0_8px_24px_rgba(0,0,0,0.18)] backdrop-blur-md dark:border-amber-700 dark:bg-amber-900/85"
+      style={{
+        bottom: "calc(env(safe-area-inset-bottom, 0px) + 90px)",
+      }}
+    >
+      <span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-amber-200 text-amber-900 dark:bg-amber-700/70 dark:text-amber-100">
+        ↻
+      </span>
+      <span className="flex-1 text-[13px] text-amber-900 dark:text-amber-100">
+        Update available — reload to get the latest version.
+      </span>
+      <button
+        type="button"
+        onClick={() => activateWaitingServiceWorker()}
+        className="shrink-0 rounded-full bg-amber-500 px-3 py-1 text-[12px] font-semibold text-white shadow-[0_2px_6px_rgba(0,0,0,0.15)] hover:bg-amber-600"
+      >
+        Reload
+      </button>
+      <button
+        type="button"
+        onClick={() => setShow(false)}
+        aria-label="Dismiss update prompt"
+        className="shrink-0 rounded-full text-amber-700 hover:bg-amber-100 dark:text-amber-200 dark:hover:bg-amber-800/40"
+      >
+        ✕
+      </button>
+    </div>
   );
 }

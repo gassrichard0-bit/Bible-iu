@@ -24,6 +24,15 @@ import { ReasoningStream } from "./ReasoningStream/ReasoningStream";
 import { TestamentGrid } from "./TestamentGrid";
 import { BibleOverview } from "./BibleOverview";
 import { testamentOf, type Testament } from "../lib/testament";
+import { readSettings } from "../lib/settings";
+import { armAudioSession } from "../lib/tts";
+import {
+  SpeakerIcon,
+  PlayIcon,
+  PauseIcon,
+  StopIcon,
+  ChevronDownIcon,
+} from "../lib/Icons";
 import type { NotesApi } from "./NotesSidebar/notesStore";
 import type {
   AnnotationColor,
@@ -36,6 +45,37 @@ import { Grip } from "../lib/Grip";
 import { useIsDesktop } from "../lib/useMediaQuery";
 import { useRoomQuota } from "../lib/useRoomQuota";
 import { useYjsConversation } from "./yjsConversation";
+
+/** Map the dominant non-Latin script in the user's question to a
+ *  BCP-47 language hint. The agent rule layer respects
+ *  `target_language` (see `_r6_language` in
+ *  `backend/agent/rules/middleware.py`); when set, the model is
+ *  expected to answer in that language. Returns null when the
+ *  question is plain Latin script — leaves the agent at its
+ *  English default. Bias toward false-negatives: if even a small
+ *  share of the question is in another script, we trigger; a single
+ *  loanword like "אלוהים" inside an English sentence is enough to
+ *  surface a Hebrew response, which is what the user clearly wants. */
+function detectLanguage(question: string): string | null {
+  if (!question) return null;
+  // First non-Latin script that has a meaningful presence wins.
+  // Each test = at least 3 characters in that script range, or
+  // a clear majority of letters in that script.
+  const ranges: Array<[string, RegExp]> = [
+    ["he", /[֐-׿]/g], // Hebrew
+    ["ar", /[؀-ۿݐ-ݿ]/g], // Arabic
+    ["el", /[Ͱ-Ͽἀ-῿]/g], // Greek + extended
+    ["ru", /[Ѐ-ӿ]/g], // Cyrillic
+    ["zh", /[一-鿿]/g], // CJK unified — proxy for Chinese
+    ["ja", /[぀-ゟ゠-ヿ]/g], // Japanese kana
+    ["ko", /[가-힯]/g], // Hangul
+  ];
+  for (const [lang, re] of ranges) {
+    const matches = question.match(re);
+    if (matches && matches.length >= 3) return lang;
+  }
+  return null;
+}
 
 export interface ConversationTurn {
   id: string;
@@ -230,7 +270,16 @@ export const Workspace = forwardRef<WorkspaceHandle, Props>(function Workspace(
     if (focus.book === book && focus.chapter === chapter) return;
     onFocusChange(null);
   }, [book, chapter]); // eslint-disable-line react-hooks/exhaustive-deps
-  const [translation, setTranslation] = useState("WEB");
+  // Seed from the user's Settings → Default translation choice; fall
+  // back to KJV if Settings hasn't loaded yet. Imported at module
+  // scope above this component; the initial read runs once on mount.
+  const [translation, setTranslation] = useState<string>(() => {
+    try {
+      return readSettings().defaultTranslation || "King James Version";
+    } catch {
+      return "King James Version";
+    }
+  });
   const [resourcesOpen, setResourcesOpen] = useState(true);
   // The Original-language toggle lives in the Reasoning header (per
   // earlier UX move) but its state drives the Bible display: when true,
@@ -333,6 +382,13 @@ export const Workspace = forwardRef<WorkspaceHandle, Props>(function Workspace(
 
   function ask(question: string) {
     if (!question.trim()) return;
+    // ask() runs inside the user's tap-Send gesture — the closest
+    // gesture context we have to when the agent's answer will arrive.
+    // Use this moment to (re-)arm the audio session so the auto-speak
+    // useEffect in ReasoningStream can actually play audio. iOS PWA
+    // re-interrupts the AudioContext if the page sits idle, so we
+    // can't rely on the one-time installAudioPrimer alone.
+    armAudioSession();
     // Pick a verse anchor for retrieval AND a human-readable scope
     // label that prefixes the question so the LLM knows the user is
     // asking at the current zoom level, not about the lone anchor verse.
@@ -413,6 +469,7 @@ export const Workspace = forwardRef<WorkspaceHandle, Props>(function Workspace(
         history,
         bypass_citation_engine: bypassCitationEngine,
         scope_kind: scopeKind,
+        target_language: detectLanguage(question) ?? undefined,
       },
       {
         onStage: (name, count) => {
@@ -940,6 +997,148 @@ function Breadcrumb({
         >
           zoom out
         </button>
+      )}
+      <VoiceReaderDropdown />
+    </div>
+  );
+}
+
+
+/**
+ * Voice-reader dropdown — lives in the breadcrumb bar next to "zoom
+ * out." Shows three explicit controls: Play, Pause, Stop. Mirrors
+ * BibleView's voice state via the `bible:voice-state` window event;
+ * dispatches `bible:voice-{play,pause,stop}` events as the user taps.
+ *
+ * Play  → start reading (resumes from the saved verse if one exists,
+ *         else from focus)
+ * Pause → stop the synth, keep the saved-position so the next Play
+ *         resumes from the SAME verse (even across chapters / reloads)
+ * Stop  → cancel + CLEAR the saved position so the next Play starts
+ *         fresh from the focused verse
+ */
+function VoiceReaderDropdown() {
+  const [open, setOpen] = useState(false);
+  const [state, setState] = useState<{
+    playing: boolean;
+    currentVerseId: string | null;
+  }>({ playing: false, currentVerseId: null });
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  // Menu position — recomputed each time we open. Fixed-position
+  // because the breadcrumb's `overflow-x-auto` would clip an
+  // absolutely-positioned dropdown.
+  const [menuPos, setMenuPos] = useState<{ top: number; right: number } | null>(
+    null,
+  );
+  useEffect(() => {
+    const onState = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (detail)
+        setState({
+          playing: !!detail.playing,
+          currentVerseId: detail.currentVerseId ?? null,
+        });
+    };
+    window.addEventListener("bible:voice-state", onState);
+    return () => window.removeEventListener("bible:voice-state", onState);
+  }, []);
+  // Reposition the menu whenever it opens (and on resize while open).
+  useEffect(() => {
+    if (!open) return;
+    function update() {
+      const rect = triggerRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      setMenuPos({
+        top: rect.bottom + 4,
+        right: window.innerWidth - rect.right,
+      });
+    }
+    update();
+    window.addEventListener("resize", update);
+    window.addEventListener("scroll", update, true);
+    return () => {
+      window.removeEventListener("resize", update);
+      window.removeEventListener("scroll", update, true);
+    };
+  }, [open]);
+  if (typeof window !== "undefined" && !window.speechSynthesis) return null;
+  return (
+    <div className="ml-1 shrink-0">
+      <button
+        ref={triggerRef}
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-pressed={open}
+        aria-expanded={open}
+        aria-haspopup="menu"
+        className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-semibold shadow-[inset_0_1px_0_rgba(255,255,255,0.5)] transition dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] ${
+          state.playing
+            ? "border-amber-300 bg-amber-100 text-amber-900 dark:border-amber-700 dark:bg-amber-900/40 dark:text-amber-100"
+            : "border-neutral-200 bg-paper text-neutral-600 hover:bg-paper-soft dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 dark:hover:bg-neutral-800"
+        }`}
+        title="Voice reader"
+        aria-label="Voice reader"
+      >
+        <SpeakerIcon className="h-3.5 w-3.5" />
+        <ChevronDownIcon className="h-3 w-3" />
+      </button>
+      {open && menuPos && (
+        <>
+          <button
+            type="button"
+            onClick={() => setOpen(false)}
+            aria-label="Close voice reader menu"
+            className="fixed inset-0 z-30 cursor-default bg-transparent"
+          />
+          <div
+            role="menu"
+            style={{ top: menuPos.top, right: menuPos.right }}
+            className="fixed z-40 w-64 rounded-2xl border border-neutral-200 bg-paper-soft p-3 shadow-[0_8px_24px_rgba(0,0,0,0.18),inset_0_1px_0_rgba(255,255,255,0.5)] dark:border-neutral-700 dark:bg-neutral-900 dark:shadow-[0_8px_24px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.06)]"
+          >
+            <div className="flex flex-col gap-2">
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    window.dispatchEvent(
+                      new CustomEvent("bible:voice-play", {
+                        detail: { startFrom: "current" },
+                      }),
+                    );
+                  }}
+                  disabled={state.playing}
+                  className="inline-flex h-9 flex-1 items-center justify-center gap-1 rounded-full border border-amber-300 bg-amber-100 text-[12px] font-semibold text-amber-900 transition active:scale-[0.97] disabled:opacity-50 dark:border-amber-700 dark:bg-amber-900/60 dark:text-amber-100"
+                >
+                  <PlayIcon className="h-3.5 w-3.5" /> Play
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    window.dispatchEvent(new CustomEvent("bible:voice-pause"))
+                  }
+                  disabled={!state.playing}
+                  className="inline-flex h-9 flex-1 items-center justify-center gap-1 rounded-full border border-neutral-200 bg-paper text-[12px] font-semibold text-neutral-700 transition active:scale-[0.97] disabled:opacity-50 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-200"
+                >
+                  <PauseIcon className="h-3.5 w-3.5" /> Pause
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    window.dispatchEvent(new CustomEvent("bible:voice-stop"))
+                  }
+                  className="inline-flex h-9 flex-1 items-center justify-center gap-1 rounded-full border border-neutral-200 bg-paper text-[12px] font-semibold text-neutral-700 transition active:scale-[0.97] dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-200"
+                >
+                  <StopIcon className="h-3.5 w-3.5" /> Stop
+                </button>
+              </div>
+              {state.currentVerseId && (
+                <span className="px-1 text-[11px] text-neutral-500 dark:text-neutral-400">
+                  {state.playing ? "Reading" : "Paused at"} {state.currentVerseId}
+                </span>
+              )}
+            </div>
+          </div>
+        </>
       )}
     </div>
   );

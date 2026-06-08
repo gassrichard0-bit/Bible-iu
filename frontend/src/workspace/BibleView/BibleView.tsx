@@ -14,10 +14,15 @@ import {
   type AnnotationKind,
   type AnnotationOut,
   type BibleBookOut,
+  type BibleSearchHit,
+  type AdvancedSearchHit,
   type BibleVerseMulti,
   type ReadingPlanDayOut,
   type ReadingPlanSummary,
+  type VerseTokenOut,
 } from "../../lib/api";
+import { BottomSheet } from "../../shell/BottomSheet";
+import { speakSequence } from "../../lib/tts";
 import type { VerseFocus } from "../Workspace";
 import type { NotesApi } from "../NotesSidebar/notesStore";
 import { NoteSocialBlock } from "../NotesSidebar/NoteSocialBlock";
@@ -33,6 +38,13 @@ import {
   annotationsForVerse,
 } from "./annotations";
 import { GLASS_CARD_INLINE } from "../../lib/glass";
+import { MagicIcon, JumpIcon } from "../../lib/Icons";
+import {
+  parseReference,
+  suggestReferences,
+  formatReference,
+  type ParsedReference,
+} from "../../lib/bibleRefParser";
 import { readSettings, SETTINGS_CHANGED } from "../../lib/settings";
 
 interface Props {
@@ -146,6 +158,378 @@ export function BibleView({
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const [autoFocusVerse, setAutoFocusVerse] = useState<string | null>(null);
+  // Which verses have their token-study block open. Per-verse so
+  // multiple expansions can coexist; the user might want to compare
+  // Greek across two verses. Tokens are fetched lazily on first
+  // open.
+  const [tokensOpen, setTokensOpen] = useState<Set<string>>(() => new Set());
+  const [searchOpen, setSearchOpen] = useState(false);
+
+  // --- Voice reader state -----------------------------------------------
+  // One consolidated panel slides out from the toolbar with Play/Pause
+  // /Stop and a "Start from" segment selector. Reads the current chapter
+  // verse-by-verse, advancing automatically, and (when reaching the end
+  // of a chapter while still playing) loads the next chapter so a "Book
+  // start" session can flow through multiple chapters until paused.
+  const [voicePlaying, setVoicePlaying] = useState(false);
+  const [voicePaused, setVoicePaused] = useState(false);
+  const [voiceStartFrom, setVoiceStartFrom] = useState<
+    "current" | "chapter" | "book"
+  >("current");
+  const [voiceCurrentVerseId, setVoiceCurrentVerseId] = useState<string | null>(
+    null,
+  );
+  const voiceHandleRef = useRef<{ stop: () => void } | null>(null);
+  // Root of the Bible view — used to attach a native `selectstart`
+  // killer so iOS Safari's magnifier + word-callout never engage on
+  // this tab. React doesn't expose `onSelectStart` as a typed prop.
+  const bibleRootRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const el = bibleRootRef.current;
+    if (!el) return;
+    const block = (e: Event) => {
+      const t = e.target as HTMLElement | null;
+      // Allow text selection inside form fields so search input etc.
+      // keeps working. Everything else: no selection.
+      if (
+        t &&
+        (t.tagName === "INPUT" ||
+          t.tagName === "TEXTAREA" ||
+          t.isContentEditable)
+      ) {
+        return;
+      }
+      e.preventDefault();
+    };
+    el.addEventListener("selectstart", block);
+    return () => el.removeEventListener("selectstart", block);
+  }, []);
+  // When true, the next chapter's verses should auto-trigger a fresh
+  // reader session starting at verse 1. Cleared once consumed.
+  const voiceContinueRef = useRef<boolean>(false);
+  // Persistent resume position — {book, chapter, verseId} of wherever
+  // the reader last was. Saved continuously as the reader advances so
+  // pause / navigation / tab-reload all preserve the exact point. Lives
+  // in localStorage so it survives page reload too. Cleared on natural
+  // end-of-sequence and on explicit stop.
+  const VOICE_RESUME_KEY = "bible-iu:voice-resume";
+  const voiceResumeRef = useRef<{
+    book: string;
+    chapter: number;
+    verseId: string;
+  } | null>(null);
+  // Hydrate on first mount.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const raw = window.localStorage.getItem(VOICE_RESUME_KEY);
+      if (raw) voiceResumeRef.current = JSON.parse(raw);
+    } catch {
+      // best-effort; corrupt storage is fine to ignore
+    }
+  }, []);
+  function _saveVoiceResume(verseId: string) {
+    voiceResumeRef.current = { book, chapter, verseId };
+    try {
+      window.localStorage.setItem(
+        VOICE_RESUME_KEY,
+        JSON.stringify(voiceResumeRef.current),
+      );
+    } catch {
+      // localStorage may be disabled (Safari private mode); we still
+      // have the ref for the in-session resume path.
+    }
+  }
+  function _clearVoiceResume() {
+    voiceResumeRef.current = null;
+    try {
+      window.localStorage.removeItem(VOICE_RESUME_KEY);
+    } catch {
+      // ignore
+    }
+  }
+  // Pending cross-chapter resume — set when the user taps play while
+  // the saved position is in a different chapter/book. The
+  // verses-changed effect picks it up once the new chapter loads.
+  const voicePendingResumeRef = useRef<{
+    book: string;
+    chapter: number;
+    verseId: string;
+  } | null>(null);
+
+  function _buildSequenceFromVerses(
+    list: typeof verses,
+    startIdx: number,
+  ): { items: { id: string; text: string }[]; startIndex: number } {
+    const items = list.map((v) => ({
+      id: v.verse_id,
+      text: v.translations[0]?.text || "",
+    }));
+    return { items, startIndex: Math.max(0, Math.min(startIdx, items.length - 1)) };
+  }
+
+  // Window-event bridge: the voice-reader UI now lives in Workspace's
+  // breadcrumb bar (next to "zoom out"). BibleView still owns the
+  // verses + navigation, so it stays as the source of truth and the
+  // breadcrumb talks to it through these events.
+  useEffect(() => {
+    const onPlay = (e: Event) => {
+      const detail = (e as CustomEvent).detail as
+        | { startFrom?: "current" | "chapter" | "book" }
+        | undefined;
+      if (detail?.startFrom) setVoiceStartFrom(detail.startFrom);
+      // Defer one tick so the setVoiceStartFrom flushes before we
+      // read it back inside startVoiceReader.
+      window.setTimeout(() => startVoiceReader(), 0);
+    };
+    const onPause = () => pauseVoiceReader();
+    const onResume = () => resumeVoiceReader();
+    const onStop = () => stopVoiceReader();
+    window.addEventListener("bible:voice-play", onPlay);
+    window.addEventListener("bible:voice-pause", onPause);
+    window.addEventListener("bible:voice-resume", onResume);
+    window.addEventListener("bible:voice-stop", onStop);
+    return () => {
+      window.removeEventListener("bible:voice-play", onPlay);
+      window.removeEventListener("bible:voice-pause", onPause);
+      window.removeEventListener("bible:voice-resume", onResume);
+      window.removeEventListener("bible:voice-stop", onStop);
+    };
+  }, [verses, book, chapter, focus, voiceStartFrom]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Push the reader's state out so the breadcrumb's dropdown can
+  // reflect playing/paused state in its label and disabled controls.
+  useEffect(() => {
+    window.dispatchEvent(
+      new CustomEvent("bible:voice-state", {
+        detail: {
+          playing: voicePlaying,
+          paused: voicePaused,
+          currentVerseId: voiceCurrentVerseId,
+          startFrom: voiceStartFrom,
+        },
+      }),
+    );
+  }, [voicePlaying, voicePaused, voiceCurrentVerseId, voiceStartFrom]);
+
+  function startVoiceReader() {
+    // Saved-position resume takes priority over every start-from mode
+    // so the user's pause/resume gesture is honored exactly — even
+    // across chapter or book boundaries (and across page reloads,
+    // since the position lives in localStorage).
+    const saved = voiceResumeRef.current;
+    if (saved) {
+      if (saved.book === book && saved.chapter === chapter) {
+        // Same chapter as currently displayed — resume immediately.
+        const idx = verses.findIndex((v) => v.verse_id === saved.verseId);
+        if (idx >= 0) {
+          const { items, startIndex } = _buildSequenceFromVerses(verses, idx);
+          voiceHandleRef.current?.stop();
+          const handle = speakSequence(items, {
+            startIndex,
+            onAdvance: (_i, item) => {
+              setVoiceCurrentVerseId(item.id);
+              _saveVoiceResume(item.id);
+            },
+            onEnd: () => {
+              if (voiceStartFrom === "book" && chapter < chapterCount) {
+                voiceContinueRef.current = true;
+                onPickChapter(chapter + 1);
+              } else {
+                _clearVoiceResume();
+                setVoicePlaying(false);
+                setVoicePaused(false);
+                setVoiceCurrentVerseId(null);
+              }
+            },
+          });
+          if (handle) {
+            voiceHandleRef.current = handle;
+            setVoicePlaying(true);
+            setVoicePaused(false);
+          }
+          return;
+        }
+        // Saved verse_id no longer exists in this chapter — fall
+        // through.
+      } else {
+        // Saved position is in a DIFFERENT chapter/book. Navigate
+        // there and queue the resume; the verses-changed effect
+        // below will pick it up when the new chapter loads.
+        voicePendingResumeRef.current = saved;
+        if (saved.book !== book) onPickBook(saved.book);
+        if (saved.chapter !== chapter) onPickChapter(saved.chapter);
+        setVoicePlaying(true);
+        setVoicePaused(false);
+        return;
+      }
+    }
+    if (verses.length === 0) return;
+    // No saved position — fall back to start-from mode.
+    let startIdx = 0;
+    if (voiceStartFrom === "current") {
+      if (focus?.book === book && focus?.chapter === chapter) {
+        const idx = verses.findIndex((v) => v.verse_id === focus.ref);
+        if (idx >= 0) startIdx = idx;
+      }
+    } else if (voiceStartFrom === "book" && chapter !== 1) {
+      // Book start: navigate to chapter 1 and queue an auto-resume.
+      voiceContinueRef.current = true;
+      onPickChapter(1);
+      setVoicePlaying(true);
+      setVoicePaused(false);
+      return;
+    }
+    const { items, startIndex } = _buildSequenceFromVerses(verses, startIdx);
+    if (items.length === 0) return;
+    voiceHandleRef.current?.stop();
+    const handle = speakSequence(items, {
+      startIndex,
+      onAdvance: (_i, item) => {
+        setVoiceCurrentVerseId(item.id);
+        _saveVoiceResume(item.id);
+      },
+      onEnd: () => {
+        // Reached the last verse of the current chapter. When the user
+        // chose "Book start", auto-advance to the next chapter and
+        // queue a fresh sequence on the new verse list.
+        if (voiceStartFrom === "book" && chapter < chapterCount) {
+          voiceContinueRef.current = true;
+          onPickChapter(chapter + 1);
+          // Leave voicePlaying = true so the chapter-change effect
+          // restarts us when the new verses arrive.
+        } else {
+          _clearVoiceResume();
+          setVoicePlaying(false);
+          setVoicePaused(false);
+          setVoiceCurrentVerseId(null);
+        }
+      },
+    });
+    if (!handle) return;
+    voiceHandleRef.current = handle;
+    setVoicePlaying(true);
+    setVoicePaused(false);
+  }
+
+  function pauseVoiceReader() {
+    // iOS Safari's `speechSynthesis.pause()` is unreliable — it'll
+    // hang the synth and never resume on some versions. So pause =
+    // stop sequence; the resume position is already saved continuously
+    // via _saveVoiceResume() on every advance, so resume() works
+    // regardless of current chapter/book/page-reload.
+    voiceHandleRef.current?.stop();
+    voiceHandleRef.current = null;
+    voiceContinueRef.current = false;
+    setVoicePlaying(false);
+    setVoicePaused(false);
+  }
+  function resumeVoiceReader() {
+    // Legacy alias — breadcrumb dispatches voice-play directly now.
+    startVoiceReader();
+  }
+  function stopVoiceReader() {
+    voiceHandleRef.current?.stop();
+    voiceHandleRef.current = null;
+    voiceContinueRef.current = false;
+    voicePendingResumeRef.current = null;
+    _clearVoiceResume();
+    setVoicePlaying(false);
+    setVoicePaused(false);
+    setVoiceCurrentVerseId(null);
+  }
+
+  // Verses-changed effect — handles both:
+  //  (a) Multi-chapter continuation in "Book start" mode (voiceContinueRef)
+  //  (b) Cross-chapter RESUME after pause+navigate (voicePendingResumeRef)
+  // In both cases we want to start a fresh sequence in the just-loaded
+  // chapter, starting at the appropriate verse, with the same advance
+  // /end handlers as a normal start.
+  useEffect(() => {
+    if (verses.length === 0) return;
+    let startIdx: number | null = null;
+    const pending = voicePendingResumeRef.current;
+    if (pending && pending.book === book && pending.chapter === chapter) {
+      // Resume target landed in this chapter — start at the saved verse.
+      const idx = verses.findIndex((v) => v.verse_id === pending.verseId);
+      startIdx = idx >= 0 ? idx : 0;
+      voicePendingResumeRef.current = null;
+    } else if (voiceContinueRef.current) {
+      // Book-start continuation — fresh chapter, start at verse 1.
+      startIdx = 0;
+      voiceContinueRef.current = false;
+    } else {
+      return;
+    }
+    const { items, startIndex } = _buildSequenceFromVerses(verses, startIdx);
+    voiceHandleRef.current?.stop();
+    const handle = speakSequence(items, {
+      startIndex,
+      onAdvance: (_i, item) => {
+        setVoiceCurrentVerseId(item.id);
+        _saveVoiceResume(item.id);
+      },
+      onEnd: () => {
+        if (voiceStartFrom === "book" && chapter < chapterCount) {
+          voiceContinueRef.current = true;
+          onPickChapter(chapter + 1);
+        } else {
+          _clearVoiceResume();
+          setVoicePlaying(false);
+          setVoicePaused(false);
+          setVoiceCurrentVerseId(null);
+        }
+      },
+    });
+    if (handle) {
+      voiceHandleRef.current = handle;
+      setVoicePlaying(true);
+      setVoicePaused(false);
+    }
+  }, [verses]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Stop the reader when the BibleView unmounts so cancelled speech
+  // doesn't keep going while the user is on another tab.
+  useEffect(() => {
+    return () => {
+      voiceHandleRef.current?.stop();
+      try {
+        window.speechSynthesis?.cancel();
+      } catch {
+        // best-effort
+      }
+    };
+  }, []);
+  // Listen for the global `bible:search` event so the shell header's
+  // search button can open this sheet without threading a prop through
+  // Workspace. Pattern matches SW_UPDATE_EVENT / SETTINGS_CHANGED.
+  useEffect(() => {
+    const onOpen = () => setSearchOpen(true);
+    window.addEventListener("bible:search", onOpen);
+    return () => window.removeEventListener("bible:search", onOpen);
+  }, []);
+
+  // Deferred-jump state for search results: a search hit can land on a
+  // different book/chapter than the one currently displayed, so calling
+  // `onClickVerse(hit.verse)` immediately would read the parent's STALE
+  // closure of `book`/`chapter` and focus the wrong verse. Instead we
+  // park the target verse here, kick off the book + chapter setters,
+  // and wait until the parent re-renders BibleView with the new book +
+  // chapter (which simultaneously refreshes its `onClickVerse` closure
+  // to reference the new ones) — then fire the click.
+  const [pendingVerseJump, setPendingVerseJump] = useState<number | null>(null);
+  const pendingTargetRef = useRef<{ book: string; chapter: number } | null>(
+    null,
+  );
+  useEffect(() => {
+    if (pendingVerseJump == null || pendingTargetRef.current == null) return;
+    const target = pendingTargetRef.current;
+    if (book === target.book && chapter === target.chapter) {
+      onClickVerse(pendingVerseJump);
+      setPendingVerseJump(null);
+      pendingTargetRef.current = null;
+    }
+  }, [book, chapter, pendingVerseJump, onClickVerse]);
   // Manual double-tap detector — iOS Safari is inconsistent about firing
   // `dblclick`/`click` on text spans (the magnifier/selection intercepts),
   // so we listen for `pointerup` directly and time the gap ourselves.
@@ -297,9 +681,14 @@ export function BibleView({
     let alive = true;
     setLoading(true);
     setError(null);
+    // Honor the user's `defaultTranslation` Settings choice via the
+    // `translation` prop. Fall back to KJV if the prop is empty or
+    // doesn't match a seeded translation name (the multi endpoint
+    // 404s on unknowns).
+    const primary = translation || "King James Version";
     const wanted = showOriginal
-      ? ["King James Version", originalForBook(book), "Arabic (SVD)"]
-      : ["King James Version"];
+      ? [primary, originalForBook(book), "Arabic (SVD)"]
+      : [primary];
     api
       .bibleChapterMulti(book, chapter, wanted)
       .then((c) => {
@@ -310,7 +699,7 @@ export function BibleView({
     return () => {
       alive = false;
     };
-  }, [book, chapter, showOriginal]);
+  }, [book, chapter, showOriginal, translation]);
 
   const currentBook = books.find((b) => b.code === book);
   const chapterCount = currentBook?.chapters ?? 1;
@@ -384,7 +773,31 @@ export function BibleView({
 
   return (
     <>
-    <div className="flex h-full flex-col bg-paper dark:bg-neutral-900">
+    {/* Scoped no-select. iOS Safari fires the selection magnifier
+     *  + callout off any descendant that doesn't itself opt out,
+     *  so we cover the whole tree from the root and explicitly
+     *  re-enable text selection on form inputs only. */}
+    <style>{`
+      .bible-no-select, .bible-no-select * {
+        -webkit-user-select: none !important;
+        user-select: none !important;
+        -webkit-touch-callout: none !important;
+        -webkit-tap-highlight-color: transparent !important;
+      }
+      .bible-no-select input,
+      .bible-no-select textarea,
+      .bible-no-select [contenteditable="true"],
+      .bible-no-select [contenteditable=""] {
+        -webkit-user-select: text !important;
+        user-select: text !important;
+        -webkit-touch-callout: default !important;
+      }
+    `}</style>
+    <div
+      ref={bibleRootRef}
+      className="bible-no-select flex h-full flex-col bg-paper dark:bg-neutral-900"
+      onContextMenu={(e) => e.preventDefault()}
+    >
       {!hideToolbar && (
       <div className="flex flex-nowrap items-center gap-2 overflow-x-auto border-b border-neutral-200 px-3 py-2 text-xs [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden dark:border-neutral-800">
         <select
@@ -430,6 +843,27 @@ export function BibleView({
         )}
       </div>
       )}
+      <BibleSearchSheet
+        open={searchOpen}
+        onClose={() => setSearchOpen(false)}
+        translation={translation || "King James Version"}
+        onJump={(hit) => {
+          setSearchOpen(false);
+          // If the hit is in the chapter already open, the focus path
+          // through onClickVerse is safe — current `book`/`chapter` ARE
+          // the target's. Otherwise stash the verse + target and let
+          // the effect fire it once the parent's onClickVerse closure
+          // has been refreshed with the new chapter.
+          if (hit.book === book && hit.chapter === chapter) {
+            onClickVerse(hit.verse);
+            return;
+          }
+          pendingTargetRef.current = { book: hit.book, chapter: hit.chapter };
+          setPendingVerseJump(hit.verse);
+          onPickBook(hit.book);
+          onPickChapter(hit.chapter);
+        }}
+      />
 
       {onToggleFocus && (
         <div className="relative flex h-0 justify-center">
@@ -448,17 +882,34 @@ export function BibleView({
         onTouchStart={onChapterSwipeStart}
         onTouchEnd={onChapterSwipeEnd}
         onPointerUp={onScrollerDoubleTapDismiss}
-        className="flex-1 overflow-y-auto px-6 py-4"
+        className="flex-1 overflow-y-auto overflow-x-hidden pl-1 pr-3 py-4"
         // Mirror ChatPanel + the notes list: when the floating glass
         // composer + 64px AI pill sit on top of this scroller, lift
         // the last verse above them so reading isn't cut off.
-        style={
-          bottomInset
+        style={{
+          // Kill iOS Safari's text-selection magnifier + the long-press
+          // word-selection popup across the entire Bible scroller. The
+          // standalone AI pill on this tab uses its own long-press
+          // gesture to slide-trigger search / agent, and Safari's
+          // selection UI was hijacking the gesture (showing the
+          // magnifier the moment the user paused). Each verse text
+          // span already had its own no-select inline; lifting it to
+          // the scroller covers the gutters, banners, and bookmark
+          // dividers too.
+          WebkitTouchCallout: "none",
+          WebkitUserSelect: "none",
+          userSelect: "none",
+          ...(bottomInset
             ? {
-                paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 96px)",
+                // Bible needs MORE bottom padding than Chat: the Bible
+                // tab stacks a floating Search icon ABOVE the AI pill,
+                // so the floating column is ~140px tall instead of
+                // the 64px AI pill alone. 160px = column height +
+                // comfort buffer; safe-area covers the home indicator.
+                paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 160px)",
               }
-            : undefined
-        }
+            : {}),
+        }}
       >
         <TodaysReadingBanner
           currentBook={book}
@@ -597,14 +1048,23 @@ export function BibleView({
                 : {};
               return (
                 <div key={v.verse_id}>
-                  <p className="leading-relaxed">
+                  <div className="flex items-start gap-2">
+                  {/* Verse-row icon column — vertically stacked, sits
+                   *  OUTSIDE the verse text frame to the left. Holds:
+                   *    - the verse number (tappable focus/select)
+                   *    - the original-languages toggle (אα)
+                   *    - the bookmark ribbon
+                   *    - the notes-count chip (when notes exist)
+                   *  Width is fixed at ~36px so the right-hand verse
+                   *  text wraps cleanly without being shifted around. */}
+                  <div className="flex w-9 shrink-0 flex-col items-center gap-1 pt-0.5">
                     <button
                       onPointerUp={(e) => {
                         if (e.button !== 0 && e.pointerType === "mouse") return;
                         const isDouble = handleVerseTap(v.verse_id);
                         if (!isDouble) onClickVerse(v.verse);
                       }}
-                      className={`mr-2 inline-flex h-5 min-w-[1.4rem] touch-manipulation items-center justify-center rounded text-[11px] font-semibold ${
+                      className={`inline-flex h-5 min-w-[1.4rem] touch-manipulation items-center justify-center rounded text-[11px] font-semibold ${
                         focus?.verse === v.verse &&
                         focus?.ref?.startsWith(`${book}.${chapter}.`)
                           ? "bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900"
@@ -614,12 +1074,36 @@ export function BibleView({
                     >
                       {v.verse}
                     </button>
+                    {/* Per-word study toggle. Hebrew aleph + Greek
+                        alpha so the icon reads as "original languages"
+                        regardless of testament. */}
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setTokensOpen((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(v.verse_id)) next.delete(v.verse_id);
+                          else next.add(v.verse_id);
+                          return next;
+                        })
+                      }
+                      className={`inline-flex h-5 min-w-[1.4rem] touch-manipulation items-center justify-center rounded text-[10px] font-semibold transition ${
+                        tokensOpen.has(v.verse_id)
+                          ? "bg-amber-500 text-white"
+                          : "text-neutral-400 hover:bg-amber-100 hover:text-amber-700 dark:text-neutral-500 dark:hover:bg-amber-900/40 dark:hover:text-amber-200"
+                      }`}
+                      aria-pressed={tokensOpen.has(v.verse_id)}
+                      title="Hebrew / Greek per-word study"
+                      aria-label={`Open per-word study for ${v.verse_id}`}
+                    >
+                      <span aria-hidden>אα</span>
+                    </button>
                     {onSetBookmark && (
                       <button
                         onClick={() =>
                           handleRibbonTap(chapter, v.verse, !!bookmarkHere)
                         }
-                        className={`mr-1.5 inline-flex h-5 w-5 touch-manipulation items-center justify-center align-middle transition ${
+                        className={`inline-flex h-5 w-5 touch-manipulation items-center justify-center align-middle transition ${
                           bookmarkHere
                             ? bookColor(book).text
                             : "text-neutral-300 hover:text-amber-500 dark:text-neutral-700 dark:hover:text-amber-300"
@@ -638,63 +1122,70 @@ export function BibleView({
                         <BookmarkRibbon filled={!!bookmarkHere} />
                       </button>
                     )}
-                    {verseNotes.length > 0 && (
-                      <button
-                        onPointerUp={(e) => {
-                          if (e.button !== 0 && e.pointerType === "mouse")
-                            return;
-                          const isDouble = handleVerseTap(v.verse_id);
-                          if (!isDouble) toggleExpand(v.verse_id);
-                        }}
-                        className={`mr-2 inline-flex h-5 touch-manipulation items-center gap-1 rounded border px-1.5 text-[10px] font-medium ${
-                          isExpanded
-                            ? "border-violet-300 bg-violet-100 text-violet-800 dark:border-violet-700 dark:bg-violet-900/40 dark:text-violet-200"
-                            : "border-neutral-300 bg-paper text-neutral-600 hover:bg-paper-soft dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 dark:hover:bg-neutral-800"
-                        }`}
-                        title={`Tap to ${isExpanded ? "hide" : "show"} · double-tap to add a note`}
-                      >
-                        <span>✎</span>
-                        <span>{verseNotes.length}</span>
-                        <span aria-hidden>{isExpanded ? "▾" : "▸"}</span>
-                      </button>
-                    )}
-                    {(() => {
-                      const isAnnTarget =
-                        annotationTarget?.verseId === v.verse_id;
-                      // Apple "select-and-hold" feel: kill native text
-                      // selection + the iOS magnifier on the verse so
-                      // our long-press is the only gesture that fires.
-                      // The press shows a soft ring around just THIS
-                      // verse so the user sees what they targeted.
-                      const noSelect: React.CSSProperties = {
-                        WebkitTouchCallout: "none",
-                        WebkitUserSelect: "none",
-                        userSelect: "none",
-                        touchAction: "manipulation",
-                      };
-                      const ringClasses = isAnnTarget
-                        ? "ring-2 ring-offset-2 ring-neutral-900/80 dark:ring-neutral-100/80 ring-offset-paper dark:ring-offset-neutral-900 rounded"
-                        : "";
-                      return v.translations.length === 1 ? (
-                        <span
-                          dir={v.translations[0].direction}
-                          {...longPressHandlers}
-                          style={noSelect}
-                          className={`text-[15px] text-neutral-800 transition-shadow dark:text-neutral-100 ${annClasses} ${ringClasses}`}
+                  </div>
+                  {/* Verse content column — receives all the wrapping
+                   *  text so the icon column above never gets pushed
+                   *  around by long verses. `min-w-0` is required for
+                   *  flex children that contain text — without it the
+                   *  content can blow past the parent's width. */}
+                  <div className="min-w-0 flex-1">
+                    <p className="leading-relaxed">
+                      {/* Notes-count chip — inline with the verse text,
+                       *  per user request. The other icons (verse num,
+                       *  אα, bookmark) stay in the vertical column to
+                       *  the left; only this one lives inline. */}
+                      {verseNotes.length > 0 && (
+                        <button
+                          onPointerUp={(e) => {
+                            if (e.button !== 0 && e.pointerType === "mouse")
+                              return;
+                            const isDouble = handleVerseTap(v.verse_id);
+                            if (!isDouble) toggleExpand(v.verse_id);
+                          }}
+                          className={`mr-2 inline-flex h-5 touch-manipulation items-center gap-1 rounded border px-1.5 text-[10px] font-medium align-middle ${
+                            isExpanded
+                              ? "border-violet-300 bg-violet-100 text-violet-800 dark:border-violet-700 dark:bg-violet-900/40 dark:text-violet-200"
+                              : "border-neutral-300 bg-paper text-neutral-600 hover:bg-paper-soft dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 dark:hover:bg-neutral-800"
+                          }`}
+                          title={`Tap to ${isExpanded ? "hide" : "show"} · double-tap to add a note`}
                         >
-                          {v.translations[0].text}
-                        </span>
-                      ) : (
-                        <span
-                          {...longPressHandlers}
-                          style={noSelect}
-                          className={`text-[15px] text-neutral-800 transition-shadow dark:text-neutral-100 ${annClasses} ${ringClasses}`}
-                        >
-                          {v.translations[0].text}
-                        </span>
-                      );
-                    })()}
-                  </p>
+                          <span>✎</span>
+                          <span>{verseNotes.length}</span>
+                          <span aria-hidden>{isExpanded ? "▾" : "▸"}</span>
+                        </button>
+                      )}
+                      {(() => {
+                        const isAnnTarget =
+                          annotationTarget?.verseId === v.verse_id;
+                        const noSelect: React.CSSProperties = {
+                          WebkitTouchCallout: "none",
+                          WebkitUserSelect: "none",
+                          userSelect: "none",
+                          touchAction: "manipulation",
+                        };
+                        const ringClasses = isAnnTarget
+                          ? "ring-2 ring-offset-2 ring-neutral-900/80 dark:ring-neutral-100/80 ring-offset-paper dark:ring-offset-neutral-900 rounded"
+                          : "";
+                        return v.translations.length === 1 ? (
+                          <span
+                            dir={v.translations[0].direction}
+                            {...longPressHandlers}
+                            style={noSelect}
+                            className={`text-[15px] text-neutral-800 transition-shadow dark:text-neutral-100 ${annClasses} ${ringClasses}`}
+                          >
+                            {v.translations[0].text}
+                          </span>
+                        ) : (
+                          <span
+                            {...longPressHandlers}
+                            style={noSelect}
+                            className={`text-[15px] text-neutral-800 transition-shadow dark:text-neutral-100 ${annClasses} ${ringClasses}`}
+                          >
+                            {v.translations[0].text}
+                          </span>
+                        );
+                      })()}
+                    </p>
                   {v.translations.length > 1 && (
                     <div className="mb-2 ml-7 mt-1 space-y-1">
                       {v.translations.slice(1).map((tr) => (
@@ -721,12 +1212,22 @@ export function BibleView({
                               tr.direction === "rtl" ? "text-right" : ""
                             }
                           >
-                            {tr.text}
+                            {tr.direction === "ltr"
+                              ? renderDivergenceHighlighted(
+                                  v.translations[0].text,
+                                  tr.text,
+                                )
+                              : tr.text}
                           </div>
                         </div>
                       ))}
                     </div>
                   )}
+                  </div>
+                  </div>
+                  {/* Notes panel — sibling of the icon/text flex row
+                   *  so it spans the FULL width of the verse, including
+                   *  across the icon column on the left. */}
                   {isExpanded && (
                     <InlineNotePanel
                       verseId={v.verse_id}
@@ -737,6 +1238,14 @@ export function BibleView({
                       roomId={roomId}
                       selfUserId={selfUserId}
                       socialNotesEnabled={socialNotesEnabled}
+                    />
+                  )}
+                  {tokensOpen.has(v.verse_id) && (
+                    <TokenStudyBlock
+                      book={book}
+                      chapter={chapter}
+                      verse={v.verse}
+                      verseId={v.verse_id}
                     />
                   )}
                   {bookmarkHere && isLatestHere && (() => {
@@ -796,6 +1305,488 @@ export function BibleView({
     </>
   );
 }
+
+/**
+ * Bible search sheet. Opens from the magnifier button in the Bible
+ * toolbar; debounced query against `/bible/search`. Each hit
+ * links back to the verse via `onJump`. Currently scoped to the
+ * single primary translation the reader is on — multi-translation
+ * search is a future addition once we ship more public-domain
+ * translations.
+ */
+function BibleSearchSheet({
+  open,
+  onClose,
+  translation,
+  onJump,
+}: {
+  open: boolean;
+  onClose: () => void;
+  translation: string;
+  onJump: (hit: BibleSearchHit) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState<BibleSearchHit[] | null>(null);
+  const [searching, setSearching] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  // Advanced (AI) search state — populated only when the user
+  // explicitly taps "Find for me." Backed by /bible/advanced_search,
+  // which routes through the DeepSeek generator with a paraphrase-
+  // matching prompt and verifies each suggestion against the DB.
+  const [aiHits, setAiHits] = useState<AdvancedSearchHit[] | null>(null);
+  const [aiSearching, setAiSearching] = useState(false);
+  const [aiErr, setAiErr] = useState<string | null>(null);
+
+  // Smart-match: parse the query as a Bible reference ("John 3:16",
+  // "Gen 1:1-3", "Psa 23"). When it matches, surface a prominent
+  // "Jump to..." tile at the top of the popup. Falls back silently
+  // to null on free-text queries.
+  const parsedRef: ParsedReference | null = parseReference(query);
+
+  // Typeahead suggestions: when the user hasn't yet entered a chapter,
+  // show every book whose name starts with what they've typed. "Jo"
+  // → John, Joel, Jonah, Job, Joshua (canon order, max 6). Empty
+  // when the query already contains a digit (full reference incoming)
+  // or when the user has clearly moved on from a book-only query.
+  const showSuggestions =
+    query.trim().length >= 1 && (parsedRef == null || parsedRef.verse == null);
+  const suggestions = showSuggestions
+    ? suggestReferences(query, 6).filter(
+        // Don't show a suggestion that equals the parsed reference
+        // (would be a duplicate of the Jump tile).
+        (s) => !(parsedRef && s.osis === parsedRef.book),
+      )
+    : [];
+
+  useEffect(() => {
+    if (!open) {
+      setQuery("");
+      setResults(null);
+      setErr(null);
+      setAiHits(null);
+      setAiErr(null);
+    }
+  }, [open]);
+
+  // Drop stale AI suggestions whenever the query mutates — they refer
+  // to the previous fragment, not the current one.
+  useEffect(() => {
+    setAiHits(null);
+    setAiErr(null);
+  }, [query]);
+
+  async function runAdvancedSearch() {
+    const q = query.trim();
+    if (q.length < 3) return;
+    setAiSearching(true);
+    setAiErr(null);
+    setAiHits(null);
+    try {
+      const hits = await api.bibleAdvancedSearch(q, translation);
+      setAiHits(hits);
+    } catch (e) {
+      setAiErr((e as Error).message);
+    } finally {
+      setAiSearching(false);
+    }
+  }
+
+  /** Construct a synthetic BibleSearchHit for a parsed reference so
+   *  the existing `onJump` codepath (with the deferred-jump fix in
+   *  BibleView) can navigate. The hit's `text` is empty because we
+   *  haven't fetched the verse yet — onJump only needs book/chapter
+   *  /verse. */
+  function jumpToRef(r: ParsedReference) {
+    onJump({
+      verse_id: `${r.book}.${r.chapter}.${r.verse ?? 1}`,
+      book: r.book,
+      chapter: r.chapter,
+      verse: r.verse ?? 1,
+      text: "",
+      translation,
+    });
+  }
+
+  useEffect(() => {
+    if (!open) return;
+    const q = query.trim();
+    if (q.length < 2) {
+      setResults(null);
+      return;
+    }
+    let alive = true;
+    setSearching(true);
+    setErr(null);
+    const timer = window.setTimeout(() => {
+      api
+        .bibleSearch(q, translation, 50)
+        .then((hits) => {
+          if (alive) setResults(hits);
+        })
+        .catch((e) => alive && setErr((e as Error).message))
+        .finally(() => alive && setSearching(false));
+    }, 200);
+    return () => {
+      alive = false;
+      window.clearTimeout(timer);
+    };
+  }, [query, open, translation]);
+
+  function renderText(text: string, q: string): React.ReactNode {
+    const tokens = q
+      .toLowerCase()
+      .split(/\s+/)
+      .filter((t) => t.length > 0);
+    if (tokens.length === 0) return text;
+    // Build one regex that matches any token (escape for safety).
+    const escaped = tokens.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+    const re = new RegExp(`(${escaped.join("|")})`, "gi");
+    const parts = text.split(re);
+    return parts.map((p, i) =>
+      re.test(p) ? (
+        <mark
+          key={i}
+          className="rounded bg-amber-200 px-0.5 text-neutral-900 dark:bg-amber-700/60 dark:text-amber-50"
+        >
+          {p}
+        </mark>
+      ) : (
+        <span key={i}>{p}</span>
+      ),
+    );
+  }
+
+  return (
+    <BottomSheet
+      open={open}
+      onClose={onClose}
+      title="Search the Bible"
+      desktopMaxWidth="2xl"
+      // Half-screen on first open; drag the handle up to grow to
+      // near-full, drag down past the half-mark to dismiss. User can
+      // pick the height instead of getting auto-expanded.
+      snapPoints={[0.5, 0.92]}
+      initialSnap={0}
+    >
+      <div className="flex flex-col gap-3 px-4 py-3">
+        <input
+          autoFocus
+          type="search"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder='Verse text, "exact phrase", or reference (John 3:16)'
+          aria-label="Search verses"
+          className="w-full rounded-full border border-neutral-200 bg-paper px-4 py-2.5 text-[15px] outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-200/40 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100 dark:focus:border-amber-700 dark:focus:ring-amber-800/40"
+          onKeyDown={(e) => {
+            // Enter on a parsed reference = jump immediately. Saves a tap
+            // for power users who type a full reference and hit return.
+            if (e.key === "Enter" && parsedRef) {
+              e.preventDefault();
+              jumpToRef(parsedRef);
+            }
+          }}
+        />
+        {/* Smart-match jump tile — parsed reference detected. Appears
+         *  ABOVE everything else so the user can land on the verse
+         *  without scrolling through text matches. */}
+        {parsedRef && (
+          <button
+            type="button"
+            onClick={() => jumpToRef(parsedRef)}
+            className="flex w-full items-center justify-between gap-2 rounded-2xl border border-amber-300 bg-amber-50 px-3 py-2.5 text-left shadow-[0_2px_6px_rgba(0,0,0,0.08),inset_0_1px_0_rgba(255,255,255,0.5)] transition hover:bg-amber-100 active:scale-[0.99] dark:border-amber-700 dark:bg-amber-900/40 dark:shadow-[0_2px_6px_rgba(0,0,0,0.45),inset_0_1px_0_rgba(255,255,255,0.06)] dark:hover:bg-amber-900/60"
+          >
+            <span className="flex flex-col items-start">
+              <span className="text-[11px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300">
+                Jump to
+              </span>
+              <span className="text-[15px] font-semibold text-amber-900 dark:text-amber-100">
+                {formatReference(parsedRef)}
+              </span>
+            </span>
+            <span className="text-amber-700 dark:text-amber-300" aria-hidden>
+              <JumpIcon className="h-4 w-4" />
+            </span>
+          </button>
+        )}
+        {/* Typeahead book suggestions — shown only when the parser
+         *  hasn't already locked on to a specific verse. Tapping a
+         *  suggestion fills the query so the user can append a
+         *  chapter / verse, or tap the resulting Jump tile. */}
+        {suggestions.length > 0 && (
+          <div className="flex flex-wrap gap-1.5">
+            {suggestions.map((s) => (
+              <button
+                key={s.osis}
+                type="button"
+                onClick={() => setQuery(`${s.display} `)}
+                className="rounded-full border border-neutral-200 bg-paper px-3 py-1 text-[12px] font-medium text-neutral-700 shadow-[0_1px_2px_rgba(0,0,0,0.04),inset_0_1px_0_rgba(255,255,255,0.5)] transition hover:bg-paper-soft active:scale-[0.97] dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-200 dark:shadow-[0_1px_2px_rgba(0,0,0,0.30),inset_0_1px_0_rgba(255,255,255,0.06)] dark:hover:bg-neutral-700"
+              >
+                {s.display}
+              </button>
+            ))}
+          </div>
+        )}
+        <p className="px-1 text-[11px] text-neutral-500 dark:text-neutral-400">
+          Translation: {translation}. Type a reference ("John 3:16"),
+          a phrase in quotes, or any words to match across verses.
+        </p>
+        {/* Advanced (AI) search — for fragments, paraphrases, typos.
+         *  Positioned ABOVE the regular results so it stays visible
+         *  the moment the user has typed enough. The agent guesses
+         *  references; backend verifies each against the DB before
+         *  they reach the UI (no fabricated scripture). */}
+        {query.trim().length >= 3 && (
+          <div className="flex flex-col gap-2">
+            <button
+              type="button"
+              onClick={runAdvancedSearch}
+              disabled={aiSearching}
+              className="inline-flex items-center gap-1.5 self-start rounded-full border border-violet-300 bg-violet-50 px-3 py-1.5 text-[12px] font-semibold text-violet-900 shadow-[0_1px_2px_rgba(0,0,0,0.05),inset_0_1px_0_rgba(255,255,255,0.5)] transition hover:bg-violet-100 active:scale-[0.97] disabled:opacity-60 dark:border-violet-700 dark:bg-violet-900/40 dark:text-violet-100 dark:shadow-[0_1px_2px_rgba(0,0,0,0.40),inset_0_1px_0_rgba(255,255,255,0.06)] dark:hover:bg-violet-900/60"
+            >
+              {aiSearching ? (
+                "Asking the agent…"
+              ) : (
+                <>
+                  <MagicIcon className="h-4 w-4" />
+                  Use Agent
+                </>
+              )}
+            </button>
+            {aiErr && (
+              <p
+                role="alert"
+                className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-[12px] text-red-700 dark:border-red-900/50 dark:bg-red-950/40 dark:text-red-300"
+              >
+                {aiErr}
+              </p>
+            )}
+            {aiHits && aiHits.length === 0 && !aiSearching && (
+              <p className="px-1 text-[12px] text-neutral-500 dark:text-neutral-400">
+                The agent couldn't pin down a verse from that fragment.
+                Try a few more words or a key phrase.
+              </p>
+            )}
+            {aiHits && aiHits.length > 0 && (
+              <ul className="space-y-1.5">
+                {aiHits.map((h) => {
+                  const bookName = OSIS_TO_BOOK_NAME[h.book] ?? h.book;
+                  const confTone =
+                    h.confidence === "high"
+                      ? "border-violet-300 bg-violet-50 dark:border-violet-700 dark:bg-violet-900/40"
+                      : h.confidence === "low"
+                        ? "border-neutral-200 bg-paper-soft dark:border-neutral-700 dark:bg-neutral-800"
+                        : "border-violet-200 bg-violet-50/70 dark:border-violet-800 dark:bg-violet-900/25";
+                  return (
+                    <li key={`ai-${h.verse_id}`}>
+                      <button
+                        type="button"
+                        onClick={() => onJump(h)}
+                        className={`flex w-full flex-col items-start gap-1 rounded-2xl border px-3 py-2 text-left shadow-[0_1px_2px_rgba(0,0,0,0.04),inset_0_1px_0_rgba(255,255,255,0.5)] transition active:scale-[0.99] dark:shadow-[0_1px_2px_rgba(0,0,0,0.2),inset_0_1px_0_rgba(255,255,255,0.04)] ${confTone}`}
+                      >
+                        <div className="flex w-full items-center gap-1.5">
+                          <span className="rounded-full bg-violet-200/70 px-1.5 text-[9px] font-bold uppercase tracking-wide text-violet-900 dark:bg-violet-700/60 dark:text-violet-50">
+                            AI · {h.confidence}
+                          </span>
+                          <span className="text-[12px] font-semibold uppercase tracking-wide text-violet-800 dark:text-violet-200">
+                            {bookName} {h.chapter}:{h.verse}
+                          </span>
+                        </div>
+                        <div className="text-[14px] text-neutral-800 dark:text-neutral-100">
+                          {h.text}
+                        </div>
+                        {h.rationale && (
+                          <div className="text-[11px] italic text-neutral-500 dark:text-neutral-400">
+                            {h.rationale}
+                          </div>
+                        )}
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </div>
+        )}
+        {err && (
+          <p
+            role="alert"
+            className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-[12px] text-red-700 dark:border-red-900/50 dark:bg-red-950/40 dark:text-red-300"
+          >
+            {err}
+          </p>
+        )}
+        {searching && (
+          <p className="px-1 text-[12px] text-neutral-500 dark:text-neutral-400">
+            Searching…
+          </p>
+        )}
+        {!searching &&
+          results !== null &&
+          results.length === 0 &&
+          query.trim().length >= 2 && (
+            <p className="px-1 text-[12px] text-neutral-500 dark:text-neutral-400">
+              No verses match "{query.trim()}".
+            </p>
+          )}
+        {results && results.length > 0 && (
+          <ul className="space-y-1.5">
+            {results.map((h) => {
+              const bookName = OSIS_TO_BOOK_NAME[h.book] ?? h.book;
+              return (
+                <li key={h.verse_id}>
+                  <button
+                    type="button"
+                    onClick={() => onJump(h)}
+                    className="flex w-full flex-col items-start gap-1 rounded-2xl border border-neutral-200 bg-paper px-3 py-2 text-left shadow-[0_1px_2px_rgba(0,0,0,0.04),inset_0_1px_0_rgba(255,255,255,0.5)] transition hover:bg-paper-soft active:scale-[0.99] dark:border-neutral-800 dark:bg-neutral-900 dark:shadow-[0_1px_2px_rgba(0,0,0,0.2),inset_0_1px_0_rgba(255,255,255,0.04)] dark:hover:bg-neutral-800"
+                  >
+                    <div className="text-[12px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300">
+                      {bookName} {h.chapter}:{h.verse}
+                    </div>
+                    <div className="text-[14px] text-neutral-800 dark:text-neutral-100">
+                      {renderText(h.text, query)}
+                    </div>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
+    </BottomSheet>
+  );
+}
+
+
+/**
+ * Per-word original-language study block for a verse.
+ *
+ * Renders the Hebrew/Greek tokens as tappable chips. Each chip shows
+ * the surface form (the actual word in the verse); tapping it expands
+ * to reveal the lemma, Strong's number, and morphology code so the
+ * reader can study the word's underlying form without leaving the
+ * verse. Data comes from `GET /bible/{book}/{ch}/{v}/tokens` which
+ * is backed by OSHB (OT, CC-BY-4.0) and MorphGNT (NT, CC-BY-SA-3.0).
+ *
+ * Why a chip grid (and not inline annotation of the verse text):
+ *   - Mobile-friendly tap targets — 44px each, no precision required.
+ *   - Works the same way for LTR Greek + RTL Hebrew without bidi gymnastics.
+ *   - Compact: even Heb 1 verse worth of chips fits a single column.
+ */
+function TokenStudyBlock({
+  book,
+  chapter,
+  verse,
+  verseId,
+}: {
+  book: string;
+  chapter: number;
+  verse: number;
+  verseId: string;
+}) {
+  const [tokens, setTokens] = useState<VerseTokenOut[] | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [activeIdx, setActiveIdx] = useState<number | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    setErr(null);
+    setTokens(null);
+    api
+      .bibleVerseTokens(book, chapter, verse)
+      .then((rows) => alive && setTokens(rows))
+      .catch((e) => alive && setErr((e as Error).message));
+    return () => {
+      alive = false;
+    };
+  }, [book, chapter, verse]);
+
+  return (
+    <div
+      className={`mb-3 ml-7 mt-1 p-2 text-sm ring-1 ring-amber-300/50 dark:ring-amber-600/30 ${GLASS_CARD_INLINE}`}
+    >
+      <div className="mb-1 flex items-center justify-between text-[10px] uppercase tracking-wide text-amber-700 dark:text-amber-300">
+        <span>Hebrew / Greek · {verseId}</span>
+        {tokens && (
+          <span className="font-mono text-neutral-500 dark:text-neutral-400">
+            {tokens.length} words
+          </span>
+        )}
+      </div>
+      {err && (
+        <p className="text-[11px] text-red-600 dark:text-red-300">
+          Couldn't load: {err}
+        </p>
+      )}
+      {!err && tokens === null && (
+        <p className="text-[11px] text-neutral-500 dark:text-neutral-400">
+          Loading…
+        </p>
+      )}
+      {tokens && tokens.length === 0 && (
+        <p className="text-[11px] text-neutral-500 dark:text-neutral-400">
+          No original-language data for this verse yet.
+        </p>
+      )}
+      {tokens && tokens.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {tokens.map((t, i) => {
+            const open = activeIdx === i;
+            return (
+              <button
+                key={i}
+                type="button"
+                onClick={() => setActiveIdx(open ? null : i)}
+                className={`rounded-full px-2 py-1 text-[14px] transition ${
+                  open
+                    ? "bg-amber-500 text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.25)]"
+                    : "border border-amber-200 bg-amber-50/70 text-neutral-900 hover:bg-amber-100 dark:border-amber-800/60 dark:bg-amber-900/30 dark:text-neutral-100 dark:hover:bg-amber-900/50"
+                }`}
+                title={
+                  t.strongs
+                    ? `${t.lemma} · ${t.strongs}${t.morphology ? " · " + t.morphology : ""}`
+                    : t.lemma
+                }
+              >
+                {t.surface_form}
+              </button>
+            );
+          })}
+        </div>
+      )}
+      {tokens && activeIdx != null && tokens[activeIdx] && (
+        <div
+          className={`mt-2 rounded-2xl p-2 text-[12px] ${GLASS_CARD_INLINE}`}
+        >
+          <div className="text-[16px] text-neutral-900 dark:text-neutral-50">
+            <span className="font-semibold">{tokens[activeIdx].surface_form}</span>
+            <span className="ml-2 text-neutral-500 dark:text-neutral-400">
+              (lemma: {tokens[activeIdx].lemma})
+            </span>
+          </div>
+          <div className="mt-1 flex flex-wrap gap-2">
+            {tokens[activeIdx].strongs && (
+              <a
+                href={`https://www.blueletterbible.org/lexicon/${tokens[activeIdx].strongs!.toLowerCase()}/kjv/tr/0-1/`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="rounded-full bg-amber-200 px-2 py-0.5 font-mono text-[11px] font-semibold text-amber-900 hover:bg-amber-300 dark:bg-amber-700/60 dark:text-amber-100 dark:hover:bg-amber-700"
+                title="Open Blue Letter Bible lexicon entry in a new tab"
+              >
+                {tokens[activeIdx].strongs}
+              </a>
+            )}
+            {tokens[activeIdx].morphology && (
+              <span className="rounded-full border border-neutral-300 bg-paper px-2 py-0.5 font-mono text-[11px] text-neutral-700 dark:border-neutral-600 dark:bg-neutral-900 dark:text-neutral-200">
+                {tokens[activeIdx].morphology}
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 
 /**
  * Inline expandable note panel anchored to a verse.
@@ -910,6 +1901,7 @@ function InlineNotePanel({
               onChange={(html) => notes.update(n.id, html)}
               ariaLabel={`Edit ${n.scope} note on ${verseId}`}
               compact
+              roomId={roomId}
             />
             {socialNotesEnabled &&
               roomId &&
@@ -945,6 +1937,7 @@ function InlineNotePanel({
             placeholder={`Add a ${scope} note on ${verseId}…`}
             ariaLabel={`New ${scope} note on ${verseId}`}
             autoFocus={!!autoFocus}
+            roomId={roomId}
           />
         </div>
         <button
@@ -1115,6 +2108,7 @@ function ChapterNotePanel({
               onChange={(html) => notes.update(n.id, html)}
               ariaLabel={`Edit ${n.scope} note on ${book} ${chapter}`}
               compact
+              roomId={roomId}
             />
             {socialNotesEnabled &&
               roomId &&
@@ -1149,6 +2143,7 @@ function ChapterNotePanel({
             onChange={setDraft}
             placeholder={`Add a ${scope} note on ${book} ${chapter}…`}
             ariaLabel={`New ${scope} note on ${book} ${chapter}`}
+            roomId={roomId}
           />
         </div>
         <button
@@ -1159,6 +2154,65 @@ function ChapterNotePanel({
         </button>
       </form>
     </div>
+  );
+}
+
+/** Word-level translation-divergence highlighter (rule-guide.MD §2.2).
+ *
+ *  Given a primary verse text and an alternate translation, returns a
+ *  React fragment of the alternate text where every word NOT present
+ *  in the primary's vocabulary gets a subtle amber underline. Lets
+ *  the reader spot meaningful divergence at a glance without forcing
+ *  a separate "compare versions" UI.
+ *
+ *  Strategy is intentionally simple: lowercase + strip punctuation +
+ *  set-difference at word level. Catches real lexical disagreements
+ *  ("forsake" vs "abandon"; "abundance" vs "extra"; "perish" vs "be
+ *  destroyed") while ignoring stylistic punctuation. Functional words
+ *  ("the", "a", "and") are kept in the comparison too — if one
+ *  translation drops a "the" the diff catches it, which is usually
+ *  meaningful in scripture.
+ *
+ *  Not a sentence-level NLI — just word presence. For deeper
+ *  divergence (paraphrastic differences) we'd need an entailment
+ *  pass; that's tracked separately. */
+function renderDivergenceHighlighted(
+  primary: string,
+  alternate: string,
+): React.ReactNode {
+  const norm = (s: string) =>
+    s
+      .toLowerCase()
+      .replace(/[.,!?;:"()‘’“”]/g, " ")
+      .split(/\s+/)
+      .filter(Boolean);
+  const primaryWords = new Set(norm(primary));
+  // Walk the alternate text preserving its original whitespace +
+  // punctuation. Each whitespace-separated token gets a presence
+  // check; if absent in the primary, wrap with the divergence span.
+  const parts = alternate.split(/(\s+)/);
+  return (
+    <>
+      {parts.map((tok, i) => {
+        if (!tok.trim()) return <span key={i}>{tok}</span>;
+        const cleaned = tok
+          .toLowerCase()
+          .replace(/[.,!?;:"()‘’“”]/g, "")
+          .trim();
+        const isDivergent =
+          cleaned.length > 1 && !primaryWords.has(cleaned);
+        if (!isDivergent) return <span key={i}>{tok}</span>;
+        return (
+          <span
+            key={i}
+            className="rounded-sm border-b-2 border-amber-400/80 px-0.5 dark:border-amber-500/80"
+            title="Diverges from the primary translation"
+          >
+            {tok}
+          </span>
+        );
+      })}
+    </>
   );
 }
 

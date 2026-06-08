@@ -1,7 +1,11 @@
 /**
- * Rich-text note field — a contenteditable that pairs with a small
- * glass formatting toolbar. The toolbar slides in when the field is
- * focused and dismisses when focus leaves.
+ * Rich-text note field — now powered by TipTap (ProseMirror).
+ *
+ * The external API is unchanged from the previous contenteditable
+ * implementation (`value` / `onChange` carry sanitized HTML), so the
+ * rest of the app — NotesSidebar, InlineNotePanel, ChapterNotePanel
+ * — is untouched by this swap. Existing Yjs note bodies are still
+ * HTML strings; TipTap parses them on mount via its HTML extension.
  *
  * Storage: sanitized HTML in the note body. We don't run a real Markdown
  * pipeline because notes-system.MD §3 plans a TipTap+tldraw editor for
@@ -13,8 +17,24 @@
  * rendered for another. `sanitizeNoteHtml` walks the parsed DOM and
  * keeps only a whitelist of inline-formatting tags, dropping every
  * attribute. Scripts, links, images, event handlers — all stripped.
+ *
+ * Why TipTap (notes-system.MD §3.1):
+ *   - ProseMirror schema lets us evolve the document model without
+ *     re-parsing HTML each time.
+ *   - Extension system makes the future tldraw + image + table
+ *     additions additive instead of rewrites.
+ *   - Yjs binding via `@tiptap/extension-collaboration` is the next
+ *     step (we still go through the HTML round-trip here so the
+ *     existing Yjs schema doesn't change in this commit).
  */
 import { useEffect, useRef, useState } from "react";
+import { EditorContent, useEditor } from "@tiptap/react";
+import StarterKit from "@tiptap/starter-kit";
+import Underline from "@tiptap/extension-underline";
+import Placeholder from "@tiptap/extension-placeholder";
+import { ClipIcon } from "../../lib/Icons";
+import Image from "@tiptap/extension-image";
+import { api } from "../../lib/api";
 
 const ALLOWED_TAGS = new Set([
   "B",
@@ -32,10 +52,21 @@ const ALLOWED_TAGS = new Set([
   "OL",
   "LI",
   "SPAN",
+  "IMG",
 ]);
 
+/** Image src patterns the sanitizer keeps. Only same-origin URLs
+ *  that target our note-image serve endpoint survive; absolute
+ *  external URLs and `data:` URIs get stripped to prevent SSRF
+ *  beacons and tracking pixels. Patterns are anchored. */
+const IMG_SRC_ALLOWLIST: RegExp[] = [
+  /^\/rooms\/[A-Za-z0-9_-]+\/notes\/image\/[A-Za-z0-9]+(\?.*)?$/,
+  /^\/api\/rooms\/[A-Za-z0-9_-]+\/notes\/image\/[A-Za-z0-9]+(\?.*)?$/,
+];
+
 /** Walk the parsed HTML, strip every tag not in ALLOWED_TAGS, and drop
- *  every attribute. Returns a safe HTML string. */
+ *  every attribute. Returns a safe HTML string. Re-exported for other
+ *  modules (e.g. the share-card preview) that need the same scrub. */
 export function sanitizeNoteHtml(raw: string): string {
   if (typeof window === "undefined" || !raw) return raw;
   const doc = new DOMParser().parseFromString(`<root>${raw}</root>`, "text/html");
@@ -52,6 +83,26 @@ function walk(node: Element) {
       // Unwrap (move children up) so the surviving text isn't lost.
       while (child.firstChild) node.insertBefore(child.firstChild, child);
       child.remove();
+      continue;
+    }
+    if (child.tagName === "IMG") {
+      // Special-case <img>: validate src against the allowlist, and
+      // drop every attribute except src + a sanitized alt. Anything
+      // not on the allowlist (data:, external URL, javascript:) gets
+      // the whole element removed.
+      const rawSrc = child.getAttribute("src") || "";
+      const alt = (child.getAttribute("alt") || "").slice(0, 200);
+      const ok = IMG_SRC_ALLOWLIST.some((re) => re.test(rawSrc));
+      for (const attr of Array.from(child.attributes)) {
+        child.removeAttribute(attr.name);
+      }
+      if (!ok) {
+        child.remove();
+        continue;
+      }
+      child.setAttribute("src", rawSrc);
+      if (alt) child.setAttribute("alt", alt);
+      // Don't recurse — <img> is void.
       continue;
     }
     // Drop every attribute — including style + on* event handlers.
@@ -73,6 +124,10 @@ interface Props {
   /** Auto-focus on mount (used by the "open note + start typing" flow
    *  in BibleView). */
   autoFocus?: boolean;
+  /** When set, the editor exposes an image-upload affordance that
+   *  attaches images to notes in this room. Required for image
+   *  embeds because the upload endpoint is per-room. */
+  roomId?: string;
 }
 
 export function RichNoteField({
@@ -82,86 +137,169 @@ export function RichNoteField({
   ariaLabel,
   compact,
   autoFocus,
+  roomId,
 }: Props) {
-  const editorRef = useRef<HTMLDivElement | null>(null);
   const [focused, setFocused] = useState(false);
 
-  // Push the value in only when it changes from outside — never on
-  // every keystroke, or the caret will jump to the start.
+  const editor = useEditor({
+    extensions: [
+      // StarterKit ships bold/italic/strike/lists/history/etc. We
+      // explicitly disable a few things we don't want in note bodies:
+      //   - headings: too heavy for a note-pad
+      //   - code blocks: same
+      //   - horizontalRule: same
+      //   - blockquote: keep — useful for citing verses
+      StarterKit.configure({
+        heading: false,
+        codeBlock: false,
+        horizontalRule: false,
+      }),
+      Underline,
+      Placeholder.configure({
+        placeholder: placeholder ?? "",
+        emptyEditorClass: "is-empty",
+      }),
+      // Inline image attachments. `inline: false` keeps them as
+      // block-level so they don't break paragraph flow; the
+      // sanitizer enforces the src allowlist before persistence.
+      Image.configure({
+        inline: false,
+        allowBase64: false,
+        HTMLAttributes: {
+          class: "max-w-full rounded-xl",
+        },
+      }),
+    ],
+    content: value || "",
+    autofocus: autoFocus ? "end" : false,
+    editorProps: {
+      attributes: {
+        "aria-label": ariaLabel ?? "Note editor",
+        // `auto` lets the browser pick LTR vs RTL per paragraph
+        // based on the first strong-directional character. Handles
+        // mixed Hebrew/English notes cleanly without forcing
+        // either direction at the element level.
+        dir: "auto",
+        // ProseMirror sets contenteditable + tabindex itself; we
+        // only need to layer our visual classes.
+        class: [
+          "w-full bg-transparent outline-none whitespace-pre-wrap break-words",
+          compact ? "min-h-[28px] text-sm" : "min-h-[44px] text-sm",
+          // Re-style placeholder via the data-placeholder pattern the
+          // Placeholder extension emits.
+          "[&_.is-empty]:before:content-[attr(data-placeholder)]",
+          "[&_.is-empty]:before:pointer-events-none",
+          "[&_.is-empty]:before:text-neutral-400",
+          "[&_.is-empty]:before:float-left",
+          "[&_.is-empty]:before:h-0",
+          "dark:[&_.is-empty]:before:text-neutral-500",
+        ].join(" "),
+      },
+    },
+    onFocus: () => setFocused(true),
+    onBlur: ({ event }) => {
+      // Same defer as the old field — let toolbar mousedown commit
+      // before we tear the toolbar away. Toolbar buttons set
+      // preventDefault on mousedown so the editor never blurs to
+      // them in the first place; the timeout is a belt-and-braces
+      // measure for stray pointer events.
+      const relatedInsideToolbar =
+        event.relatedTarget instanceof HTMLElement &&
+        event.relatedTarget.closest("[data-note-toolbar]");
+      if (relatedInsideToolbar) return;
+      setTimeout(() => setFocused(false), 50);
+    },
+    onUpdate: ({ editor: ed }) => {
+      const html = sanitizeNoteHtml(ed.getHTML());
+      onChange(html);
+    },
+  });
+
+  // Sync external value changes (e.g. Yjs remote update) into the
+  // editor without resetting the cursor while the user types.
   useEffect(() => {
-    const el = editorRef.current;
-    if (!el) return;
-    if (el.innerHTML !== value) el.innerHTML = value;
-  }, [value]);
+    if (!editor) return;
+    const current = editor.getHTML();
+    if (value !== current && !editor.isFocused) {
+      editor.commands.setContent(value || "", { emitUpdate: false });
+    }
+  }, [value, editor]);
 
+  // Tear down ProseMirror on unmount (the hook does its own cleanup,
+  // but make sure focus state doesn't leak into a stale closure).
   useEffect(() => {
-    if (autoFocus) editorRef.current?.focus();
-  }, [autoFocus]);
+    return () => {
+      setFocused(false);
+    };
+  }, []);
 
-  // Apply a formatting command and re-sync the body. execCommand is
-  // deprecated but remains supported in every browser we target, and
-  // it's the simplest path to bold/italic/underline today. We'll swap
-  // to the TipTap stack when the spec build lands.
-  const run = (cmd: string, arg?: string) => {
-    const el = editorRef.current;
-    if (!el) return;
-    el.focus();
-    document.execCommand(cmd, false, arg);
-    onChange(sanitizeNoteHtml(el.innerHTML));
-  };
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [uploading, setUploading] = useState(false);
 
-  const handleInput = () => {
-    const el = editorRef.current;
-    if (!el) return;
-    onChange(sanitizeNoteHtml(el.innerHTML));
-  };
-
-  // Blur with a small delay: if the blur target is a toolbar button,
-  // its mousedown will refocus the editor before this fires, so the
-  // toolbar stays put.
-  const handleBlur = () => {
-    window.setTimeout(() => {
-      const active = document.activeElement;
-      if (!editorRef.current?.contains(active)) setFocused(false);
-    }, 0);
-  };
-
-  const empty = !value || value === "<br>";
+  async function handleImageFile(file: File) {
+    if (!roomId || !editor) return;
+    setUploading(true);
+    try {
+      const out = await api.noteUploadImage(roomId, file);
+      // Vite proxies /api → backend; the serve_url starts with
+      // `/rooms/...` so we prefix it under `/api` for the browser.
+      const src = `/api${out.serve_url}`;
+      editor.chain().focus().setImage({ src, alt: file.name }).run();
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.warn("[notes] image upload failed:", (e as Error).message);
+    } finally {
+      setUploading(false);
+    }
+  }
 
   return (
     <div className="relative">
-      <div
-        ref={editorRef}
-        contentEditable
-        suppressContentEditableWarning
-        role="textbox"
-        aria-multiline
-        aria-label={ariaLabel}
-        data-placeholder={placeholder ?? ""}
-        onFocus={() => setFocused(true)}
-        onBlur={handleBlur}
-        onInput={handleInput}
-        onKeyDown={(e) => {
-          // Standard rich-editor shortcuts. Cmd on macOS, Ctrl
-          // elsewhere — both are honored by checking either modifier.
-          if (!(e.metaKey || e.ctrlKey)) return;
-          const k = e.key.toLowerCase();
-          if (k === "b") {
-            e.preventDefault();
-            run("bold");
-          } else if (k === "i") {
-            e.preventDefault();
-            run("italic");
-          } else if (k === "u") {
-            e.preventDefault();
-            run("underline");
-          }
+      <EditorContent editor={editor} />
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/*"
+        className="hidden"
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) void handleImageFile(f);
+          e.target.value = "";
         }}
-        className={`w-full bg-transparent outline-none ${compact ? "min-h-[28px] text-sm" : "min-h-[44px] text-sm"} ${empty ? "before:pointer-events-none before:text-neutral-400 before:content-[attr(data-placeholder)] dark:before:text-neutral-500" : ""}`}
       />
-      {focused && (
+      {focused && editor && (
         <FormatToolbar
-          onCmd={run}
+          showImage={!!roomId}
+          imageUploading={uploading}
+          onImage={() => fileInputRef.current?.click()}
+          onCmd={(cmd) => {
+            // Each toolbar tap routes through TipTap commands; the
+            // editor's onUpdate fires onChange with the new HTML.
+            const chain = editor.chain().focus();
+            switch (cmd) {
+              case "bold":
+                chain.toggleBold().run();
+                break;
+              case "italic":
+                chain.toggleItalic().run();
+                break;
+              case "underline":
+                chain.toggleUnderline().run();
+                break;
+              case "strike":
+                chain.toggleStrike().run();
+                break;
+              case "bullet":
+                chain.toggleBulletList().run();
+                break;
+              case "ordered":
+                chain.toggleOrderedList().run();
+                break;
+              case "clear":
+                chain.unsetAllMarks().clearNodes().run();
+                break;
+            }
+          }}
           compact={compact}
         />
       )}
@@ -172,30 +310,31 @@ export function RichNoteField({
 function FormatToolbar({
   onCmd,
   compact,
+  showImage,
+  imageUploading,
+  onImage,
 }: {
-  onCmd: (cmd: string, arg?: string) => void;
+  onCmd: (cmd: string) => void;
   compact?: boolean;
+  showImage?: boolean;
+  imageUploading?: boolean;
+  onImage?: () => void;
 }) {
   // mousedown (NOT click) prevents focus from leaving the editor when
-  // the toolbar button is pressed — without this, execCommand would
+  // the toolbar button is pressed — without this, the command would
   // run with no selection and do nothing.
   const stop = (e: React.MouseEvent | React.PointerEvent) => {
     e.preventDefault();
   };
-
   const size = compact ? "h-6 min-w-6 text-[11px]" : "h-7 min-w-7 text-xs";
-
   return (
     <div
+      data-note-toolbar
       onMouseDown={stop}
       onPointerDown={stop}
       // Positioned BELOW the editor (top-full mt-1) so the formatting
       // strip never floats over the verse text, an adjacent note, or
-      // whatever else sits above this card — the previous `-top-9`
-      // made the toolbar overlap the new note being typed when the
-      // editor was the first thing in the inline panel.
-      // Same glass recipe as the annotation toolbar pill so the two
-      // surfaces feel like the same material.
+      // whatever else sits above this card.
       className="absolute top-full right-0 z-30 mt-1 flex items-center gap-1 rounded-[18px] border border-white/40 bg-paper/55 px-1.5 py-1 shadow-[0_4px_14px_rgba(0,0,0,0.10),inset_0_1px_0_rgba(255,255,255,0.45)] backdrop-blur-2xl backdrop-saturate-200 dark:border-white/10 dark:bg-neutral-900/45 dark:shadow-[0_4px_14px_rgba(0,0,0,0.40),inset_0_1px_0_rgba(255,255,255,0.08)]"
     >
       <Btn label="B" title="Bold" size={size} weight="font-bold" onTap={() => onCmd("bold")} />
@@ -218,7 +357,7 @@ function FormatToolbar({
         title="Strikethrough"
         size={size}
         weight="line-through font-semibold"
-        onTap={() => onCmd("strikeThrough")}
+        onTap={() => onCmd("strike")}
       />
       <Divider />
       <Btn
@@ -226,14 +365,14 @@ function FormatToolbar({
         title="Bullet list"
         size={size}
         weight="font-bold"
-        onTap={() => onCmd("insertUnorderedList")}
+        onTap={() => onCmd("bullet")}
       />
       <Btn
         label="1."
         title="Numbered list"
         size={size}
         weight="font-bold"
-        onTap={() => onCmd("insertOrderedList")}
+        onTap={() => onCmd("ordered")}
       />
       <Divider />
       <Btn
@@ -241,8 +380,22 @@ function FormatToolbar({
         title="Clear formatting"
         size={size}
         weight=""
-        onTap={() => onCmd("removeFormat")}
+        onTap={() => onCmd("clear")}
       />
+      {showImage && (
+        <>
+          <Divider />
+          <Btn
+            label={imageUploading ? "…" : <ClipIcon className="h-4 w-4" />}
+            title={imageUploading ? "Uploading…" : "Attach image"}
+            size={size}
+            weight=""
+            onTap={() => {
+              if (!imageUploading) onImage?.();
+            }}
+          />
+        </>
+      )}
     </div>
   );
 }
@@ -254,7 +407,7 @@ function Btn({
   weight,
   onTap,
 }: {
-  label: string;
+  label: React.ReactNode;
   title: string;
   size: string;
   weight: string;
@@ -263,10 +416,14 @@ function Btn({
   return (
     <button
       type="button"
+      onMouseDown={(e) => {
+        // Keep selection / focus inside the editor.
+        e.preventDefault();
+      }}
       onClick={onTap}
+      className={`grid place-items-center rounded-full px-1.5 text-neutral-700 hover:bg-neutral-200/60 dark:text-neutral-200 dark:hover:bg-neutral-700/60 ${size} ${weight}`}
       title={title}
       aria-label={title}
-      className={`${size} ${weight} flex items-center justify-center rounded-full px-1.5 text-neutral-700 hover:bg-neutral-200/70 dark:text-neutral-200 dark:hover:bg-neutral-700/60`}
     >
       {label}
     </button>
@@ -275,24 +432,6 @@ function Btn({
 
 function Divider() {
   return (
-    <div className="mx-0.5 h-4 w-px bg-neutral-300/70 dark:bg-neutral-700/70" />
-  );
-}
-
-/** Read-only renderer for sanitized note HTML. Used wherever a note
- *  is shown without an editor (e.g. another user's group note in the
- *  inline panel — they shouldn't be editing yours). */
-export function RichNoteView({
-  html,
-  compact,
-}: {
-  html: string;
-  compact?: boolean;
-}) {
-  return (
-    <div
-      className={`prose-sm w-full whitespace-pre-wrap break-words ${compact ? "text-sm" : "text-sm"}`}
-      dangerouslySetInnerHTML={{ __html: sanitizeNoteHtml(html) }}
-    />
+    <span className="mx-0.5 h-3 w-px bg-neutral-300/70 dark:bg-neutral-600/70" />
   );
 }

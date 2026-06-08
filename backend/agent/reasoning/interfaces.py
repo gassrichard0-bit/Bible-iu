@@ -12,7 +12,7 @@ Verifier (citation-engine.MD §5).
 """
 from __future__ import annotations
 
-from typing import Any, Protocol
+from typing import Any, Optional, Protocol
 
 from .types import GeneratedStatement, RetrievedChunk
 
@@ -44,11 +44,17 @@ class Generator(Protocol):
         retrieval: list[RetrievedChunk],
         history: list[Any] = ...,  # list[HistoryTurn], avoid circular import
         scope_kind: str = "verse",
+        revision_hints: Optional[list[str]] = None,
     ) -> tuple[str, str, list[GeneratedStatement]]:
         """Return (reasoning, answer, statements). `scope_kind` tells
         the implementation what label to put on the prompt — at
         chapter/book/wider zoom levels, anchoring the prompt to a
-        single VERSE causes the model to ignore the broader context."""
+        single VERSE causes the model to ignore the broader context.
+
+        `revision_hints` is non-empty on a retry: the rule layer asked
+        for changes on the previous attempt (citation-engine.MD §6).
+        Implementations should fold the hints into the prompt so the
+        model addresses each one before re-emitting."""
         ...
 
 

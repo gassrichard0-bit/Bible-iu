@@ -137,6 +137,71 @@ export interface BibleVerseMulti {
   translations: BibleVerseTranslation[];
 }
 
+/** Hebrew/Greek per-word study row. Surface form is the inflected
+ *  word as it appears in the verse; lemma is its dictionary form;
+ *  Strong's keys into the public Strong's lexicons; morphology is
+ *  the OSHB/MorphGNT parse code. */
+export interface ChatSearchHit {
+  message_id: string;
+  room_id: string;
+  room_name: string | null;
+  author_user_id: string | null;
+  author_handle: string | null;
+  body: string;
+  created_at: string;
+}
+
+export interface NoteSearchHit {
+  note_id: string;
+  room_id: string;
+  room_name: string | null;
+  scope: "personal" | "group";
+  body: string;
+  verse_anchors: string[];
+  by_agent: boolean;
+  updated_at: string | null;
+}
+
+export interface BibleSearchHit {
+  verse_id: string;
+  book: string;
+  chapter: number;
+  verse: number;
+  text: string;
+  translation: string;
+}
+
+export interface AdvancedSearchHit extends BibleSearchHit {
+  /** One-line model rationale for why this verse matches the user's
+   *  fragment. Rendered as the secondary line under the verse text in
+   *  the AI suggestions list. */
+  rationale: string;
+  /** "high" | "medium" | "low" — drives the badge color in the UI. */
+  confidence: "high" | "medium" | "low";
+}
+
+/** Audit-log row from the agent's Provenance ledger. */
+export interface ProvenanceRow {
+  id: string;
+  claim_id: string;
+  session_id: string;
+  verse_refs: string[];
+  source_refs: string[];
+  tradition: string | null;
+  reliability: string | null;
+  verification_result: string;
+  kind: string;
+  created_at: string;
+}
+
+export interface VerseTokenOut {
+  position: number;
+  surface_form: string;
+  lemma: string;
+  strongs: string | null;
+  morphology: string | null;
+}
+
 export interface BibleChapterMulti {
   book: string;
   chapter: number;
@@ -188,6 +253,11 @@ export interface RoomOut {
   /** Chat messages newer than the caller's `last_read_at` from anyone
    *  but themselves. Zero when caught up. Drives the in-app badge. */
   unread_count?: number;
+  /** Most-recent chat message in this room. Null when the room has
+   *  no chats yet. `last_message_at` is ISO-8601 UTC. */
+  last_message_body?: string | null;
+  last_message_at?: string | null;
+  last_message_author_handle?: string | null;
 }
 
 export interface InviteOut {
@@ -393,6 +463,75 @@ export const api = {
     jsonFetch<BibleChapterMulti>(
       `/bible/${book}/${chapter}/multi?translations=${encodeURIComponent(translations.join(","))}`,
     ),
+  /** Hebrew/Greek per-word study data for one verse. Returns an
+   *  empty array if the verse has no token rows. */
+  bibleVerseTokens: (book: string, chapter: number, verse: number) =>
+    jsonFetch<VerseTokenOut[]>(
+      `/bible/${book}/${chapter}/${verse}/tokens`,
+    ),
+  /** Caller removes themselves from a group room. Admins must
+   *  promote another admin first; direct rooms can't be left. */
+  leaveRoom: (room_id: string) =>
+    jsonFetch<{ ok: boolean }>(`/rooms/${room_id}/leave`, {
+      method: "POST",
+      body: "{}",
+    }),
+  /** Admin-only delete of a group room. Drops members, chat, notes,
+   *  and all their derivatives. Direct rooms can't be deleted. */
+  deleteRoom: (room_id: string) =>
+    jsonFetch<{ ok: boolean }>(`/rooms/${room_id}`, { method: "DELETE" }),
+  /** Upload an image to use inside a note body. Returns the serve
+   *  URL the client embeds as `<img src=…>`. */
+  noteUploadImage: async (room_id: string, file: File) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    const r = await fetch(`/api/rooms/${room_id}/notes/image`, {
+      method: "POST",
+      headers: {
+        "X-App-Password": getPassword(),
+        "X-Session-Token": getSessionToken(),
+      },
+      body: fd,
+    });
+    if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+    return (await r.json()) as { token: string; serve_url: string };
+  },
+  /** Most recent reasoning-engine audit-log rows. Used by the
+   *  Settings → Advanced auditor when debug mode is on. */
+  provenanceList: (limit = 50) =>
+    jsonFetch<ProvenanceRow[]>(`/admin/provenance?limit=${limit}`),
+  bibleSearch: (q: string, translation?: string, limit = 50) =>
+    jsonFetch<BibleSearchHit[]>(
+      `/bible/search?q=${encodeURIComponent(q)}` +
+        (translation ? `&translation=${encodeURIComponent(translation)}` : "") +
+        `&limit=${limit}`,
+    ),
+  bibleAdvancedSearch: (q: string, translation?: string) =>
+    jsonFetch<AdvancedSearchHit[]>(`/bible/advanced_search`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query: q, translation }),
+    }),
+  notesSearch: (
+    q: string,
+    opts?: { scope?: "personal" | "group"; limit?: number },
+  ) =>
+    jsonFetch<NoteSearchHit[]>(
+      `/notes/search?q=${encodeURIComponent(q)}` +
+        (opts?.scope ? `&scope=${encodeURIComponent(opts.scope)}` : "") +
+        `&limit=${opts?.limit ?? 50}`,
+    ),
+  notesAll: (opts?: { scope?: "personal" | "group"; limit?: number }) =>
+    jsonFetch<NoteSearchHit[]>(
+      `/notes/all?limit=${opts?.limit ?? 200}` +
+        (opts?.scope ? `&scope=${encodeURIComponent(opts.scope)}` : ""),
+    ),
+  chatSearch: (q: string, opts?: { roomId?: string; limit?: number }) =>
+    jsonFetch<ChatSearchHit[]>(
+      `/chat/search?q=${encodeURIComponent(q)}` +
+        (opts?.roomId ? `&room_id=${encodeURIComponent(opts.roomId)}` : "") +
+        `&limit=${opts?.limit ?? 50}`,
+    ),
   readingPlansList: () =>
     jsonFetch<ReadingPlanSummary[]>("/reading-plans"),
   readingPlanEnroll: (plan_id: string) =>
@@ -425,6 +564,14 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ body, language, reply_to_id }),
     }),
+  /** Admin-only toggle of a message's pinned state. Returns the
+   *  updated message; the WS hub also re-broadcasts so other tabs
+   *  refresh automatically. */
+  chatPin: (room_id: string, message_id: string) =>
+    jsonFetch<ChatMessageOut>(
+      `/rooms/${room_id}/chat/${message_id}/pin`,
+      { method: "POST", body: "{}" },
+    ),
   chatReact: (room_id: string, message_id: string, emoji: string) =>
     jsonFetch<ChatMessageOut>(
       `/rooms/${room_id}/chat/${message_id}/react`,
@@ -527,7 +674,14 @@ export const api = {
     }),
   userPublic: (user_id: string) =>
     jsonFetch<PublicUserView>(`/auth/users/${user_id}`),
-  contactsList: () => jsonFetch<ContactView[]>(`/contacts`),
+  /** Pass `roomId` to scope the list to that room's members (matches
+   *  the chat Contacts sheet expectation that it shows the current
+   *  group, not every contact across every room). Omit for the
+   *  full cross-room contact set. */
+  contactsList: (roomId?: string) =>
+    jsonFetch<ContactView[]>(
+      roomId ? `/contacts?room_id=${encodeURIComponent(roomId)}` : `/contacts`,
+    ),
   authImageUpload: async (file: File) => {
     const form = new FormData();
     form.append("file", file);
@@ -588,6 +742,7 @@ export interface ReadingPlanSummary {
   enrolled: boolean;
   current_day: number | null;
   completed_days: number;
+  streak_days: number;
 }
 
 export interface ReadingPlanDayOut {
@@ -640,6 +795,9 @@ export interface ChatMessageOut {
    *  the reaction pill. Empty array when no reactions. */
   reactions: { emoji: string; count: number; mine: boolean }[];
   created_at: string | null;
+  /** ISO timestamp when an admin pinned this message; null = not
+   *  pinned. The chat panel sorts pinned messages to the top. */
+  pinned_at: string | null;
 }
 
 export interface NoteCommentOut {

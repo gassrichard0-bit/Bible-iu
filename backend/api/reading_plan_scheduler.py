@@ -36,16 +36,29 @@ from .push import send_push_to_user
 
 log = logging.getLogger("bible_iu.reading_plan_scheduler")
 
-# 8 AM is the standard morning-devotion slot. Coarser than per-user
-# preference but simple — once we add a Settings picker we'll read it
-# off the user's preferences here instead.
-REMINDER_LOCAL_HOUR = 8
+# Default morning-devotion slot when the user hasn't picked one in
+# Settings. `_user_reminder_hour()` reads `user.preferences.ui.
+# readingReminderHour` first; this is the fallback.
+DEFAULT_REMINDER_HOUR = 8
 
 # How often the loop wakes up. 5 minutes is fine for hourly precision
 # and keeps the CPU cost negligible on a single-instance deploy.
 SCAN_INTERVAL_SEC = 5 * 60
 
 _task: asyncio.Task | None = None
+
+
+def _user_reminder_hour(user: User) -> int:
+    """Pull `preferences.ui.readingReminderHour` (0-23) from the
+    user's settings. Falls back to `DEFAULT_REMINDER_HOUR` when the
+    pref is missing or invalid so a corrupt setting can never silence
+    the reminder entirely."""
+    prefs = dict(user.preferences or {})
+    ui = prefs.get("ui", {}) or {}
+    raw = ui.get("readingReminderHour")
+    if isinstance(raw, int) and 0 <= raw <= 23:
+        return raw
+    return DEFAULT_REMINDER_HOUR
 
 
 def _user_tz(user: User) -> ZoneInfo:
@@ -89,7 +102,7 @@ def _sweep_once() -> int:
                 continue
             tz = _user_tz(user)
             local_now = datetime.now(tz)
-            if local_now.hour < REMINDER_LOCAL_HOUR:
+            if local_now.hour < _user_reminder_hour(user):
                 continue
             today_str = local_now.date().isoformat()
             if enrollment.last_reminded_date == today_str:
@@ -144,7 +157,7 @@ def _sweep_once() -> int:
 async def _loop() -> None:
     log.info(
         "reading-plan scheduler started (hour=%s interval=%ss)",
-        REMINDER_LOCAL_HOUR, SCAN_INTERVAL_SEC,
+        DEFAULT_REMINDER_HOUR, SCAN_INTERVAL_SEC,
     )
     # Sweep right away so a startup near the reminder hour doesn't
     # wait a full interval before firing.

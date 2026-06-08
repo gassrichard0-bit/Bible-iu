@@ -83,6 +83,7 @@ class CitationEngine:
         history: Optional[list] = None,
         bypass: bool = False,
         scope_kind: str = "verse",
+        revision_hints: Optional[list[str]] = None,
     ) -> GroundedAnswer:
         """`bypass=True` (user-toggled in Settings, overriding the spec
         in rule-guide.MD §14 / citation-engine.MD §10): run retrieve +
@@ -108,11 +109,13 @@ class CitationEngine:
                 history=history,
                 bypass=bypass,
                 scope_kind=scope_kind,
+                revision_hints=revision_hints or [],
             )
         else:
             gen_out = self.generator.generate(
                 verse_ref, question, retrieval,
                 history=history, bypass=bypass, scope_kind=scope_kind,
+                revision_hints=revision_hints or [],
             )
         # Generators may return 3-tuple (back-compat) or 4-tuple with
         # an optional NoteSuggestion as the 4th element.
@@ -124,6 +127,22 @@ class CitationEngine:
 
         if bypass:
             ev.on_stage("bypassed", 0)
+            # rule-guide.MD §1 / citation-engine.MD §10: even when the user
+            # opts out of the citation engine, the audit trail survives.
+            # One row records the turn with verification_result="bypassed"
+            # so the provenance viewer can flag what shipped uncited.
+            self.ledger.write(
+                ProvenanceRecord(
+                    claim_id=f"{session_id}:bypassed",
+                    session_id=session_id,
+                    room_id=room_id,
+                    text=answer,
+                    citation_ids=[r.citation_id for r in retrieval],
+                    kind="non_factual",
+                    verification="bypassed",
+                    verse_refs=[verse_ref],
+                )
+            )
             return GroundedAnswer(
                 reasoning=reasoning,
                 answer=answer,
@@ -137,7 +156,26 @@ class CitationEngine:
         ev.on_stage("verifying", len(classified))
         verified, dropped = self._verify_and_gate(classified, retrieval)
 
+        # Build a citation_id -> chunk lookup once so each ledger row can
+        # carry the chunk's verse_refs / tradition / reliability. Without
+        # these the provenance viewer can't reconstruct what the agent
+        # actually leaned on (data-model.MD §5).
+        by_cid = {r.citation_id: r for r in retrieval}
         for c in verified:
+            chunks = [by_cid[cid] for cid in c.citation_ids if cid in by_cid]
+            verse_refs: list[str] = []
+            for ch in chunks:
+                for vr in ch.verse_refs:
+                    if vr not in verse_refs:
+                        verse_refs.append(vr)
+            # Pick the most reliable tradition tag we have. When the
+            # verifier accepted multiple chunks, surface the first
+            # non-null tradition — the rule layer's §5.2 fairness check
+            # already validates breadth at the AgentOutput level.
+            tradition = next((ch.tradition for ch in chunks if ch.tradition), None)
+            reliability = next(
+                (ch.reliability for ch in chunks if ch.reliability), None
+            )
             self.ledger.write(
                 ProvenanceRecord(
                     claim_id=f"{session_id}:{hash(c.text) & 0xFFFFFFFF:x}",
@@ -147,6 +185,9 @@ class CitationEngine:
                     citation_ids=c.citation_ids,
                     kind=c.kind,
                     verification=c.verification,
+                    tradition=tradition,
+                    reliability=reliability,
+                    verse_refs=verse_refs,
                 )
             )
 

@@ -79,4 +79,59 @@
       scroll-behavior: auto !important;
     }
   }
+
+  /* Liquid-glass specular highlight — a 135° gradient stripe painted via
+     ::after on any element bearing the `glass-specular` class. Pure
+     CSS so it lives in the design layer, not the component tree. */
+  .glass-specular {
+    position: relative;
+    isolation: isolate;
+  }
+  .glass-specular::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    border-radius: inherit;
+    background: linear-gradient(
+      135deg,
+      rgba(255, 255, 255, 0.42) 0%,
+      rgba(255, 255, 255, 0.12) 22%,
+      transparent 38%,
+      transparent 100%
+    );
+    mix-blend-mode: screen;
+    opacity: 0.95;
+    transition: opacity 220ms ease-out;
+  }
+  .dark .glass-specular::after {
+    background: linear-gradient(
+      135deg,
+      rgba(255, 255, 255, 0.20) 0%,
+      rgba(255, 255, 255, 0.06) 22%,
+      transparent 38%,
+      transparent 100%
+    );
+    opacity: 0.85;
+  }
+  /* Press state: dim the highlight as the surface flexes "into" the press. */
+  .glass-specular:active::after { opacity: 0.55; }
+
+  /* Honor the user's transparency preference (Apple does this automatically
+     in their materials API; we have to do it by hand on the web). When set,
+     drop the backdrop blur and fall back to a solid surface — the
+     highlight stays for hierarchy but the lensing/refraction goes away. */
+  @media (prefers-reduced-transparency: reduce) {
+    .backdrop-blur-2xl,
+    .backdrop-blur-md,
+    [class*="backdrop-blur-["] {
+      backdrop-filter: none !important;
+      -webkit-backdrop-filter: none !important;
+    }
+    .bg-paper\/55 { background-color: rgb(var(--paper) / 0.95) !important; }
+    .bg-paper\/70 { background-color: rgb(var(--paper) / 0.98) !important; }
+    .dark .dark\:bg-neutral-900\/45 { background-color: rgb(23 23 23 / 0.96) !important; }
+    .dark .dark\:bg-neutral-900\/55 { background-color: rgb(23 23 23 / 0.98) !important; }
+    .glass-specular::after { display: none; }
+  }
 }

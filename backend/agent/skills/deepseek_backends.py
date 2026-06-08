@@ -86,9 +86,31 @@ all of it.
 whole; pick representative passages from the sources.
   - SCOPE: the whole Bible — answer across the entire Bible; cite \
 verses from anywhere in the sources, not just the first one shown.
-At wider scopes the SOURCES list is just a sample, not the whole \
-scope. Use your knowledge of the rest of scripture freely when it \
-helps — but every CITED claim must point to a real source ID provided.
+
+WIDE-SCOPE BEHAVIOR (BOOK / TESTAMENT / the whole Bible) — read this \
+carefully, the most common failure mode at wide scope is the model \
+treating SOURCES as the answer universe:
+  - The SOURCES list at wide scope is a TINY KEYWORD-SAMPLED SLICE of \
+scripture, not a representative survey of what's relevant. Treat it as \
+seed material, not as the limits of what you may discuss.
+  - You MUST draw on your full knowledge of the Bible. If the question \
+is about a topic that's addressed in passages NOT shown (e.g. the user \
+asks about Christ bearing judgment and SOURCES happens to contain \
+Genesis 1 + 2 Kings 1, you must still discuss Isaiah 53, 2 Corinthians \
+5:21, Romans 8:32, John 3:16, etc.). Reference them by human-readable \
+ref ("Isaiah 53:10", not "S7") freely in the ANSWER prose. Those \
+references do not need to appear in SOURCES.
+  - NEVER write phrases like "the sources don't contain", "the \
+provided sources don't include", or "those verses are not in the given \
+sources" at wide scope. That framing is wrong — the user asked about \
+the WHOLE BIBLE; the absence of a verse from the keyword slice is not \
+meaningful. Answer the actual question, citing the relevant scripture \
+by human-readable reference.
+  - The `claims` array (verified by the citation engine) is for \
+statements you want to pin to a specific source ID. Plain scripture \
+discussion in the ANSWER text doesn't need to be a "claim" — it can \
+flow as prose with human-readable refs. Save `claims` for paraphrases / \
+assertions you want backed by the SOURCES that were provided.
 """
 
 # JSON schema instructions when the citation engine is OFF. We still
@@ -503,6 +525,7 @@ class DeepSeekGenerator:
         history: Optional[list] = None,
         bypass: bool = False,
         scope_kind: str = "verse",
+        revision_hints: Optional[list[str]] = None,
     ) -> tuple[str, str, list[GeneratedStatement], Optional[NoteSuggestion]]:
         """Non-streaming entry point — used by tests and the POST /reason
         path. Internally routes through `generate_streaming` with a no-op
@@ -510,6 +533,7 @@ class DeepSeekGenerator:
         return self.generate_streaming(
             verse_ref, question, retrieval, None,
             history=history, bypass=bypass, scope_kind=scope_kind,
+            revision_hints=revision_hints,
         )
 
     def generate_streaming(
@@ -521,6 +545,7 @@ class DeepSeekGenerator:
         history: Optional[list] = None,
         bypass: bool = False,
         scope_kind: str = "verse",
+        revision_hints: Optional[list[str]] = None,
     ) -> tuple[str, str, list[GeneratedStatement], Optional[NoteSuggestion]]:
         """Streaming generate: invokes the callback with reasoning chunks
         as they arrive from DeepSeek's `reasoning_content` field. The
@@ -560,9 +585,22 @@ class DeepSeekGenerator:
             )
         else:
             system = _PREAMBLE
+            # citation-engine.MD §6: on a retry, the rule layer hands us
+            # specific revision hints. Surface them prominently so the
+            # model addresses each one rather than emitting the same
+            # output and tripping the same gate.
+            revision_block = ""
+            if revision_hints:
+                lines = "\n".join(f"  - {h}" for h in revision_hints if h)
+                revision_block = (
+                    "\nREVIEWER FEEDBACK FROM PRIOR ATTEMPT — your previous "
+                    "response was held back. Address each item before "
+                    "re-emitting:\n" + lines + "\n\n"
+                )
             user = (
                 f"{scope_label}\n\n"
                 + (f"PRIOR DISCUSSION:\n{history_block}\n\n" if history_block else "")
+                + revision_block
                 + f"QUESTION: {question}\n\n"
                 + f"SOURCES:\n{sources_text}\n\n"
                 + f"{_GENERATOR_SCHEMA_PROMPT}"

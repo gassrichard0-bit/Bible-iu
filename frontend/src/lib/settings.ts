@@ -39,6 +39,45 @@ export interface Settings {
    *  the page just shows that scope. `personal` keeps notes invisible
    *  to the agent (rule-guide.MD §12.1). */
   defaultNoteScope: "personal" | "group";
+  /** Room ids the user has pinned to the top of the rooms rail.
+   *  Order is significant — the rail renders pinned rooms in this
+   *  exact order (so the user can later drag-reorder if we add it). */
+  pinnedRoomIds: string[];
+  /** Room ids the user has hidden from the rail. They still belong
+   *  to the room (membership / messages untouched) — the row just
+   *  doesn't render unless they flip "Show hidden" in the rail. */
+  hiddenRoomIds: string[];
+  /** Default translation name shown in the Bible reader. Matches a
+   *  Translation.name in the DB (e.g. "King James Version" or
+   *  "World English Bible"). Empty string falls back to KJV at the
+   *  reader level. */
+  defaultTranslation: string;
+  /** Local hour (0-23) the daily reading-plan reminder should fire.
+   *  The scheduler reads this from `preferences.ui.readingReminderHour`
+   *  and falls back to 8 AM when missing. */
+  readingReminderHour: number;
+  /** Room ids whose push notifications the user has silenced. The
+   *  fan-out helper on the server reads this from the user's prefs
+   *  and skips matching rooms, so a muted room never wakes the phone. */
+  mutedRoomIds: string[];
+  /** Do-not-disturb window. When `quietHoursEnabled` is on, the
+   *  push fan-out checks the recipient's local time against
+   *  `[quietStartHour, quietEndHour)` and skips. End wrap-around
+   *  is handled — `start=22 end=7` = 10pm through 7am. */
+  quietHoursEnabled: boolean;
+  quietStartHour: number; // 0-23
+  quietEndHour: number;   // 0-23
+  /** When true, the agent's answers in the ReasoningStream are read
+   *  aloud automatically using the same Deepgram Aura voice as the
+   *  Bible reader. Triggers once per turn — on the answer's first
+   *  render with non-empty text. */
+  autoSpeakAgentAnswers: boolean;
+  /** Deepgram Aura voice id used for both the Bible reader's voice
+   *  panel and the manual "Read aloud" button on agent answers.
+   *  Available IDs match Aura's catalog (aura-athena-en, aura-luna-en,
+   *  aura-orion-en, etc.). The frontend Settings picker exposes a
+   *  curated subset. */
+  ttsVoice: string;
 }
 
 const KEY = "bible-iu:settings";
@@ -51,6 +90,16 @@ export const defaultSettings: Settings = {
   bypassAgentGate: false,
   todaysReadingBanner: true,
   defaultNoteScope: "personal",
+  pinnedRoomIds: [],
+  hiddenRoomIds: [],
+  defaultTranslation: "King James Version",
+  readingReminderHour: 8,
+  mutedRoomIds: [],
+  quietHoursEnabled: false,
+  quietStartHour: 22,
+  quietEndHour: 7,
+  autoSpeakAgentAnswers: false,
+  ttsVoice: "aura-athena-en",
 };
 
 export function readSettings(): Settings {
@@ -92,6 +141,16 @@ export function settingsToPreferences(s: Settings): { ui: Partial<Settings> } {
       bypassAgentGate: s.bypassAgentGate,
       todaysReadingBanner: s.todaysReadingBanner,
       defaultNoteScope: s.defaultNoteScope,
+      pinnedRoomIds: s.pinnedRoomIds,
+      hiddenRoomIds: s.hiddenRoomIds,
+      defaultTranslation: s.defaultTranslation,
+      readingReminderHour: s.readingReminderHour,
+      mutedRoomIds: s.mutedRoomIds,
+      quietHoursEnabled: s.quietHoursEnabled,
+      quietStartHour: s.quietStartHour,
+      quietEndHour: s.quietEndHour,
+      autoSpeakAgentAnswers: s.autoSpeakAgentAnswers,
+      ttsVoice: s.ttsVoice,
     },
   };
 }
@@ -130,5 +189,49 @@ export function settingsFromPreferences(
       ui.defaultNoteScope === "personal" || ui.defaultNoteScope === "group"
         ? ui.defaultNoteScope
         : base.defaultNoteScope,
+    pinnedRoomIds: Array.isArray(ui.pinnedRoomIds)
+      ? ui.pinnedRoomIds.filter((x): x is string => typeof x === "string")
+      : base.pinnedRoomIds,
+    hiddenRoomIds: Array.isArray(ui.hiddenRoomIds)
+      ? ui.hiddenRoomIds.filter((x): x is string => typeof x === "string")
+      : base.hiddenRoomIds,
+    defaultTranslation:
+      typeof ui.defaultTranslation === "string" && ui.defaultTranslation
+        ? ui.defaultTranslation
+        : base.defaultTranslation,
+    readingReminderHour:
+      typeof ui.readingReminderHour === "number" &&
+      Number.isFinite(ui.readingReminderHour) &&
+      ui.readingReminderHour >= 0 &&
+      ui.readingReminderHour <= 23
+        ? Math.floor(ui.readingReminderHour)
+        : base.readingReminderHour,
+    mutedRoomIds: Array.isArray(ui.mutedRoomIds)
+      ? ui.mutedRoomIds.filter((x): x is string => typeof x === "string")
+      : base.mutedRoomIds,
+    quietHoursEnabled:
+      typeof ui.quietHoursEnabled === "boolean"
+        ? ui.quietHoursEnabled
+        : base.quietHoursEnabled,
+    quietStartHour:
+      typeof ui.quietStartHour === "number" &&
+      ui.quietStartHour >= 0 &&
+      ui.quietStartHour <= 23
+        ? Math.floor(ui.quietStartHour)
+        : base.quietStartHour,
+    quietEndHour:
+      typeof ui.quietEndHour === "number" &&
+      ui.quietEndHour >= 0 &&
+      ui.quietEndHour <= 23
+        ? Math.floor(ui.quietEndHour)
+        : base.quietEndHour,
+    autoSpeakAgentAnswers:
+      typeof ui.autoSpeakAgentAnswers === "boolean"
+        ? ui.autoSpeakAgentAnswers
+        : base.autoSpeakAgentAnswers,
+    ttsVoice:
+      typeof ui.ttsVoice === "string" && ui.ttsVoice
+        ? ui.ttsVoice
+        : base.ttsVoice,
   };
 }

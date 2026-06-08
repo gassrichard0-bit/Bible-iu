@@ -39,6 +39,12 @@ class RoomRead(BaseModel):
     # `last_read_at`, authored by someone other than the caller. Drives
     # the in-app unread badges. Always present; zero when caught up.
     unread_count: int = 0
+    # Most-recent chat message in this room — used by the rooms rail
+    # to render WhatsApp-style row previews + sort by activity. All
+    # three are null when the room has no messages yet.
+    last_message_body: Optional[str] = None
+    last_message_at: Optional[str] = None  # ISO-8601 UTC
+    last_message_author_handle: Optional[str] = None
 
 
 class ChatMessageCreate(BaseModel):
@@ -83,6 +89,10 @@ class ChatMessageRead(BaseModel):
     # state on the reaction pill in chat.
     reactions: list["ReactionTally"] = Field(default_factory=list)
     created_at: Optional[str] = None
+    # ISO timestamp when an admin pinned this message. Null = not
+    # pinned. The chat UI sorts pinned messages above unpinned ones
+    # within their normal time order.
+    pinned_at: Optional[str] = None
 
 
 class ReactionTally(BaseModel):

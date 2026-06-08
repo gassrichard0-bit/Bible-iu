@@ -137,6 +137,23 @@ def _personal_notes_doc_owner(doc_name: str) -> str | None:
     return None
 
 
+def _room_id_from_doc(doc_name: str) -> str:
+    """The actual `Room.id` a Y.Doc belongs to.
+
+    - `conv__{handle}__{roomId}`         -> roomId
+    - `notes_private__{userId}__{roomId}` -> roomId
+    - plain doc name                       -> the whole name (it IS the room id)
+    """
+    for prefix in ("conv__", "notes_private__"):
+        if doc_name.startswith(prefix):
+            rest = doc_name[len(prefix):]
+            sep = rest.find("__")
+            if sep > 0:
+                return rest[sep + 2:]
+            return rest
+    return doc_name
+
+
 async def handle_yjs(ws: WebSocket, room_id: str) -> None:
     """Bridge a FastAPI websocket into pycrdt's `WebsocketServer.serve`.
 
@@ -154,28 +171,50 @@ async def handle_yjs(ws: WebSocket, room_id: str) -> None:
         await ws.close(code=4001, reason="Unauthorized")
         return
 
-    # Two kinds of per-user doc are gated here:
-    #   conv__{handle}__{roomId}            — agent conversation history
-    #   notes_private__{userId}__{roomId}   — personal notes (NEW)
-    # Both require a session token that proves the user is the doc owner,
-    # so even if an attacker guesses the doc name they can't connect.
+    # rule-guide.MD §13: no cross-room bleed. Every Y.Doc — shared room
+    # notes, agent conv__ docs, personal notes_private__ docs — belongs
+    # to a specific Room, and the connecting user must be a member of
+    # that room. Per-user docs additionally require the session user to
+    # be the doc owner (so an attacker who guessed the doc name still
+    # can't connect even with valid room membership).
+    from .auth_users import resolve_user
+    from sqlalchemy import select as _select
+    from ..data.db import get_session as _get_session
+    from ..data.models import Room as _Room, RoomMember as _RoomMember
+
+    token = ws.query_params.get("session", "")
+    user = resolve_user(token) if token else None
+    if user is None:
+        await ws.close(code=4001, reason="auth required")
+        return
+
     conv_owner = _conv_doc_owner(room_id)
     notes_owner_id = _personal_notes_doc_owner(room_id)
-    if conv_owner is not None or notes_owner_id is not None:
-        # Local import to avoid a circular import at module load time.
-        from .auth_users import resolve_user
+    if conv_owner is not None and user.handle != conv_owner:
+        await ws.close(code=4001, reason="Wrong user for doc")
+        return
+    if notes_owner_id is not None and user.id != notes_owner_id:
+        await ws.close(code=4001, reason="Wrong user for doc")
+        return
 
-        token = ws.query_params.get("session", "")
-        user = resolve_user(token) if token else None
-        if user is None:
-            await ws.close(code=4001, reason="Wrong user for doc")
+    actual_room_id = _room_id_from_doc(room_id)
+    sess = _get_session()
+    try:
+        room = sess.get(_Room, actual_room_id)
+        if room is None:
+            await ws.close(code=4004, reason="room not found")
             return
-        if conv_owner is not None and user.handle != conv_owner:
-            await ws.close(code=4001, reason="Wrong user for doc")
+        is_member = sess.scalar(
+            _select(_RoomMember).where(
+                _RoomMember.room_id == actual_room_id,
+                _RoomMember.user_id == user.id,
+            )
+        )
+        if is_member is None:
+            await ws.close(code=4003, reason="not a member of this room")
             return
-        if notes_owner_id is not None and user.id != notes_owner_id:
-            await ws.close(code=4001, reason="Wrong user for doc")
-            return
+    finally:
+        sess.close()
 
     if _server_ctx is None:
         # Lifespan didn't initialize yet — refuse rather than spinning up

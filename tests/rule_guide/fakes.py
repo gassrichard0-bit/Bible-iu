@@ -39,7 +39,9 @@ class FakeGenerator:
         history=None,
         bypass: bool = False,
         scope_kind: str = "verse",
+        revision_hints: list[str] | None = None,
     ):
+        del revision_hints  # scripted test double — same output every call
         return self.reasoning, self.answer, list(self.statements), None
 
 

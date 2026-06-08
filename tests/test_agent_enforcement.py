@@ -80,7 +80,7 @@ class TestAllowExternalLinks:
         # Force the placeholder generator to emit a URL we can check for.
         from backend.agent.skills import default_backends as backends
 
-        def fake_generate(self, verse_ref, question, retrieval, history=None, bypass=False, scope_kind="verse"):
+        def fake_generate(self, verse_ref, question, retrieval, history=None, bypass=False, scope_kind="verse", revision_hints=None):
             return (
                 "Reasoning with a https://example.com/foo link.",
                 "See more at https://example.com/sources and www.bible.com",
@@ -117,7 +117,7 @@ class TestAllowExternalLinks:
     def test_urls_kept_when_allowed(self, app, client, monkeypatch):
         from backend.agent.skills import default_backends as backends
 
-        def fake_generate(self, verse_ref, question, retrieval, history=None, bypass=False, scope_kind="verse"):
+        def fake_generate(self, verse_ref, question, retrieval, history=None, bypass=False, scope_kind="verse", revision_hints=None):
             return ("R", "https://example.com/keep", [], None)
 
         monkeypatch.setattr(backends.PlaceholderGenerator, "generate", fake_generate)

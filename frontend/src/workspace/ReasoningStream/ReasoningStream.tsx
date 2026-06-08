@@ -9,10 +9,27 @@
  * conversational context for the model, not implicit fact carriers
  * (citation-engine.MD §10).
  */
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ClaimOut } from "../../lib/api";
 import { RichText } from "../../lib/RichText";
 import type { ConversationTurn } from "../Workspace";
+import { speak, ttsSupported } from "../../lib/tts";
+import { SpeakerIcon } from "../../lib/Icons";
+
+/** Strip the inline citation markers `[trans:KJV:GEN.1.1]` /
+ *  `[note:abc]` etc. before sending the answer to TTS — read aloud
+ *  the model's actual prose, not the engine's internal source
+ *  pointers. RichText already does this visually; for audio we
+ *  redo it on the raw string. */
+function stripCitationMarkers(text: string): string {
+  return text
+    // The citation engine wraps source ids in `[type:rest]` brackets.
+    // Match conservatively — only `[a-z_]+:` openings so we don't
+    // accidentally chew through markdown like `[link](url)`.
+    .replace(/\[[a-z_]+:[^\]\s][^\]]*\]/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
 
 interface Props {
   turns: ConversationTurn[];
@@ -44,12 +61,25 @@ export function ReasoningStream({
     latest?.pending,
   ]);
 
+  // Track when the latest answer just settled, so we can give the
+  // 🔊 button a brief amber pulse drawing the user's eye to it. We
+  // don't try to auto-play (iOS PWA's autoplay block makes it
+  // unreliable); the prominent button is the dependable path.
+  const [freshAnswerId, setFreshAnswerId] = useState<string | null>(null);
+  useEffect(() => {
+    if (!latest || latest.pending) return;
+    if (!latest.response?.answer) return;
+    setFreshAnswerId(latest.id);
+    const t = window.setTimeout(() => setFreshAnswerId(null), 4000);
+    return () => window.clearTimeout(t);
+  }, [latest?.id, latest?.pending, latest?.response?.answer]);
+
   const decision = latest?.response?.decision;
   const isStreaming = !!latest?.pending;
 
   return (
     <div className="flex h-full flex-col bg-paper-soft dark:bg-neutral-950">
-      <div className="flex items-center justify-between gap-2 border-b border-neutral-200 bg-paper px-3 py-2 text-xs font-semibold uppercase tracking-wide text-neutral-500 dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-400">
+      <div className="glass-specular flex items-center justify-between gap-2 border-b border-white/40 bg-paper/55 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-neutral-500 backdrop-blur-2xl backdrop-saturate-[1.8] dark:border-white/10 dark:bg-neutral-900/45 dark:text-neutral-400">
         <div className="flex items-center gap-2 truncate">
           <span>Reasoning</span>
           {isStreaming && (
@@ -107,6 +137,7 @@ export function ReasoningStream({
             index={idx + 1}
             onJumpToCitation={onJumpToCitation}
             debugMode={debugMode}
+            isFresh={freshAnswerId === t.id}
           />
         ))}
       </div>
@@ -119,11 +150,13 @@ function TurnBlock({
   index,
   onJumpToCitation,
   debugMode,
+  isFresh,
 }: {
   turn: ConversationTurn;
   index: number;
   onJumpToCitation: (source_id: string) => void;
   debugMode: boolean;
+  isFresh: boolean;
 }) {
   const r = turn.response;
   return (
@@ -167,9 +200,31 @@ function TurnBlock({
       {r && (
         <>
           <section className="mb-3">
-            <h3 className="mb-1 text-[11px] uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
-              Answer
-            </h3>
+            <div className="mb-1 flex items-center gap-2">
+              <h3 className="text-[11px] uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
+                Answer
+              </h3>
+              {r.answer && ttsSupported() && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    speak(stripCitationMarkers(r.answer), {
+                      language: "en-US",
+                    })
+                  }
+                  title="Read the answer aloud"
+                  aria-label="Read the answer aloud"
+                  className={`inline-flex h-10 items-center gap-1.5 rounded-full border border-amber-300 bg-amber-100 px-3 text-[13px] font-semibold text-amber-900 shadow-[0_2px_6px_rgba(0,0,0,0.10),inset_0_1px_0_rgba(255,255,255,0.55)] transition-all active:scale-[0.96] dark:border-amber-700 dark:bg-amber-900/60 dark:text-amber-100 dark:shadow-[0_2px_6px_rgba(0,0,0,0.40),inset_0_1px_0_rgba(255,255,255,0.10)] ${
+                    isFresh
+                      ? "animate-pulse ring-2 ring-amber-400/60 ring-offset-2 ring-offset-paper-soft dark:ring-amber-500/60 dark:ring-offset-neutral-900"
+                      : ""
+                  }`}
+                >
+                  <SpeakerIcon className="h-5 w-5" />
+                  Read aloud
+                </button>
+              )}
+            </div>
             <p className="whitespace-pre-wrap text-neutral-800 dark:text-neutral-100">
               {r.answer ? (
                 <RichText text={r.answer} onJump={onJumpToCitation} />

@@ -319,6 +319,14 @@ class ChatMessage(Base, TimestampMixin):
     reply_to_id: Mapped[Optional[str]] = mapped_column(
         ForeignKey("chat_messages.id"), nullable=True
     )
+    # Admin can pin one or more messages to the top of the room
+    # (announcements, verse-of-the-day, etc.). When set, the value
+    # is an ISO timestamp recording when the pin happened — null =
+    # not pinned. The timestamp lets the renderer order multiple
+    # pinned messages by recency.
+    pinned_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime, nullable=True
+    )
 
 
 class ChatReaction(Base, TimestampMixin):
