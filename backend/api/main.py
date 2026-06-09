@@ -33,7 +33,7 @@ from fastapi import (
 )
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from ..agent.orchestrator import (
@@ -70,6 +70,8 @@ from ..data.models import (
     Room,
     RoomInvite,
     RoomMember,
+    RoomStatus,
+    RoomStatusView,
     Translation,
     User,
     Verse,
@@ -100,6 +102,9 @@ from .schemas import (
     ReasoningResponse,
     RoomCreate,
     RoomRead,
+    StatusCreate,
+    StatusRead,
+    StatusImageToken,
     ClaimOut,
     CitationOut,
 )
@@ -137,8 +142,21 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     except Exception:  # noqa: BLE001
         pass
     try:
+        n = sweep_orphaned_status_images()
+        if n:
+            import logging as _logging
+            _logging.getLogger("bible_iu.statuses").info(
+                "swept %d orphaned status-image files", n
+            )
+    except Exception:  # noqa: BLE001
+        pass
+    # Cross-process chat fan-out via Redis when REDIS_URL is set;
+    # falls back to in-process only otherwise (see chat_hub docstring).
+    await chat_hub.setup()
+    try:
         yield
     finally:
+        await chat_hub.teardown()
         await reading_plan_scheduler.shutdown()
         await yjs_sync.shutdown()
 
@@ -888,6 +906,21 @@ def delete_room(
         session.query(RegisteredGroupNote).filter(
             RegisteredGroupNote.note_id.in_(note_ids)
         ).delete(synchronize_session=False)
+    # 24h status panel: drop view rows first (FK → statuses), then
+    # the statuses themselves (FK → rooms). Pre-load the image tokens
+    # so we can unlink the webp files after the SQL transaction commits.
+    status_rows = session.query(
+        RoomStatus.id, RoomStatus.attachment_image_token
+    ).filter(RoomStatus.room_id == room_id).all()
+    status_ids = [sid for (sid, _) in status_rows]
+    status_tokens = [tok for (_, tok) in status_rows if tok]
+    if status_ids:
+        session.query(RoomStatusView).filter(
+            RoomStatusView.status_id.in_(status_ids)
+        ).delete(synchronize_session=False)
+        session.query(RoomStatus).filter(
+            RoomStatus.room_id == room_id
+        ).delete(synchronize_session=False)
     session.query(ChatMessage).filter(ChatMessage.room_id == room_id).delete(
         synchronize_session=False
     )
@@ -902,6 +935,12 @@ def delete_room(
     )
     session.delete(room)
     session.commit()
+    # Post-commit: drop the orphan webp files for any deleted statuses.
+    for tok in status_tokens:
+        try:
+            _status_image_path(tok).unlink(missing_ok=True)
+        except OSError:
+            pass
     return {"ok": True}
 
 
@@ -1790,6 +1829,57 @@ def toggle_reaction(
     return out
 
 
+@app.delete(
+    "/rooms/{room_id}/chat/{message_id}",
+    status_code=204,
+    dependencies=[Depends(require_password)],
+)
+def delete_chat_message(
+    room_id: str,
+    message_id: str,
+    session: Session = Depends(db),
+    user_id: str = Depends(current_user_id),
+) -> Response:
+    """Delete one of the caller's own chat messages.
+
+    Authorship is the only allow-rule: senders can remove their own
+    posts; admins use the room-level wipe for moderation. Reactions
+    cascade away; replies that pointed at this message have their
+    `reply_to_id` cleared so they don't dangle on a missing FK. The
+    chat hub broadcasts an `_op: "delete"` envelope so subscribed
+    tabs drop the row from their local list immediately.
+    """
+    _require_member(session, room_id, user_id)
+    msg = session.get(ChatMessage, message_id)
+    if msg is None or msg.room_id != room_id:
+        raise HTTPException(404, "message not found")
+    if msg.author_user_id != user_id:
+        raise HTTPException(403, "not your message")
+    # Drop reactions first so the FK on chat_reactions doesn't trip.
+    session.query(ChatReaction).filter(
+        ChatReaction.message_id == message_id
+    ).delete(synchronize_session=False)
+    # Orphan replies: clear their reply_to_id rather than cascading
+    # the deletion. Losing the parent context is gentler than losing
+    # the reply itself, especially in long threads.
+    session.query(ChatMessage).filter(
+        ChatMessage.reply_to_id == message_id
+    ).update({ChatMessage.reply_to_id: None}, synchronize_session=False)
+    # Best-effort attachment cleanup — missing file is fine.
+    if msg.attachment_image_token:
+        try:
+            _chat_image_path(message_id).unlink(missing_ok=True)
+        except OSError:
+            pass
+    session.delete(msg)
+    session.commit()
+    # Tell every connected tab to drop this id from its local list.
+    chat_hub.publish(
+        room_id, {"_op": "delete", "id": message_id, "room_id": room_id}
+    )
+    return Response(status_code=204)
+
+
 # ---------------------------------------------------------------------------
 # Chat image attachments
 # ---------------------------------------------------------------------------
@@ -1801,9 +1891,17 @@ _NOTE_IMAGES_DIR = _UPLOADS_DIR / "notes"
 _NOTE_IMAGE_MAX_BYTES = 20 * 1024 * 1024
 _NOTE_IMAGE_MAX_SIDE = 1600  # px — larger than chat; notes are studied
 
+_STATUS_IMAGES_DIR = _UPLOADS_DIR / "status"
+_STATUS_IMAGE_MAX_BYTES = 15 * 1024 * 1024
+_STATUS_IMAGE_MAX_SIDE = 1280  # px — same envelope as chat photos
+
 
 def _chat_image_path(message_id: str) -> Path:
     return _CHAT_IMAGES_DIR / f"{message_id}.webp"
+
+
+def _status_image_path(token: str) -> Path:
+    return _STATUS_IMAGES_DIR / f"{token}.webp"
 
 
 def _note_image_path(token: str) -> Path:
@@ -1837,6 +1935,53 @@ def _delete_image_files(tokens: set[str]) -> int:
         except Exception:  # noqa: BLE001
             pass
     return n
+
+
+def sweep_orphaned_status_images() -> int:
+    """Status uploads are two-step: client POSTs the file → gets a
+    token → posts the status carrying the token. If the second step
+    never lands (user backed out, network died, server 500'd) the
+    file orphans because the token was never written into a
+    RoomStatus row.
+
+    Sweep policy: any webp in the status uploads dir older than the
+    grace window AND not referenced by an active RoomStatus row is
+    deleted. The grace window keeps in-flight uploads safe; the row
+    filter handles the legitimate-but-deleted-status case where the
+    delete endpoint already cleaned up but the sweep should still
+    drop any siblings the user re-tried during the same session."""
+    if not _STATUS_IMAGES_DIR.exists():
+        return 0
+    session = get_session()
+    try:
+        referenced: set[str] = set()
+        for (tok,) in session.query(RoomStatus.attachment_image_token).filter(
+            RoomStatus.attachment_image_token.is_not(None)
+        ):
+            if tok:
+                referenced.add(tok)
+    finally:
+        session.close()
+    # 1h grace for unposted uploads; below that and the user might
+    # still be filling in the composer.
+    grace_seconds = 60 * 60
+    now = datetime.now(timezone.utc).timestamp()
+    deleted = 0
+    for path in _STATUS_IMAGES_DIR.glob("*.webp"):
+        if path.stem in referenced:
+            continue
+        try:
+            age = now - path.stat().st_mtime
+        except OSError:
+            continue
+        if age < grace_seconds:
+            continue
+        try:
+            path.unlink()
+            deleted += 1
+        except Exception:  # noqa: BLE001
+            pass
+    return deleted
 
 
 def sweep_orphaned_note_images() -> int:
@@ -2056,6 +2201,295 @@ def get_chat_image(
     path = _chat_image_path(message_id)
     if not path.exists():
         raise HTTPException(404, "No image for this message.")
+    return FileResponse(
+        str(path),
+        media_type="image/webp",
+        headers={"Cache-Control": "private, max-age=86400"},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Room statuses — 24h ephemeral "stories" panel above chat
+# ---------------------------------------------------------------------------
+
+def _serialize_status(
+    s: RoomStatus,
+    author: Optional[User],
+    view_count: int,
+    viewer_has_viewed: bool,
+) -> StatusRead:
+    image_url = (
+        f"/rooms/{s.room_id}/statuses/{s.id}/image?v={s.attachment_image_token}"
+        if s.attachment_image_token
+        else None
+    )
+    return StatusRead(
+        id=s.id,
+        room_id=s.room_id,
+        author_user_id=s.author_user_id,
+        author_handle=(author.handle if author else None),
+        author_display_name=(author.display_name if author else None),
+        author_avatar_url=(
+            _resolved_user_avatar_url(author) if author else None
+        ),
+        body=s.body or "",
+        image_url=image_url,
+        created_at=s.created_at.isoformat(),
+        expires_at=s.expires_at.isoformat(),
+        view_count=view_count,
+        viewer_has_viewed=viewer_has_viewed,
+    )
+
+
+@app.post(
+    "/rooms/{room_id}/statuses/image",
+    response_model=StatusImageToken,
+    dependencies=[Depends(require_password)],
+)
+async def post_status_image(
+    room_id: str,
+    file: UploadFile = File(...),
+    session: Session = Depends(db),
+    user_id: str = Depends(current_user_id),
+) -> StatusImageToken:
+    """Two-step image upload: client first POSTs the file here to get
+    a token, then includes the token in the StatusCreate. Keeps the
+    create endpoint pure JSON. The token doubles as the storage file
+    name + the cache-bust value embedded in `image_url`."""
+    _require_member(session, room_id, user_id)
+    raw = await file.read()
+    if len(raw) > _STATUS_IMAGE_MAX_BYTES:
+        raise HTTPException(413, "Image too large (max 15MB).")
+    from io import BytesIO
+    from PIL import Image, UnidentifiedImageError
+    from PIL.ImageOps import exif_transpose
+
+    token = uuid.uuid4().hex[:16]
+    try:
+        with Image.open(BytesIO(raw)) as im:
+            im.load()
+            im = exif_transpose(im)
+            im.thumbnail((_STATUS_IMAGE_MAX_SIDE, _STATUS_IMAGE_MAX_SIDE))
+            if im.mode not in ("RGB", "RGBA"):
+                im = im.convert("RGB")
+            _STATUS_IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+            im.save(_status_image_path(token), format="WEBP", quality=82, method=4)
+    except UnidentifiedImageError:
+        raise HTTPException(415, "Unsupported image format.")
+    return StatusImageToken(attachment_image_token=token)
+
+
+@app.post(
+    "/rooms/{room_id}/statuses",
+    response_model=StatusRead,
+    dependencies=[Depends(require_password)],
+)
+def create_status(
+    room_id: str,
+    payload: StatusCreate,
+    session: Session = Depends(db),
+    user_id: str = Depends(current_user_id),
+) -> StatusRead:
+    """Post a 24h status to the room. Either `body` or an image token
+    must be present — empty statuses get a 400. The status WS hub
+    broadcasts the new row so peer tabs see it without a refetch."""
+    _require_member(session, room_id, user_id)
+    body = (payload.body or "").strip()
+    token = (payload.attachment_image_token or "").strip()
+    if not body and not token:
+        raise HTTPException(400, "Status needs text or an image.")
+    now = datetime.now(timezone.utc)
+    s = RoomStatus(
+        id=str(uuid.uuid4()),
+        room_id=room_id,
+        author_user_id=user_id,
+        body=body,
+        attachment_image_token=token or None,
+        expires_at=now + timedelta(hours=24),
+    )
+    session.add(s)
+    session.commit()
+    session.refresh(s)
+    author = session.get(User, user_id)
+    out = _serialize_status(s, author, view_count=0, viewer_has_viewed=False)
+    chat_hub.publish(
+        room_id, {"_op": "status:create", "status": out.model_dump()}
+    )
+    return out
+
+
+@app.get(
+    "/rooms/{room_id}/statuses",
+    response_model=list[StatusRead],
+    dependencies=[Depends(require_password)],
+)
+def list_statuses(
+    room_id: str,
+    session: Session = Depends(db),
+    user_id: str = Depends(current_user_id),
+) -> list[StatusRead]:
+    """All non-expired statuses in the room, oldest-first per author.
+    The strip groups by author client-side, so server order is just a
+    stable secondary; expires_at filtering is the only thing the
+    client can't fix up later."""
+    _require_member(session, room_id, user_id)
+    now = datetime.now(timezone.utc)
+    rows = (
+        session.query(RoomStatus)
+        .filter(RoomStatus.room_id == room_id, RoomStatus.expires_at > now)
+        .order_by(RoomStatus.created_at.asc())
+        .all()
+    )
+    if not rows:
+        return []
+    # Bulk-load authors + view counts so we don't N+1.
+    author_ids = {r.author_user_id for r in rows}
+    authors = {
+        u.id: u
+        for u in session.query(User).filter(User.id.in_(author_ids)).all()
+    }
+    status_ids = [r.id for r in rows]
+    view_counts: dict[str, int] = {}
+    for sid, c in (
+        session.query(RoomStatusView.status_id, func.count(RoomStatusView.id))
+        .filter(RoomStatusView.status_id.in_(status_ids))
+        .group_by(RoomStatusView.status_id)
+        .all()
+    ):
+        view_counts[sid] = c
+    viewed_ids = {
+        sid
+        for (sid,) in session.query(RoomStatusView.status_id)
+        .filter(
+            RoomStatusView.status_id.in_(status_ids),
+            RoomStatusView.viewer_user_id == user_id,
+        )
+        .distinct()
+    }
+    return [
+        _serialize_status(
+            r,
+            authors.get(r.author_user_id),
+            view_count=view_counts.get(r.id, 0),
+            viewer_has_viewed=r.id in viewed_ids,
+        )
+        for r in rows
+    ]
+
+
+@app.delete(
+    "/rooms/{room_id}/statuses/{status_id}",
+    status_code=204,
+    dependencies=[Depends(require_password)],
+)
+def delete_status(
+    room_id: str,
+    status_id: str,
+    session: Session = Depends(db),
+    user_id: str = Depends(current_user_id),
+) -> Response:
+    """Author-only delete. Drops view rows + the image file, then
+    broadcasts a delete envelope so other tabs remove the strip slot."""
+    _require_member(session, room_id, user_id)
+    s = session.get(RoomStatus, status_id)
+    if s is None or s.room_id != room_id:
+        raise HTTPException(404, "status not found")
+    if s.author_user_id != user_id:
+        raise HTTPException(403, "not your status")
+    session.query(RoomStatusView).filter(
+        RoomStatusView.status_id == status_id
+    ).delete(synchronize_session=False)
+    if s.attachment_image_token:
+        try:
+            _status_image_path(s.attachment_image_token).unlink(missing_ok=True)
+        except OSError:
+            pass
+    session.delete(s)
+    session.commit()
+    chat_hub.publish(
+        room_id, {"_op": "status:delete", "id": status_id, "room_id": room_id}
+    )
+    return Response(status_code=204)
+
+
+@app.post(
+    "/rooms/{room_id}/statuses/{status_id}/view",
+    status_code=204,
+    dependencies=[Depends(require_password)],
+)
+def mark_status_viewed(
+    room_id: str,
+    status_id: str,
+    session: Session = Depends(db),
+    user_id: str = Depends(current_user_id),
+) -> Response:
+    """Idempotent. UNIQUE(status_id, viewer) means we just swallow the
+    integrity error on the second view."""
+    _require_member(session, room_id, user_id)
+    s = session.get(RoomStatus, status_id)
+    if s is None or s.room_id != room_id:
+        raise HTTPException(404, "status not found")
+    if s.author_user_id == user_id:
+        # Authors don't count themselves.
+        return Response(status_code=204)
+    existing = (
+        session.query(RoomStatusView)
+        .filter(
+            RoomStatusView.status_id == status_id,
+            RoomStatusView.viewer_user_id == user_id,
+        )
+        .first()
+    )
+    if existing is None:
+        session.add(
+            RoomStatusView(
+                id=str(uuid.uuid4()),
+                status_id=status_id,
+                viewer_user_id=user_id,
+            )
+        )
+        try:
+            session.commit()
+        except Exception:
+            session.rollback()
+        else:
+            # Tell the author's tabs the count moved.
+            chat_hub.publish(
+                room_id,
+                {
+                    "_op": "status:view",
+                    "id": status_id,
+                    "room_id": room_id,
+                },
+            )
+    return Response(status_code=204)
+
+
+@app.get("/rooms/{room_id}/statuses/{status_id}/image")
+def get_status_image(
+    room_id: str,
+    status_id: str,
+    request: Request,
+    session: Session = Depends(db),
+) -> FileResponse:
+    """Members-only image fetch. Same query-string auth fallback as
+    other media endpoints so browser <img> loaders work without
+    custom headers."""
+    pw = request.headers.get("X-App-Password") or request.query_params.get("password")
+    expected = os.getenv("BIBLE_IU_PASSWORD") or ""
+    if expected and pw != expected:
+        raise HTTPException(401, "App password required.")
+    token = request.headers.get("X-Session-Token") or request.query_params.get("session")
+    user = resolve_user(token) if token else None
+    if user is None:
+        raise HTTPException(401, "not signed in")
+    _require_member(session, room_id, user.id)
+    s = session.get(RoomStatus, status_id)
+    if s is None or s.room_id != room_id or not s.attachment_image_token:
+        raise HTTPException(404, "No image for this status.")
+    path = _status_image_path(s.attachment_image_token)
+    if not path.exists():
+        raise HTTPException(404, "No image for this status.")
     return FileResponse(
         str(path),
         media_type="image/webp",

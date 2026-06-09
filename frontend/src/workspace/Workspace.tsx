@@ -25,6 +25,7 @@ import { TestamentGrid } from "./TestamentGrid";
 import { BibleOverview } from "./BibleOverview";
 import { testamentOf, type Testament } from "../lib/testament";
 import { readSettings } from "../lib/settings";
+import type { AccentKey } from "../lib/accentColors";
 import { armAudioSession } from "../lib/tts";
 import {
   SpeakerIcon,
@@ -173,6 +174,10 @@ interface Props {
   /** Tells BibleView's scroller to leave room at the bottom for the
    *  floating composer + AI pill (mobile only). */
   bottomInset?: boolean;
+  /** Active room's accent — threaded into BibleView's ScopePill so
+   *  the "group" side of the inline note panels paints with the
+   *  per-room theme color. */
+  accentKey?: AccentKey;
 }
 
 export interface VerseFocus {
@@ -234,6 +239,7 @@ export const Workspace = forwardRef<WorkspaceHandle, Props>(function Workspace(
     annotationTarget,
     onAnnotationTargetChange,
     bottomInset,
+    accentKey,
   },
   workspaceRef,
 ) {
@@ -618,6 +624,7 @@ export const Workspace = forwardRef<WorkspaceHandle, Props>(function Workspace(
               annotationTarget={annotationTarget}
               onAnnotationTargetChange={onAnnotationTargetChange}
               bottomInset={bottomInset}
+              accentKey={accentKey}
             />
           </Panel>
         </PanelGroup>
@@ -670,6 +677,7 @@ export const Workspace = forwardRef<WorkspaceHandle, Props>(function Workspace(
               onClearAnnotations={onClearAnnotations}
               annotationTarget={annotationTarget}
               onAnnotationTargetChange={onAnnotationTargetChange}
+              accentKey={accentKey}
           />
           {/* Mobile slide-over for Resources */}
           {resourcesOpen && (
@@ -753,6 +761,7 @@ function CenterColumn(props: {
     t: { verseId: string; label?: string } | null,
   ) => void;
   bottomInset?: boolean;
+  accentKey?: AccentKey;
 }) {
   const {
     book,
@@ -795,6 +804,7 @@ function CenterColumn(props: {
     annotationTarget,
     onAnnotationTargetChange,
     bottomInset,
+    accentKey,
   } = props;
 
   // The Bible panel renders one of three views depending on zoom:
@@ -842,6 +852,7 @@ function CenterColumn(props: {
       annotationTarget={annotationTarget}
       onAnnotationTargetChange={onAnnotationTargetChange}
       bottomInset={bottomInset}
+      accentKey={accentKey}
     />
   );
 

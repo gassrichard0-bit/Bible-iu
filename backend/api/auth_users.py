@@ -40,6 +40,8 @@ from ..data.models import (
     RegisteredGroupNote,
     Room,
     RoomMember,
+    RoomStatus,
+    RoomStatusView,
     Session as SessionRow,
     User,
 )
@@ -518,6 +520,26 @@ def delete_me(
     s.query(RegisteredGroupNote).filter(
         RegisteredGroupNote.author_user_id == user_id
     ).delete(synchronize_session=False)
+    # 24h status panel: drop both directions of the user's footprint.
+    # Views first (FK → statuses + users); then this user's own
+    # statuses + any view rows pointing AT them. Image files are
+    # best-effort cleaned by the startup sweep on next restart.
+    s.query(RoomStatusView).filter(
+        RoomStatusView.viewer_user_id == user_id
+    ).delete(synchronize_session=False)
+    authored_status_ids = [
+        sid
+        for (sid,) in s.query(RoomStatus.id).filter(
+            RoomStatus.author_user_id == user_id
+        )
+    ]
+    if authored_status_ids:
+        s.query(RoomStatusView).filter(
+            RoomStatusView.status_id.in_(authored_status_ids)
+        ).delete(synchronize_session=False)
+        s.query(RoomStatus).filter(
+            RoomStatus.author_user_id == user_id
+        ).delete(synchronize_session=False)
 
     # --- TOMBSTONE: group artifacts stay for history, author goes null ---
     s.query(NoteComment).filter(NoteComment.author_user_id == user_id).update(
@@ -536,6 +558,21 @@ def delete_me(
         # chat — all keyed on room_id. (SQLite FKs alone won't fire
         # without `PRAGMA foreign_keys=ON`.)
         s.execute(text("DELETE FROM room_invites WHERE room_id = :r"), {"r": room_id})
+        # Status cleanup for the soon-to-be-dropped room (views first
+        # since they FK into statuses).
+        room_status_ids = [
+            sid
+            for (sid,) in s.query(RoomStatus.id).filter(
+                RoomStatus.room_id == room_id
+            )
+        ]
+        if room_status_ids:
+            s.query(RoomStatusView).filter(
+                RoomStatusView.status_id.in_(room_status_ids)
+            ).delete(synchronize_session=False)
+            s.query(RoomStatus).filter(
+                RoomStatus.room_id == room_id
+            ).delete(synchronize_session=False)
         s.query(RegisteredGroupNote).filter(
             RegisteredGroupNote.room_id == room_id
         ).delete(synchronize_session=False)

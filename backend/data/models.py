@@ -351,6 +351,48 @@ class ChatReaction(Base, TimestampMixin):
     emoji: Mapped[str] = mapped_column(String)
 
 
+class RoomStatus(Base, TimestampMixin):
+    """A 24-hour "status" update inside a room (WhatsApp-style stories).
+
+    Authors post a short text + optional image; everyone in the room
+    sees the strip above chat and can tap into a full-screen viewer.
+    `expires_at` is created_at + 24h and is the only TTL — we filter
+    at read time and let the row stay until a sweeper drops it (or
+    until the user deletes their own). Image attachments live at
+    `data/uploads/status/{id}.webp`; the field stores the cache-bust
+    token, NOT the image bytes.
+    """
+    __tablename__ = "room_statuses"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    room_id: Mapped[str] = mapped_column(ForeignKey("rooms.id"), index=True)
+    author_user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id"), index=True
+    )
+    body: Mapped[str] = mapped_column(Text, default="")
+    attachment_image_token: Mapped[Optional[str]] = mapped_column(
+        String, nullable=True
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+
+
+class RoomStatusView(Base, TimestampMixin):
+    """Records that a viewer saw a specific status. One row per
+    (status, viewer). UPSERT-on-INSERT semantics in the API: if the
+    row exists the viewed_at stays at the first sighting.
+    """
+    __tablename__ = "room_status_views"
+    __table_args__ = (
+        UniqueConstraint("status_id", "viewer_user_id"),
+    )
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    status_id: Mapped[str] = mapped_column(
+        ForeignKey("room_statuses.id"), index=True
+    )
+    viewer_user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id"), index=True
+    )
+
+
 class PushSubscription(Base, TimestampMixin):
     """A single Web Push endpoint registered by a user's browser/PWA.
 

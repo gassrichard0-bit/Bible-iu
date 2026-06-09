@@ -120,6 +120,41 @@ class NoteRead(BaseModel):
     tags: list[str]
 
 
+class StatusCreate(BaseModel):
+    """Payload to post a new room status. Either `body` or an image
+    (via `attachment_image_token`) must be present — empty statuses
+    are rejected. The token comes from POST /rooms/{id}/statuses/image
+    which uploads the file and returns the storage handle."""
+    body: str = ""
+    attachment_image_token: Optional[str] = None
+
+
+class StatusRead(BaseModel):
+    """A single status as the client sees it. `image_url` is included
+    when there's an attachment so the client doesn't have to assemble
+    the URL itself. `viewer_has_viewed` is the calling user's seen
+    state; `view_count` is the global tally so the author can see how
+    many people have looked at it."""
+    id: str
+    room_id: str
+    author_user_id: str
+    author_handle: Optional[str]
+    author_display_name: Optional[str]
+    author_avatar_url: Optional[str]
+    body: str
+    image_url: Optional[str]
+    created_at: str
+    expires_at: str
+    view_count: int
+    viewer_has_viewed: bool
+
+
+class StatusImageToken(BaseModel):
+    """Returned by POST /rooms/{id}/statuses/image. The client embeds
+    `attachment_image_token` in the subsequent StatusCreate."""
+    attachment_image_token: str
+
+
 class BibleBook(BaseModel):
     code: str
     name: str

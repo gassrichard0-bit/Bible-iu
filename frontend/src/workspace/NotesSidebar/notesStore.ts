@@ -20,6 +20,13 @@ export interface NoteRow {
    *  (those fall through the delete-permission check as "unknown
    *  author" and stay deletable so old data doesn't get orphaned). */
   author_user_id?: string;
+  /** Handle of the user who created the note, stamped at add time.
+   *  Used by the renderer to label group notes by other members
+   *  instead of always saying "You". Personal notes don't need it
+   *  (they're only ever shown to their author) but we set it for
+   *  consistency. Legacy rows leave this undefined and fall back
+   *  to "You" in the UI. */
+  author_handle?: string;
 }
 
 export interface NotesApi {

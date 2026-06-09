@@ -580,6 +580,13 @@ export const api = {
         body: JSON.stringify({ emoji }),
       },
     ),
+  /** Delete one of your own chat messages. Backend verifies the
+   *  caller is the author. Other tabs receive a `{_op: "delete",
+   *  id}` envelope over the chat WS and drop the row locally. */
+  chatDelete: (room_id: string, message_id: string) =>
+    jsonFetch<void>(`/rooms/${room_id}/chat/${message_id}`, {
+      method: "DELETE",
+    }),
   chatPostImage: async (
     room_id: string,
     file: File,
@@ -602,6 +609,46 @@ export const api = {
     });
     if (!r.ok) throw new Error(`Upload failed (${r.status})`);
     return (await r.json()) as ChatMessageOut;
+  },
+  // ── Room statuses (24h "stories" panel above chat) ───────────
+  statusList: (room_id: string) =>
+    jsonFetch<StatusOut[]>(`/rooms/${room_id}/statuses`),
+  statusCreate: (
+    room_id: string,
+    body: string,
+    attachment_image_token?: string,
+  ) =>
+    jsonFetch<StatusOut>(`/rooms/${room_id}/statuses`, {
+      method: "POST",
+      body: JSON.stringify({
+        body,
+        attachment_image_token: attachment_image_token ?? null,
+      }),
+    }),
+  statusDelete: (room_id: string, status_id: string) =>
+    jsonFetch<void>(`/rooms/${room_id}/statuses/${status_id}`, {
+      method: "DELETE",
+    }),
+  statusView: (room_id: string, status_id: string) =>
+    jsonFetch<void>(`/rooms/${room_id}/statuses/${status_id}/view`, {
+      method: "POST",
+      body: "{}",
+    }),
+  statusUploadImage: async (room_id: string, file: File) => {
+    const form = new FormData();
+    form.append("file", file);
+    const headers: Record<string, string> = {};
+    const pw = getPassword();
+    if (pw) headers["X-App-Password"] = pw;
+    const tok = getSessionToken();
+    if (tok) headers["X-Session-Token"] = tok;
+    const r = await fetch(`/api/rooms/${room_id}/statuses/image`, {
+      method: "POST",
+      headers,
+      body: form,
+    });
+    if (!r.ok) throw new Error(`Upload failed (${r.status})`);
+    return (await r.json()) as { attachment_image_token: string };
   },
   bibleXrefs: (verse_id: string, limit = 25) =>
     jsonFetch<CrossRefOut[]>(
@@ -765,6 +812,25 @@ export interface ContactView {
   handle: string;
   display_name: string;
   avatar_url: string | null;
+}
+
+export interface StatusOut {
+  id: string;
+  room_id: string;
+  author_user_id: string;
+  author_handle: string | null;
+  author_display_name: string | null;
+  author_avatar_url: string | null;
+  body: string;
+  /** Server-relative image URL (already includes `?v=token`).
+   *  null when the status is text-only. */
+  image_url: string | null;
+  created_at: string;
+  expires_at: string;
+  /** How many distinct viewers (excluding the author) have seen it. */
+  view_count: number;
+  /** Has the calling user viewed this status? */
+  viewer_has_viewed: boolean;
 }
 
 export interface ChatMessageOut {

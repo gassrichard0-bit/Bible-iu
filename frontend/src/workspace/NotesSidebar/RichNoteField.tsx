@@ -128,6 +128,10 @@ interface Props {
    *  attaches images to notes in this room. Required for image
    *  embeds because the upload endpoint is per-room. */
   roomId?: string;
+  /** Lock the editor for reading. Used to display group notes that
+   *  belong to other members — the rule is "only the author can
+   *  edit," matching the delete affordance gate. */
+  readOnly?: boolean;
 }
 
 export function RichNoteField({
@@ -138,6 +142,7 @@ export function RichNoteField({
   compact,
   autoFocus,
   roomId,
+  readOnly,
 }: Props) {
   const [focused, setFocused] = useState(false);
 
@@ -172,6 +177,7 @@ export function RichNoteField({
     ],
     content: value || "",
     autofocus: autoFocus ? "end" : false,
+    editable: !readOnly,
     editorProps: {
       attributes: {
         "aria-label": ariaLabel ?? "Note editor",
@@ -224,6 +230,14 @@ export function RichNoteField({
       editor.commands.setContent(value || "", { emitUpdate: false });
     }
   }, [value, editor]);
+
+  // Keep ProseMirror's editable flag in sync with our prop. The hook's
+  // `editable` option is only read at init time, so this is what
+  // flips read-only on/off when ownership data resolves late.
+  useEffect(() => {
+    if (!editor) return;
+    editor.setEditable(!readOnly);
+  }, [editor, readOnly]);
 
   // Tear down ProseMirror on unmount (the hook does its own cleanup,
   // but make sure focus state doesn't leak into a stale closure).

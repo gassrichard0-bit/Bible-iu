@@ -28,6 +28,10 @@ import {
 } from "../lib/api";
 import { shareVerseCard } from "../lib/shareVerse";
 import { AdminPanel } from "./AdminPanel";
+import { ChatStatusStrip } from "./ChatStatusStrip";
+import { ChatStatusComposer } from "./ChatStatusComposer";
+import { ChatStatusViewer } from "./ChatStatusViewer";
+import type { StatusOut } from "../lib/api";
 import {
   AnnotationToolbar,
   type AnnotationTarget,
@@ -89,11 +93,6 @@ interface RoomItem {
 
 type Tab = "bible" | "notes" | "chat" | "bookmarks";
 const TAB_ORDER: Tab[] = ["bible", "notes", "chat", "bookmarks"];
-
-/** Minimum horizontal distance (px) to count as a swipe vs scroll. */
-const SWIPE_THRESHOLD = 60;
-/** Maximum vertical drift (px) before we abort and treat as scroll. */
-const SWIPE_MAX_VERT = 50;
 
 interface Props {
   handle: string;
@@ -646,6 +645,41 @@ export function MobileShell({
   // when it changes — gives the avatar slot something to do on Notes
   // (it's now a search button instead of opening the Profile sheet).
   const [notesSearchTrigger, setNotesSearchTrigger] = useState(0);
+  // Mirror of NotesSidebar's `searchOpen`. The top-bar magnifier
+  // was retired in favor of the Edit button, but the slide-up gesture
+  // still toggles search; the mirror stays so any future surfaces
+  // that need to reflect "search is open" can subscribe without a
+  // re-plumb.
+  const [, setNotesSearchOpen] = useState(false);
+  // "Edit mode" toggles on the Notes + Chat tabs. When on, the
+  // corresponding panel surfaces delete affordances on items the user
+  // can remove (own chat messages; personal-scope notes). Reset
+  // whenever the tab changes so editing doesn't bleed across screens.
+  const [notesEditMode, setNotesEditMode] = useState(false);
+  const [chatEditMode, setChatEditMode] = useState(false);
+  useEffect(() => {
+    if (tab !== "notes") setNotesEditMode(false);
+    if (tab !== "chat") setChatEditMode(false);
+  }, [tab]);
+  // Bible "second bounce" hide. When the user reaches the bottom of a
+  // chapter and bounces twice within 1.5s, BibleView dispatches a
+  // `bible:panel-hide` and the floating bottom panel + standalone AI
+  // pill fade away so the closing verses read cleanly. Any scroll
+  // away from the bottom (or a tab switch) brings them back.
+  const [panelHidden, setPanelHidden] = useState(false);
+  useEffect(() => {
+    const onHide = () => setPanelHidden(true);
+    const onShow = () => setPanelHidden(false);
+    window.addEventListener("bible:panel-hide", onHide);
+    window.addEventListener("bible:panel-show", onShow);
+    return () => {
+      window.removeEventListener("bible:panel-hide", onHide);
+      window.removeEventListener("bible:panel-show", onShow);
+    };
+  }, []);
+  useEffect(() => {
+    setPanelHidden(false);
+  }, [tab]);
   // Same pattern as `notesSearchTrigger` — bumped when the search
   // button on the Marks tab top bar is tapped. BookmarksPanel toggles
   // its search field open/closed on each bump.
@@ -666,7 +700,7 @@ export function MobileShell({
   // selfUserId scopes the personal-notes Y.Doc so it can't leak to
   // other room members. Without it we still get group notes via the
   // shared doc but the "add personal note" path is a no-op.
-  const notesApi = useYjsNotes(activeId, selfUserId);
+  const notesApi = useYjsNotes(activeId, selfUserId, handle);
   // Unread count for the bottom-nav Notes badge. Same seen-set the
   // NotesSidebar mutates, so marking-read there updates the badge in
   // the same tab via the custom `notes-seen-changed` event.
@@ -748,22 +782,13 @@ export function MobileShell({
     const t = e.touches[0];
     touchStart.current = { x: t.clientX, y: t.clientY };
   }
-  function onTouchEnd(e: React.TouchEvent) {
-    const start = touchStart.current;
+  function onTouchEnd(_e: React.TouchEvent) {
+    // Horizontal swipe-to-switch-tabs is OFF per user preference —
+    // it was firing on accidental drags (e.g. while scrolling a
+    // list). Tabs are now ONLY changed via the bottom-nav buttons.
+    // Touch ref is still cleared so a future re-enable doesn't see
+    // stale start coords.
     touchStart.current = null;
-    if (!start) return;
-    // On the Bible tab, horizontal swipe means "next chapter / prev
-    // chapter" — owned by BibleView itself. The tab-switching
-    // gesture only applies on Notes/Chat/Marks.
-    if (tab === "bible") return;
-    const t = e.changedTouches[0];
-    const dx = t.clientX - start.x;
-    const dy = t.clientY - start.y;
-    if (Math.abs(dy) > SWIPE_MAX_VERT) return;
-    if (Math.abs(dx) < SWIPE_THRESHOLD) return;
-    const idx = TAB_ORDER.indexOf(tab);
-    if (dx < 0 && idx < TAB_ORDER.length - 1) setTab(TAB_ORDER[idx + 1]);
-    if (dx > 0 && idx > 0) setTab(TAB_ORDER[idx - 1]);
   }
 
   async function createRoom(values: NewRoomValues) {
@@ -841,27 +866,41 @@ export function MobileShell({
            *  field. Every other tab keeps the avatar (taps through
            *  to the Profile sheet). */}
           {tab === "chat" ? (
+            // Edit-mode toggle. ChatPanel listens for `chatEditMode`
+            // and reveals a delete affordance on each of the user's
+            // own messages while it's on. Search is still reachable
+            // via the slide-up gesture on the AI pill — no need to
+            // double up the top bar.
             <button
-              onClick={() => setChatSearchOpen((v) => !v)}
-              aria-label={chatSearchOpen ? "Close search" : "Search messages"}
-              aria-pressed={chatSearchOpen}
-              title={chatSearchOpen ? "Close search" : "Search messages"}
-              className={`grid h-11 w-11 place-items-center rounded-full border shadow-[0_2px_6px_rgba(0,0,0,0.10),inset_0_1px_0_rgba(255,255,255,0.55)] transition-transform active:scale-[0.96] dark:shadow-[0_2px_6px_rgba(0,0,0,0.45),inset_0_1px_0_rgba(255,255,255,0.08)] ${
-                chatSearchOpen
-                  ? "border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-700 dark:bg-amber-900/40 dark:text-amber-100"
+              onClick={() => setChatEditMode((v) => !v)}
+              aria-label={chatEditMode ? "Done editing" : "Edit messages"}
+              aria-pressed={chatEditMode}
+              title={chatEditMode ? "Done" : "Edit your messages"}
+              className={`grid h-11 min-w-[56px] place-items-center rounded-full border px-3 text-[13px] font-semibold shadow-[0_2px_6px_rgba(0,0,0,0.10),inset_0_1px_0_rgba(255,255,255,0.55)] transition-transform active:scale-[0.96] dark:shadow-[0_2px_6px_rgba(0,0,0,0.45),inset_0_1px_0_rgba(255,255,255,0.08)] ${
+                chatEditMode
+                  ? "border-red-300 bg-red-50 text-red-800 dark:border-red-700 dark:bg-red-900/40 dark:text-red-100"
                   : "border-neutral-200 bg-paper text-neutral-700 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-200"
               }`}
             >
-              <SearchSvg className="h-5 w-5" />
+              {chatEditMode ? "Done" : "Edit"}
             </button>
           ) : tab === "notes" ? (
+            // Edit-mode toggle. NotesSidebar listens for `notesEditMode`
+            // and reveals delete affordances on PERSONAL notes only —
+            // group-scope notes are off-limits via this button. Search
+            // moved to the slide-up gesture.
             <button
-              onClick={() => setNotesSearchTrigger((n) => n + 1)}
-              aria-label="Search notes"
-              title="Search notes"
-              className="grid h-11 w-11 place-items-center rounded-full border border-neutral-200 bg-paper text-neutral-700 shadow-[0_2px_6px_rgba(0,0,0,0.10),inset_0_1px_0_rgba(255,255,255,0.55)] transition-transform active:scale-[0.96] dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-200 dark:shadow-[0_2px_6px_rgba(0,0,0,0.45),inset_0_1px_0_rgba(255,255,255,0.08)]"
+              onClick={() => setNotesEditMode((v) => !v)}
+              aria-label={notesEditMode ? "Done editing" : "Edit notes"}
+              aria-pressed={notesEditMode}
+              title={notesEditMode ? "Done" : "Edit your personal notes"}
+              className={`grid h-11 min-w-[56px] place-items-center rounded-full border px-3 text-[13px] font-semibold shadow-[0_2px_6px_rgba(0,0,0,0.10),inset_0_1px_0_rgba(255,255,255,0.55)] transition-transform active:scale-[0.96] dark:shadow-[0_2px_6px_rgba(0,0,0,0.45),inset_0_1px_0_rgba(255,255,255,0.08)] ${
+                notesEditMode
+                  ? "border-red-300 bg-red-50 text-red-800 dark:border-red-700 dark:bg-red-900/40 dark:text-red-100"
+                  : "border-neutral-200 bg-paper text-neutral-700 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-200"
+              }`}
             >
-              <SearchSvg className="h-5 w-5" />
+              {notesEditMode ? "Done" : "Edit"}
             </button>
           ) : tab === "bookmarks" ? (
             <button
@@ -949,9 +988,23 @@ export function MobileShell({
                       ? "Group notes — shared with the group"
                       : "Personal notes — private to you"
                   }
+                  style={
+                    isGroup
+                      ? {
+                          // Group toggle picks up the active room's
+                          // accent so it matches the color the admin
+                          // chose in Settings → Group admin → palette,
+                          // and so it never collides with the search
+                          // icon's amber active state.
+                          backgroundColor: accent.bubble,
+                          color: accent.bubbleFg,
+                          borderColor: theme === "dark" ? accent.ringDark : accent.ring,
+                        }
+                      : undefined
+                  }
                   className={`inline-flex h-11 min-w-[88px] items-center justify-center gap-1.5 rounded-full border px-3 text-[12px] font-semibold shadow-[0_2px_6px_rgba(0,0,0,0.10),inset_0_1px_0_rgba(255,255,255,0.55)] transition-transform active:scale-[0.96] dark:shadow-[0_2px_6px_rgba(0,0,0,0.45),inset_0_1px_0_rgba(255,255,255,0.08)] ${
                     isGroup
-                      ? "border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-700 dark:bg-amber-900/40 dark:text-amber-100"
+                      ? ""
                       : "border-violet-300 bg-violet-50 text-violet-900 dark:border-violet-700 dark:bg-violet-900/40 dark:text-violet-100"
                   }`}
                 >
@@ -1057,6 +1110,7 @@ export function MobileShell({
                 annotationTarget={annotationTarget}
                 onAnnotationTargetChange={setAnnotationTarget}
                 bottomInset
+                accentKey={accentKey}
               />
             </div>
 
@@ -1069,6 +1123,8 @@ export function MobileShell({
                 socialNotesEnabled={settings.socialNotesEnabled}
                 selfUserId={selfUserId}
                 focusSearchTrigger={notesSearchTrigger}
+                onSearchOpenChange={setNotesSearchOpen}
+                editMode={notesEditMode}
               />
             )}
             {tab === "chat" && (
@@ -1076,6 +1132,8 @@ export function MobileShell({
                 roomId={active.id}
                 roomName={active.name}
                 selfUserId={selfUserId}
+                selfHandle={handle}
+                selfAvatarUrl={myAvatarUrl}
                 accentKey={accentKey}
                 dark={theme === "dark"}
                 searchOpen={chatSearchOpen}
@@ -1117,6 +1175,19 @@ export function MobileShell({
                     } catch {
                       // ignored
                     }
+                  }
+                }}
+                editMode={chatEditMode}
+                onDeleteMessage={async (messageId) => {
+                  try {
+                    await api.chatDelete(active.id, messageId);
+                    // The WS publish from the backend will remove it
+                    // from the list. Optimistic removal here would
+                    // race with the broadcast.
+                  } catch (e) {
+                    alert(
+                      `Couldn't delete message: ${(e as Error).message}`,
+                    );
                   }
                 }}
               />
@@ -1199,6 +1270,10 @@ export function MobileShell({
             style={{
               bottom: keyboardInset,
               paddingBottom: "calc(env(safe-area-inset-bottom) + 10px)",
+              opacity: panelHidden ? 0 : 1,
+              transform: panelHidden ? "translateY(20px)" : "translateY(0)",
+              transition: "opacity 260ms ease-out, transform 260ms ease-out",
+              pointerEvents: panelHidden ? "none" : undefined,
             }}
           >
             {/* Floating 3D search icon removed — the AI pill's
@@ -1248,10 +1323,23 @@ export function MobileShell({
                     const dy = ev.clientY - startY;
                     const upDrag = -dy > 40 && Math.abs(dy) > Math.abs(dx);
                     const leftDrag = -dx > 40 && Math.abs(dx) > Math.abs(dy);
-                    if (upDrag && tab === "bible") {
-                      // Search gesture is Bible-only. Other tabs have
-                      // their own search affordances in the top bar.
-                      window.dispatchEvent(new CustomEvent("bible:search"));
+                    if (upDrag) {
+                      // Slide-up = open this tab's search affordance.
+                      // Each tab has its own surface, but the gesture
+                      // dispatches to whichever one is current.
+                      if (tab === "bible") {
+                        window.dispatchEvent(new CustomEvent("bible:search"));
+                      } else if (tab === "chat") {
+                        // Toggle, not just open — mirrors the Notes
+                        // pattern: slide-up once opens + focuses, slide-
+                        // up again closes the bar. Lets the user undo
+                        // the search without reaching for "Done".
+                        setChatSearchOpen((v) => !v);
+                      } else if (tab === "notes") {
+                        setNotesSearchTrigger((n) => n + 1);
+                      } else if (tab === "bookmarks") {
+                        setMarksSearchTrigger((n) => n + 1);
+                      }
                     } else if (leftDrag) {
                       // Composer toggle works on every tab.
                       toggleComposer();
@@ -1303,10 +1391,21 @@ export function MobileShell({
                 // beneath shows through. The per-group accent BORDER
                 // still marks the pill as "yours" without painting
                 // over the lensing surface.
+                //
+                // On the BIBLE tab the pill reads as a recessed well
+                // CUT INTO the scripture page — pressing it feels like
+                // peeling back the Bible to expose the agent beneath.
+                // The recessed shadow stack (deep inner-top + light
+                // bottom rim + dark hairline) replaces the lifted drop
+                // shadow on Bible. Other tabs keep the floating look.
                 boxShadow:
-                  theme === "dark"
-                    ? "0 6px 18px rgba(0,0,0,0.45), inset 0 1.5px 0 rgba(255,255,255,0.10), 0 0 0 1px rgba(255,255,255,0.06), inset 0 -1px 0 rgba(0,0,0,0.25)"
-                    : "0 6px 18px rgba(0,0,0,0.18), inset 0 1.5px 0 rgba(255,255,255,0.55), 0 0 0 1px rgba(0,0,0,0.04), inset 0 -1px 0 rgba(0,0,0,0.06)",
+                  tab === "bible"
+                    ? theme === "dark"
+                      ? "inset 0 8px 18px rgba(0,0,0,0.75), inset 0 3px 8px rgba(0,0,0,0.50), inset 0 -2px 0 rgba(255,255,255,0.12), 0 0 0 1px rgba(0,0,0,0.55)"
+                      : "inset 0 8px 18px rgba(0,0,0,0.35), inset 0 3px 8px rgba(0,0,0,0.20), inset 0 -2px 0 rgba(255,255,255,0.70), 0 0 0 1px rgba(0,0,0,0.18)"
+                    : theme === "dark"
+                      ? "0 6px 18px rgba(0,0,0,0.45), inset 0 1.5px 0 rgba(255,255,255,0.10), 0 0 0 1px rgba(255,255,255,0.06), inset 0 -1px 0 rgba(0,0,0,0.25)"
+                      : "0 6px 18px rgba(0,0,0,0.18), inset 0 1.5px 0 rgba(255,255,255,0.55), 0 0 0 1px rgba(0,0,0,0.04), inset 0 -1px 0 rgba(0,0,0,0.06)",
                 // Lean the pill toward the active drag direction so
                 // the user feels the gesture taking hold.
                 transform:
@@ -1318,7 +1417,11 @@ export function MobileShell({
                   : "transform 180ms cubic-bezier(0.32, 0.72, 0.0, 1)",
                 touchAction: "none",
               }}
-              className={`glass-specular pointer-events-auto grid h-[64px] w-[64px] place-items-center rounded-[28px] bg-paper/55 backdrop-blur-2xl backdrop-saturate-[1.8] active:scale-[0.97] dark:bg-neutral-900/45 ${
+              className={`pointer-events-auto grid h-[64px] w-[64px] place-items-center rounded-[28px] backdrop-blur-2xl backdrop-saturate-[1.8] active:scale-[0.97] ${
+                tab === "bible"
+                  ? "bg-neutral-200/70 dark:bg-black/55"
+                  : "glass-specular bg-paper/55 dark:bg-neutral-900/45"
+              } ${
                 open
                   ? "text-neutral-900 dark:text-neutral-50"
                   : "text-neutral-700 dark:text-neutral-200"
@@ -1387,6 +1490,10 @@ export function MobileShell({
         style={{
           bottom: keyboardInset,
           paddingBottom: "calc(env(safe-area-inset-bottom) + 10px)",
+          opacity: panelHidden ? 0 : 1,
+          transform: panelHidden ? "translateY(20px)" : "translateY(0)",
+          transition: "opacity 260ms ease-out, transform 260ms ease-out",
+          pointerEvents: panelHidden ? "none" : undefined,
         }}
       >
         {annotationTarget ? (
@@ -1451,16 +1558,30 @@ export function MobileShell({
             // Exactly the tab bar's outer geometry so the swap from
             // tabs ↔ composer reads as the same panel re-rendering its
             // contents, not two different shapes.
-            className="glass-specular pointer-events-auto flex h-[64px] w-full items-stretch gap-1 rounded-[28px] border border-white/40 bg-paper/55 px-1 py-1 backdrop-blur-2xl backdrop-saturate-[1.8] dark:border-white/10 dark:bg-neutral-900/45"
+            //
+            // On the BIBLE tab the agent composer reads as a layer
+            // BENEATH the scripture page — pressing the pill feels
+            // like peeling back the Bible to expose the agent. So the
+            // glass-specular highlight + outer drop shadow are dropped
+            // (those scream "floating on top"); the recessed inset
+            // shadow stack carved into the rim makes it feel inset
+            // INTO the page. Other tabs keep the floating look since
+            // their composers are for outbound posting, not a hidden
+            // layer.
+            className={`pointer-events-auto relative flex h-[64px] w-full items-stretch gap-1 rounded-[28px] border px-1 py-1 backdrop-blur-2xl backdrop-saturate-[1.8] ${
+              tab === "bible"
+                ? "border-black/20 bg-neutral-200/70 dark:border-white/5 dark:bg-black/55"
+                : "glass-specular border-white/40 bg-paper/55 dark:border-white/10 dark:bg-neutral-900/45"
+            }`}
             style={{
-              // Liquid-glass shadow stack: outer drop + bright top-edge
-              // specular + soft bottom hairline. Dark mode dims the
-              // highlight per Apple HIG so it stays legible over light
-              // OR dark content beneath the bar.
               boxShadow:
-                theme === "dark"
-                  ? "0 6px 18px rgba(0,0,0,0.45), inset 0 1.5px 0 rgba(255,255,255,0.10), 0 0 0 1px rgba(255,255,255,0.06), inset 0 -1px 0 rgba(0,0,0,0.25)"
-                  : "0 6px 18px rgba(0,0,0,0.18), inset 0 1.5px 0 rgba(255,255,255,0.55), 0 0 0 1px rgba(0,0,0,0.04), inset 0 -1px 0 rgba(0,0,0,0.06)",
+                tab === "bible"
+                  ? theme === "dark"
+                    ? "inset 0 8px 18px rgba(0,0,0,0.75), inset 0 3px 8px rgba(0,0,0,0.50), inset 0 -2px 0 rgba(255,255,255,0.12), 0 0 0 1px rgba(0,0,0,0.55)"
+                    : "inset 0 8px 18px rgba(0,0,0,0.35), inset 0 3px 8px rgba(0,0,0,0.20), inset 0 -2px 0 rgba(255,255,255,0.70), 0 0 0 1px rgba(0,0,0,0.18)"
+                  : theme === "dark"
+                    ? "0 6px 18px rgba(0,0,0,0.45), inset 0 1.5px 0 rgba(255,255,255,0.10), 0 0 0 1px rgba(255,255,255,0.06), inset 0 -1px 0 rgba(0,0,0,0.25)"
+                    : "0 6px 18px rgba(0,0,0,0.18), inset 0 1.5px 0 rgba(255,255,255,0.55), 0 0 0 1px rgba(0,0,0,0.04), inset 0 -1px 0 rgba(0,0,0,0.06)",
               // Same contact-push as the tab nav: when the pill is
               // long-pressed and dragged left, the composer slides with
               // it once the colored ring meets its right edge. Mirrors
@@ -1488,6 +1609,64 @@ export function MobileShell({
                   : "Send a message"
             }
           >
+            {aiPillGesture?.active && (() => {
+              // Same gesture takeover as the closed-composer nav — when
+              // the composer is open and the user long-presses the AI
+              // pill, the form's inputs hide and the panel shows the
+              // search-up / composer-left affordances so the hint is
+              // identical across tab and composer states.
+              const upActive =
+                aiPillGesture.dy < -20 &&
+                -aiPillGesture.dy > Math.abs(aiPillGesture.dx);
+              const leftActive =
+                aiPillGesture.dx < -20 &&
+                Math.abs(aiPillGesture.dx) > Math.abs(aiPillGesture.dy);
+              const composerLabel =
+                tab === "bible"
+                  ? "Activate Agent"
+                  : tab === "chat"
+                    ? "Send Message"
+                    : tab === "notes"
+                      ? "Add Note"
+                      : "Compose";
+              return (
+                <div className="pointer-events-none absolute inset-0 z-10 flex h-full w-full items-center rounded-[28px] bg-paper/55 backdrop-blur-2xl dark:bg-neutral-900/45">
+                  <div
+                    className="absolute right-3 top-1 text-neutral-800 dark:text-neutral-100"
+                    style={{
+                      opacity: upActive ? 0.95 : 0.4,
+                      transform: `scale(${upActive ? 1.3 : 1})`,
+                      transformOrigin: "right top",
+                      transition:
+                        "opacity 140ms ease-out, transform 140ms ease-out",
+                    }}
+                  >
+                    <SearchSvg className="h-5 w-5" />
+                  </div>
+                  <div
+                    className="absolute inset-y-0 left-3 flex items-center gap-1.5 whitespace-nowrap text-neutral-800 dark:text-neutral-100"
+                    style={{
+                      opacity: leftActive ? 0.95 : 0.5,
+                      transform: `scale(${leftActive ? 1.1 : 1})`,
+                      transformOrigin: "left center",
+                      transition:
+                        "opacity 140ms ease-out, transform 140ms ease-out",
+                    }}
+                  >
+                    <span
+                      aria-hidden
+                      className="text-[16px] leading-none"
+                      style={{ letterSpacing: "-0.05em" }}
+                    >
+                      ‹‹
+                    </span>
+                    <span className="text-[10px] font-semibold uppercase tracking-[0.14em]">
+                      {composerLabel}
+                    </span>
+                  </div>
+                </div>
+              );
+            })()}
             {tab === "chat" && (
               <>
                 <input
@@ -1620,11 +1799,12 @@ export function MobileShell({
                 : "transform 180ms cubic-bezier(0.32, 0.72, 0.0, 1)",
             }}
           >
-            {tab === "bible" && aiPillGesture?.active ? (
+            {aiPillGesture?.active ? (
               // Gesture takeover: tab buttons hide, affordances fill the
               // panel. TOP edge = faded search icon (slide UP), LEFT edge
-              // = arrows + "Activate Agent" (slide LEFT). Both brighten +
-              // scale when the active drag is heading toward them.
+              // = arrows + tab-specific composer label (slide LEFT).
+              // Both brighten + scale when the active drag is heading
+              // toward them.
               (() => {
                 const upActive =
                   aiPillGesture.dy < -20 &&
@@ -1632,11 +1812,19 @@ export function MobileShell({
                 const leftActive =
                   aiPillGesture.dx < -20 &&
                   Math.abs(aiPillGesture.dx) > Math.abs(aiPillGesture.dy);
+                const composerLabel =
+                  tab === "bible"
+                    ? "Activate Agent"
+                    : tab === "chat"
+                      ? "Send Message"
+                      : tab === "notes"
+                        ? "Add Note"
+                        : "Compose";
                 return (
                   <div className="pointer-events-none relative flex h-full w-full items-center">
                     {/* TOP — faded search icon at the top-right so it
-                     *  doesn't collide horizontally with the
-                     *  "Activate Agent" text on the left. */}
+                     *  doesn't collide horizontally with the composer
+                     *  label on the left. */}
                     <div
                       className="absolute right-3 top-1 text-neutral-800 dark:text-neutral-100"
                       style={{
@@ -1649,7 +1837,8 @@ export function MobileShell({
                     >
                       <SearchSvg className="h-5 w-5" />
                     </div>
-                    {/* LEFT — arrows + label, pinned to left edge. */}
+                    {/* LEFT — arrows + tab-specific label, pinned to
+                     *  left edge. */}
                     <div
                       className="absolute inset-y-0 left-3 flex items-center gap-1.5 whitespace-nowrap text-neutral-800 dark:text-neutral-100"
                       style={{
@@ -1668,7 +1857,7 @@ export function MobileShell({
                         ‹‹
                       </span>
                       <span className="text-[10px] font-semibold uppercase tracking-[0.14em]">
-                        Activate Agent
+                        {composerLabel}
                       </span>
                     </div>
                   </div>
@@ -3316,6 +3505,8 @@ function ChatPanel({
   roomId,
   roomName,
   selfUserId,
+  selfHandle,
+  selfAvatarUrl,
   accentKey,
   dark,
   onRead,
@@ -3325,10 +3516,17 @@ function ChatPanel({
   searchQuery,
   onSearchQueryChange,
   onSearchClose,
+  editMode,
+  onDeleteMessage,
 }: {
   roomId: string;
   roomName: string;
   selfUserId?: string;
+  /** Caller's @handle. Used by the status strip to label the "Your
+   *  status" tile and to render the viewer header on own statuses. */
+  selfHandle?: string;
+  /** Caller's avatar URL — same use as `selfHandle`. */
+  selfAvatarUrl?: string | null;
   /** Active group's resolved accent — drives the "mine" bubble color
    *  so each group's chat reads as different. The header band is kept
    *  neutral so it doesn't double up with the top app bar's tint. */
@@ -3358,6 +3556,11 @@ function ChatPanel({
   /** Long-pressing a bubble fires this so the parent can pop an
    *  action sheet (Reply / Copy / etc.). */
   onLongPress?: (msg: ChatMessageOut) => void;
+  /** Top-bar Edit toggle. When on, each of the caller's own
+   *  messages shows a delete button; tapping it asks the parent to
+   *  call the backend DELETE endpoint. */
+  editMode?: boolean;
+  onDeleteMessage?: (messageId: string) => void | Promise<void>;
 }) {
   const [messages, setMessages] = useState<ChatMessageOut[]>([]);
   const [memberCount, setMemberCount] = useState<number | null>(null);
@@ -3375,10 +3578,22 @@ function ChatPanel({
       .roomMembers(roomId)
       .then((rows) => alive && setMemberCount(rows.length))
       .catch(() => {});
+    api
+      .statusList(roomId)
+      .then((rows) => alive && setStatuses(rows))
+      .catch(() => {});
     return () => {
       alive = false;
     };
   }, [roomId]);
+
+  // Status panel state. Live ops (`status:create`, `:delete`, `:view`)
+  // arrive on the same chat WS and are handled below.
+  const [statuses, setStatuses] = useState<StatusOut[]>([]);
+  const [statusComposerOpen, setStatusComposerOpen] = useState(false);
+  const [statusViewerList, setStatusViewerList] = useState<
+    StatusOut[] | null
+  >(null);
 
   // Live updates via websocket. Reconnects with exponential backoff
   // if the connection drops (mobile waking from sleep, server
@@ -3396,7 +3611,51 @@ function ChatPanel({
       ws = new WebSocket(url.toString());
       ws.onmessage = (event) => {
         try {
-          const msg = JSON.parse(event.data) as ChatMessageOut;
+          const parsed = JSON.parse(event.data) as
+            | ChatMessageOut
+            | { _op: "delete"; id: string }
+            | { _op: "status:create"; status: StatusOut }
+            | { _op: "status:delete"; id: string }
+            | { _op: "status:view"; id: string };
+          // Delete envelopes drop the row instead of upserting it.
+          // Other op kinds may be added later; the message-shaped
+          // default path covers create / reaction / pin updates.
+          if ("_op" in parsed && parsed._op === "delete") {
+            setMessages((prev) => prev.filter((m) => m.id !== parsed.id));
+            return;
+          }
+          if ("_op" in parsed && parsed._op === "status:create") {
+            setStatuses((prev) => {
+              if (prev.some((s) => s.id === parsed.status.id)) return prev;
+              return [...prev, parsed.status];
+            });
+            return;
+          }
+          if ("_op" in parsed && parsed._op === "status:delete") {
+            setStatuses((prev) => prev.filter((s) => s.id !== parsed.id));
+            return;
+          }
+          if ("_op" in parsed && parsed._op === "status:view") {
+            // Existence-gate the increment: only bump a status we
+            // already have in the list. A forged or spammed envelope
+            // for an unknown id can't inflate our counters this way.
+            // We still cap the bump at +1 per envelope; persistent
+            // truth lives in the server's tally, which the viewer
+            // refetches via list_statuses on next open.
+            setStatuses((prev) => {
+              let touched = false;
+              const next = prev.map((s) => {
+                if (s.id === parsed.id) {
+                  touched = true;
+                  return { ...s, view_count: s.view_count + 1 };
+                }
+                return s;
+              });
+              return touched ? next : prev;
+            });
+            return;
+          }
+          const msg = parsed as ChatMessageOut;
           // Replace in place when the message is already in the list
           // (reaction toggle, edit, etc.); otherwise append. Without
           // this, reactions would silently fall on the floor.
@@ -3457,16 +3716,64 @@ function ChatPanel({
     : messages;
   return (
     <div className="flex h-full flex-col">
+      {/* Status strip (24h "stories") above the chat header. */}
+      <ChatStatusStrip
+        statuses={statuses}
+        selfUserId={selfUserId}
+        selfHandle={selfHandle}
+        selfAvatarUrl={selfAvatarUrl}
+        onCompose={() => setStatusComposerOpen(true)}
+        onOpenAuthor={(list) => setStatusViewerList(list)}
+      />
+      <ChatStatusComposer
+        open={statusComposerOpen}
+        onClose={() => setStatusComposerOpen(false)}
+        roomId={roomId}
+        onPosted={() => {
+          // Optimistic refetch — the WS broadcast normally handles
+          // this, but a no-op refetch keeps us correct if the socket
+          // is mid-reconnect when we posted.
+          void api.statusList(roomId).then(setStatuses).catch(() => {});
+        }}
+      />
+      <ChatStatusViewer
+        open={statusViewerList !== null}
+        statuses={statusViewerList ?? []}
+        selfUserId={selfUserId}
+        onClose={() => setStatusViewerList(null)}
+        onDeleted={(id) =>
+          setStatuses((prev) => prev.filter((s) => s.id !== id))
+        }
+      />
       {searchOpen ? (
         <div className="flex items-center gap-2 border-b border-neutral-200 bg-paper-soft px-3 py-2 dark:border-neutral-800 dark:bg-neutral-950">
-          <input
-            autoFocus
-            value={searchQuery ?? ""}
-            onChange={(e) => onSearchQueryChange?.(e.target.value)}
-            placeholder={`Search ${roomName}…`}
-            aria-label="Search messages"
-            className="flex-1 rounded-full border border-neutral-200 bg-paper px-3.5 py-2 text-[14px] outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-200/40 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100 dark:focus:border-amber-700 dark:focus:ring-amber-800/40"
-          />
+          <div className="relative flex-1">
+            <input
+              type="search"
+              value={searchQuery ?? ""}
+              onChange={(e) => onSearchQueryChange?.(e.target.value)}
+              placeholder={`Search ${roomName}…`}
+              aria-label="Search messages"
+              className="w-full rounded-full border border-neutral-200 bg-paper px-3 py-2 pl-8 text-[14px] outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-200/40 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100 dark:focus:border-amber-700 dark:focus:ring-amber-800/40"
+            />
+            <span
+              className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-[11px] text-neutral-400"
+              aria-hidden
+            >
+              ⌕
+            </span>
+            {(searchQuery ?? "").length > 0 && (
+              <button
+                type="button"
+                onClick={() => onSearchQueryChange?.("")}
+                className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full px-1 text-[10px] text-neutral-500 hover:bg-neutral-200/60 dark:text-neutral-400 dark:hover:bg-neutral-700/60"
+                aria-label="Clear search"
+                title="Clear"
+              >
+                ✕
+              </button>
+            )}
+          </div>
           <button
             type="button"
             onClick={() => onSearchClose?.()}
@@ -3514,26 +3821,35 @@ function ChatPanel({
               : "No messages yet. Be the first to say something."}
           </p>
         ) : (
-          visibleMessages.map((m) => (
-            <ChatBubble
-              key={m.id}
-              msg={m}
-              mine={!!selfUserId && m.author_user_id === selfUserId}
-              accentKey={accentKey}
-              dark={dark}
-              onAvatarClick={(userId) => {
-                onAvatarTap?.(userId, {
-                  handle: m.author_handle,
-                  displayName: m.author_display_name,
-                  avatarUrl: m.author_avatar_url,
-                });
-              }}
-              onLongPress={() => onLongPress?.(m)}
-              onReact={(emoji) => {
-                void api.chatReact(roomId, m.id, emoji).catch(() => {});
-              }}
-            />
-          ))
+          visibleMessages.map((m) => {
+            const isMine = !!selfUserId && m.author_user_id === selfUserId;
+            return (
+              <ChatBubble
+                key={m.id}
+                msg={m}
+                mine={isMine}
+                accentKey={accentKey}
+                dark={dark}
+                onAvatarClick={(userId) => {
+                  onAvatarTap?.(userId, {
+                    handle: m.author_handle,
+                    displayName: m.author_display_name,
+                    avatarUrl: m.author_avatar_url,
+                  });
+                }}
+                onLongPress={() => onLongPress?.(m)}
+                onReact={(emoji) => {
+                  void api.chatReact(roomId, m.id, emoji).catch(() => {});
+                }}
+                showDelete={!!editMode && isMine}
+                onDelete={() => {
+                  if (confirm("Delete this message?")) {
+                    void onDeleteMessage?.(m.id);
+                  }
+                }}
+              />
+            );
+          })
         )}
       </div>
     </div>
@@ -3548,6 +3864,8 @@ function ChatBubble({
   onAvatarClick,
   onLongPress,
   onReact,
+  showDelete,
+  onDelete,
 }: {
   msg: ChatMessageOut;
   mine: boolean;
@@ -3561,6 +3879,11 @@ function ChatBubble({
   /** Tap an existing reaction chip → toggle the viewer's reaction
    *  for that emoji. */
   onReact?: (emoji: string) => void;
+  /** Top-bar Edit mode is on AND this bubble belongs to the viewer.
+   *  Renders a delete pill alongside the bubble; tapping it asks the
+   *  parent to call the backend. */
+  showDelete?: boolean;
+  onDelete?: () => void;
 }) {
   // Long-press detection: 400ms hold without > ~8px movement.
   const pressTimer = useRef<number | null>(null);
@@ -3664,6 +3987,20 @@ function ChatBubble({
         </span>
       )}
       <div className={`flex max-w-[82%] items-end gap-2 ${mine ? "self-end" : ""}`}>
+        {/* Edit-mode delete pill — left of the bubble for "mine"
+         *  messages. Only renders when the top-bar Edit toggle is on
+         *  and this bubble belongs to the viewer (parent gates that). */}
+        {showDelete && (
+          <button
+            type="button"
+            onClick={onDelete}
+            className="shrink-0 self-center rounded-full bg-red-500 px-2.5 py-1 text-[11px] font-semibold text-white shadow-[0_2px_6px_rgba(0,0,0,0.15)] transition active:scale-[0.96] hover:bg-red-600 dark:bg-red-600 dark:hover:bg-red-500"
+            aria-label="Delete message"
+            title="Delete message"
+          >
+            Delete
+          </button>
+        )}
         {showAvatar && (
           <button
             type="button"

@@ -50,6 +50,15 @@ interface Props {
    *  the Notes tab's top bar. Each new value focuses the search
    *  input so the user can start typing immediately. */
   focusSearchTrigger?: number;
+  /** Called whenever the in-sidebar search bar opens or closes, so
+   *  the parent's top-bar magnifier can light up while search is
+   *  active (matches the Chat tab's behavior). */
+  onSearchOpenChange?: (open: boolean) => void;
+  /** Top-bar Edit toggle. When on, PERSONAL notes show a delete
+   *  button; group notes do not surface the affordance even if the
+   *  caller authored them (group cleanup is a moderation task, not
+   *  an editing one). */
+  editMode?: boolean;
 }
 
 export function NotesSidebar({
@@ -63,6 +72,8 @@ export function NotesSidebar({
   socialNotesEnabled,
   selfUserId,
   focusSearchTrigger,
+  onSearchOpenChange,
+  editMode,
 }: Props) {
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   // The search field is hidden by default — the top-bar magnifier
@@ -70,18 +81,14 @@ export function NotesSidebar({
   // also focuses + selects the input so the user can type immediately.
   const [searchOpen, setSearchOpen] = useState(false);
   useEffect(() => {
+    onSearchOpenChange?.(searchOpen);
+  }, [searchOpen, onSearchOpenChange]);
+  useEffect(() => {
     if (focusSearchTrigger === undefined || focusSearchTrigger === 0) return;
-    setSearchOpen((open) => {
-      const next = !open;
-      if (next) {
-        // Wait a tick for the input to mount before focusing.
-        setTimeout(() => {
-          searchInputRef.current?.focus();
-          searchInputRef.current?.select();
-        }, 30);
-      }
-      return next;
-    });
+    // Toggle open/close only — DO NOT focus the input. Per user
+    // preference, the keyboard should not auto-pop. They tap the
+    // field themselves when ready to type.
+    setSearchOpen((open) => !open);
   }, [focusSearchTrigger]);
   // Scope (personal vs group) is no longer a Notes-page toggle — it
   // lives in Settings → Group notes → "Default scope" so the page
@@ -301,8 +308,8 @@ export function NotesSidebar({
           Search stays in the browser; the server never sees the
           contents of personal notes. */}
       {searchOpen && (
-      <div className="border-b border-neutral-200 bg-paper-soft px-2 py-1.5 dark:border-neutral-800 dark:bg-neutral-950">
-        <div className="relative">
+      <div className="flex items-center gap-2 border-b border-neutral-200 bg-paper-soft px-3 py-2 dark:border-neutral-800 dark:bg-neutral-950">
+        <div className="relative flex-1">
           <input
             ref={searchInputRef}
             type="search"
@@ -310,7 +317,7 @@ export function NotesSidebar({
             onChange={(e) => setQuery(e.target.value)}
             placeholder={`Search ${tab} notes…`}
             aria-label={`Search ${tab} notes`}
-            className="w-full rounded-full border border-neutral-200 bg-paper px-3 py-2 pl-8 text-[14px] text-neutral-800 placeholder:text-neutral-400 outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-200/40 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100 dark:placeholder:text-neutral-500 dark:focus:border-amber-700 dark:focus:ring-amber-800/40"
+            className="w-full rounded-full border border-neutral-200 bg-paper px-3 py-2 pl-8 text-[14px] outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-200/40 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100 dark:focus:border-amber-700 dark:focus:ring-amber-800/40"
           />
           <span
             className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-[11px] text-neutral-400"
@@ -330,6 +337,17 @@ export function NotesSidebar({
             </button>
           )}
         </div>
+        <button
+          type="button"
+          onClick={() => {
+            setQuery("");
+            setSearchOpen(false);
+          }}
+          className="rounded-full px-2 text-[12px] font-semibold text-neutral-600 hover:bg-paper-soft dark:text-neutral-300 dark:hover:bg-neutral-800"
+          aria-label="Close search"
+        >
+          Done
+        </button>
       </div>
       )}
 
@@ -463,7 +481,31 @@ export function NotesSidebar({
                   : "No notes yet."}
           </li>
         )}
-        {visible.map((n) => (
+        {visible.map((n) => {
+          // Authorship gates editing the same way they gate deletion:
+          // only the person who wrote the note can change it. Personal
+          // notes are always the viewer's own (the privacy boundary).
+          // Agent notes are never editable — they're system-generated
+          // content, not the user's. Legacy group notes without an
+          // author_user_id are locked too (matches canDeleteNote).
+          const isAgent = !!n.by_agent;
+          const isMine =
+            !isAgent &&
+            (n.scope === "personal" ||
+              (!!selfUserId && n.author_user_id === selfUserId));
+          const readOnly = !isMine || isAgent;
+          // Label: agent → "Agent"; my own → "You"; someone else's
+          // group note → their @handle so the rest of the group can
+          // see who wrote it. Falls back to "Member" for legacy rows
+          // with no recorded handle.
+          const authorLabel = isAgent
+            ? "Agent"
+            : isMine
+              ? "You"
+              : n.author_handle
+                ? `@${n.author_handle}`
+                : "Member";
+          return (
           <li
             key={n.id}
             className={`group px-2 py-1.5 text-sm ${GLASS_CARD_INLINE} ${
@@ -474,22 +516,38 @@ export function NotesSidebar({
           >
             <div className="flex items-center justify-between text-[10px] text-neutral-500 dark:text-neutral-400">
               <span>
-                {n.by_agent ? "Agent" : "You"}
+                {authorLabel}
                 {n.verse_anchor ? ` · ${n.verse_anchor}` : ""}
               </span>
               <div className="flex items-center gap-1">
                 <span>{n.scope}</span>
                 {canDeleteNote(n, selfUserId) && (
-                  <button
-                    onClick={() => {
-                      if (confirm("Delete this note?")) notes.remove(n.id);
-                    }}
-                    className="rounded px-1 text-neutral-400 opacity-50 hover:bg-red-50 hover:text-red-600 group-hover:opacity-100 md:opacity-0 dark:hover:bg-red-900/40 dark:hover:text-red-300"
-                    title="Delete note (notes-system.MD §5.9)"
-                    aria-label="Delete note"
-                  >
-                    ×
-                  </button>
+                  editMode && n.scope === "personal" ? (
+                    // Edit-mode delete: prominent red pill, no hover
+                    // hide. Personal-scope only — top-bar Edit is
+                    // explicitly NOT a moderation tool for group notes.
+                    <button
+                      onClick={() => {
+                        if (confirm("Delete this note?")) notes.remove(n.id);
+                      }}
+                      className="rounded-full bg-red-500 px-2 py-0.5 text-[10px] font-semibold text-white shadow-[0_1px_2px_rgba(0,0,0,0.15)] hover:bg-red-600 dark:bg-red-600 dark:hover:bg-red-500"
+                      title="Delete note"
+                      aria-label="Delete note"
+                    >
+                      Delete
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => {
+                        if (confirm("Delete this note?")) notes.remove(n.id);
+                      }}
+                      className="rounded px-1 text-neutral-400 opacity-50 hover:bg-red-50 hover:text-red-600 group-hover:opacity-100 md:opacity-0 dark:hover:bg-red-900/40 dark:hover:text-red-300"
+                      title="Delete note (notes-system.MD §5.9)"
+                      aria-label="Delete note"
+                    >
+                      ×
+                    </button>
+                  )
                 )}
               </div>
             </div>
@@ -497,9 +555,14 @@ export function NotesSidebar({
               <RichNoteField
                 value={n.body}
                 onChange={(html) => notes.update(n.id, html)}
-                ariaLabel={`Edit ${n.scope} note`}
+                ariaLabel={
+                  readOnly
+                    ? `${n.scope} note (read only)`
+                    : `Edit ${n.scope} note`
+                }
                 compact
                 roomId={roomId}
+                readOnly={readOnly}
               />
             </div>
             {socialNotesEnabled &&
@@ -513,7 +576,8 @@ export function NotesSidebar({
                 />
               )}
           </li>
-        ))}
+          );
+        })}
       </ul>
 
       {!hideComposer && (

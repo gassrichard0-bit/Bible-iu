@@ -37,6 +37,7 @@ interface YNote {
   verse_anchor?: string;
   by_agent?: boolean;
   author_user_id?: string;
+  author_handle?: string;
 }
 
 /** Snapshot a single Y.Array of notes into a plain NoteRow[]. */
@@ -54,6 +55,7 @@ function snapshotArray(arr: Y.Array<Y.Map<unknown>>): NoteRow[] {
     const va = m.get("verse_anchor");
     const by = m.get("by_agent");
     const author = m.get("author_user_id");
+    const authorHandle = m.get("author_handle");
     out.push({
       id,
       scope,
@@ -61,6 +63,8 @@ function snapshotArray(arr: Y.Array<Y.Map<unknown>>): NoteRow[] {
       verse_anchor: typeof va === "string" ? va : undefined,
       by_agent: typeof by === "boolean" ? by : undefined,
       author_user_id: typeof author === "string" ? author : undefined,
+      author_handle:
+        typeof authorHandle === "string" ? authorHandle : undefined,
     });
   }
   return out;
@@ -115,10 +119,14 @@ export interface YjsRoomHandle {
 
 /** Hook: returns a NotesApi backed by two Y.Docs (one shared, one
  *  private) and a merged in-memory view. */
-export function useYjsNotes(roomId: string, userId?: string): NotesApi {
+export function useYjsNotes(
+  roomId: string,
+  userId?: string,
+  userHandle?: string,
+): NotesApi {
   const handle = useMemo(
-    () => buildHandle(roomId, userId),
-    [roomId, userId],
+    () => buildHandle(roomId, userId, userHandle),
+    [roomId, userId, userHandle],
   );
   useEffect(() => {
     return () => handle.cleanup();
@@ -175,7 +183,11 @@ function noopApi(): NotesApi {
   };
 }
 
-function buildHandle(roomId: string, userId?: string): YjsRoomHandle {
+function buildHandle(
+  roomId: string,
+  userId?: string,
+  userHandle?: string,
+): YjsRoomHandle {
   // No active room → no-op handle.
   if (!roomId) {
     const doc = new Y.Doc();
@@ -285,6 +297,11 @@ function buildHandle(roomId: string, userId?: string): YjsRoomHandle {
       // this for symmetry. Agent-authored notes leave the field unset
       // — they're system-generated and don't belong to any user.
       if (userId && !n.by_agent) m.set("author_user_id", userId);
+      // Also stamp the author's handle so other members can see WHO
+      // wrote a group note instead of "You" everywhere. Handles are
+      // public-by-design (they're how you @-mention) so this isn't a
+      // privacy leak.
+      if (userHandle && !n.by_agent) m.set("author_handle", userHandle);
       targetBundle.notes.push([m]);
       // Register group notes with the server so social endpoints
       // (likes / comments) can reject any note_id that wasn't

@@ -166,9 +166,16 @@ export function SettingsModal({
               if (initialPage) onClose();
               else setPage(null);
             }}
-            className="-ml-1 mb-3 inline-flex items-center gap-1 rounded px-1.5 py-1 text-xs font-medium text-neutral-600 hover:bg-paper-soft dark:text-neutral-300 dark:hover:bg-neutral-800"
+            className="-ml-2 mb-3 inline-flex items-center gap-1 rounded-full px-3 py-2 text-[15px] font-semibold text-amber-700 transition active:scale-[0.97] hover:bg-amber-50 dark:text-amber-300 dark:hover:bg-amber-900/30"
           >
-            <span aria-hidden>‹</span> {initialPage ? "Close" : "Settings"}
+            <span
+              aria-hidden
+              className="text-[22px] leading-none"
+              style={{ marginTop: "-2px" }}
+            >
+              ‹
+            </span>
+            {initialPage ? "Close" : "Settings"}
           </button>
         )}
         {page === null && (

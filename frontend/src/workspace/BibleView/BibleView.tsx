@@ -46,6 +46,7 @@ import {
   type ParsedReference,
 } from "../../lib/bibleRefParser";
 import { readSettings, SETTINGS_CHANGED } from "../../lib/settings";
+import { ACCENT_PALETTE, type AccentKey } from "../../lib/accentColors";
 
 interface Props {
   book: string;
@@ -122,6 +123,10 @@ interface Props {
    *  floating glass composer + AI pill in MobileShell. Otherwise
    *  the last verse hides behind the bar. */
   bottomInset?: boolean;
+  /** Active room's accent — drives the "group" side of the inline
+   *  ScopePill so it matches the per-room theme picked in Settings,
+   *  same as the Notes-tab top-bar scope toggle. */
+  accentKey?: AccentKey;
 }
 
 export function BibleView({
@@ -151,7 +156,9 @@ export function BibleView({
   annotationTarget,
   onAnnotationTargetChange,
   bottomInset,
+  accentKey,
 }: Props) {
+  const scopePillPalette = accentKey ? ACCENT_PALETTE[accentKey] : undefined;
   const [books, setBooks] = useState<BibleBookOut[]>([]);
   const [verses, setVerses] = useState<BibleVerseMulti[]>([]);
   const [loading, setLoading] = useState(false);
@@ -162,7 +169,8 @@ export function BibleView({
   // multiple expansions can coexist; the user might want to compare
   // Greek across two verses. Tokens are fetched lazily on first
   // open.
-  const [tokensOpen, setTokensOpen] = useState<Set<string>>(() => new Set());
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const [tokensOpen, _setTokensOpen] = useState<Set<string>>(() => new Set());
   const [searchOpen, setSearchOpen] = useState(false);
 
   // --- Voice reader state -----------------------------------------------
@@ -736,10 +744,31 @@ export function BibleView({
     if (e.touches.length !== 1) return;
     const t = e.touches[0];
     swipeStartRef.current = { x: t.clientX, y: t.clientY };
+    // Reuse the touchstart on the scroller to also reset the bounce
+    // tracker (each new gesture is one potential bounce attempt).
+    bounceGestureRef.current = { startY: t.clientY, overscrolled: false };
   };
   const onChapterSwipeEnd = (e: React.TouchEvent) => {
     const start = swipeStartRef.current;
     swipeStartRef.current = null;
+    // Bounce tracking. A "bounce" is a gesture that pushed the scroller
+    // against its bottom limit and tried to drag further (finger moved
+    // upward enough while the scroller was already at scrollHeight).
+    // The first such gesture is noted; a second one within 1.5s
+    // hides the floating tab panel + AI pill so the user can read
+    // the closing verses cleanly. Single bounces, or bounces spaced
+    // far apart, are ignored.
+    const g = bounceGestureRef.current;
+    bounceGestureRef.current = null;
+    if (g?.overscrolled) {
+      const now = Date.now();
+      if (now - lastBounceAtRef.current < 1500) {
+        window.dispatchEvent(new CustomEvent("bible:panel-hide"));
+        lastBounceAtRef.current = 0;
+      } else {
+        lastBounceAtRef.current = now;
+      }
+    }
     if (!start) return;
     const t = e.changedTouches[0];
     const dx = t.clientX - start.x;
@@ -749,6 +778,42 @@ export function BibleView({
     // Drag left → next chapter; drag right → previous chapter. Mirrors
     // the natural "page turn" direction of a book in LTR languages.
     advanceChapter(dx < 0 ? 1 : -1);
+  };
+  // Bounce detection state. Tracked across a touch gesture and
+  // between consecutive gestures.
+  const bounceGestureRef = useRef<{
+    startY: number;
+    overscrolled: boolean;
+  } | null>(null);
+  const lastBounceAtRef = useRef<number>(0);
+  const scrollerElRef = useRef<HTMLDivElement | null>(null);
+  // Per-touch-move: if the scroller is at max scrollTop AND the finger
+  // is dragging upward (trying to scroll past the end), mark the
+  // current gesture as an overscroll.
+  const onScrollerTouchMove = (e: React.TouchEvent) => {
+    const g = bounceGestureRef.current;
+    if (!g) return;
+    const t = e.touches[0];
+    if (!t) return;
+    const dy = t.clientY - g.startY;
+    const el = scrollerElRef.current;
+    if (!el) return;
+    const atBottom =
+      el.scrollTop + el.clientHeight >= el.scrollHeight - 1;
+    if (atBottom && dy < -30) g.overscrolled = true;
+  };
+  // Scroll handler — when the user moves AWAY from the bottom, surface
+  // the panel + pill again and reset the bounce counter so the user
+  // can re-arm the hide later.
+  const onScrollerScroll = () => {
+    const el = scrollerElRef.current;
+    if (!el) return;
+    const atBottom =
+      el.scrollTop + el.clientHeight >= el.scrollHeight - 1;
+    if (!atBottom) {
+      lastBounceAtRef.current = 0;
+      window.dispatchEvent(new CustomEvent("bible:panel-show"));
+    }
   };
 
   // Double-tap on the verses scroller (away from any verse-number /
@@ -879,8 +944,11 @@ export function BibleView({
       )}
 
       <div
+        ref={scrollerElRef}
         onTouchStart={onChapterSwipeStart}
+        onTouchMove={onScrollerTouchMove}
         onTouchEnd={onChapterSwipeEnd}
+        onScroll={onScrollerScroll}
         onPointerUp={onScrollerDoubleTapDismiss}
         className="flex-1 overflow-y-auto overflow-x-hidden pl-1 pr-3 py-4"
         // Mirror ChatPanel + the notes list: when the floating glass
@@ -901,11 +969,6 @@ export function BibleView({
           userSelect: "none",
           ...(bottomInset
             ? {
-                // Bible needs MORE bottom padding than Chat: the Bible
-                // tab stacks a floating Search icon ABOVE the AI pill,
-                // so the floating column is ~140px tall instead of
-                // the 64px AI pill alone. 160px = column height +
-                // comfort buffer; safe-area covers the home indicator.
                 paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 160px)",
               }
             : {}),
@@ -954,6 +1017,7 @@ export function BibleView({
             roomId={roomId}
             selfUserId={selfUserId}
             socialNotesEnabled={socialNotesEnabled}
+            groupPalette={scopePillPalette}
           />
         )}
         {error && (
@@ -1074,30 +1138,12 @@ export function BibleView({
                     >
                       {v.verse}
                     </button>
-                    {/* Per-word study toggle. Hebrew aleph + Greek
-                        alpha so the icon reads as "original languages"
-                        regardless of testament. */}
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setTokensOpen((prev) => {
-                          const next = new Set(prev);
-                          if (next.has(v.verse_id)) next.delete(v.verse_id);
-                          else next.add(v.verse_id);
-                          return next;
-                        })
-                      }
-                      className={`inline-flex h-5 min-w-[1.4rem] touch-manipulation items-center justify-center rounded text-[10px] font-semibold transition ${
-                        tokensOpen.has(v.verse_id)
-                          ? "bg-amber-500 text-white"
-                          : "text-neutral-400 hover:bg-amber-100 hover:text-amber-700 dark:text-neutral-500 dark:hover:bg-amber-900/40 dark:hover:text-amber-200"
-                      }`}
-                      aria-pressed={tokensOpen.has(v.verse_id)}
-                      title="Hebrew / Greek per-word study"
-                      aria-label={`Open per-word study for ${v.verse_id}`}
-                    >
-                      <span aria-hidden>אα</span>
-                    </button>
+                    {/* Per-verse original-language toggle hidden by
+                     *  user request. Hebrew/Greek study is still
+                     *  reachable via the global "show original" toggle
+                     *  in the breadcrumb. The state hook + render
+                     *  branch below stay wired so re-enabling later is
+                     *  one un-comment. */}
                     {onSetBookmark && (
                       <button
                         onClick={() =>
@@ -1238,6 +1284,7 @@ export function BibleView({
                       roomId={roomId}
                       selfUserId={selfUserId}
                       socialNotesEnabled={socialNotesEnabled}
+                      groupPalette={scopePillPalette}
                     />
                   )}
                   {tokensOpen.has(v.verse_id) && (
@@ -1807,6 +1854,7 @@ function InlineNotePanel({
   roomId,
   selfUserId,
   socialNotesEnabled,
+  groupPalette,
 }: {
   verseId: string;
   verseNotes: ReturnType<NotesApi["forVerse"]>;
@@ -1816,6 +1864,7 @@ function InlineNotePanel({
   roomId?: string;
   selfUserId?: string;
   socialNotesEnabled?: boolean;
+  groupPalette?: { bubble: string; bubbleFg: string };
 }) {
   const [draft, setDraft] = useState("");
   // Single scope toggle drives BOTH the list filter AND the composer
@@ -1861,7 +1910,7 @@ function InlineNotePanel({
         <div className="text-[10px] uppercase tracking-wide text-violet-700 dark:text-violet-300">
           Notes on {verseId}
         </div>
-        <ScopePill scope={scope} onChange={setScope} />
+        <ScopePill scope={scope} onChange={setScope} groupPalette={groupPalette} />
       </div>
       <ul className="space-y-1.5">
         {filteredNotes.length === 0 && (
@@ -1960,9 +2009,14 @@ function InlineNotePanel({
 function ScopePill({
   scope,
   onChange,
+  groupPalette,
 }: {
   scope: "personal" | "group";
   onChange: (s: "personal" | "group") => void;
+  /** Active room's accent. When present, the "group" side paints with
+   *  the per-room theme color (same source the Notes-tab top-bar
+   *  scope toggle uses). When absent, falls back to amber. */
+  groupPalette?: { bubble: string; bubbleFg: string };
 }) {
   return (
     <div
@@ -1991,11 +2045,21 @@ function ScopePill({
                 onChange(s === "personal" ? "group" : "personal");
               }
             }}
+            style={
+              on && s === "group" && groupPalette
+                ? {
+                    backgroundColor: groupPalette.bubble,
+                    color: groupPalette.bubbleFg,
+                  }
+                : undefined
+            }
             className={`min-w-[58px] rounded-full px-2 py-0.5 font-semibold capitalize transition ${
               on
                 ? s === "personal"
                   ? "bg-violet-100 text-violet-900 dark:bg-violet-900/40 dark:text-violet-100"
-                  : "bg-amber-100 text-amber-900 dark:bg-amber-900/40 dark:text-amber-100"
+                  : groupPalette
+                    ? ""
+                    : "bg-amber-100 text-amber-900 dark:bg-amber-900/40 dark:text-amber-100"
                 : "text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-100"
             }`}
           >
@@ -2022,6 +2086,7 @@ function ChapterNotePanel({
   roomId,
   selfUserId,
   socialNotesEnabled,
+  groupPalette,
 }: {
   book: string;
   chapter: number;
@@ -2030,6 +2095,7 @@ function ChapterNotePanel({
   roomId?: string;
   selfUserId?: string;
   socialNotesEnabled?: boolean;
+  groupPalette?: { bubble: string; bubbleFg: string };
 }) {
   const anchor = `${book}.${chapter}`;
   const [draft, setDraft] = useState("");
@@ -2068,7 +2134,7 @@ function ChapterNotePanel({
         <div className="text-[10px] uppercase tracking-wide text-violet-700 dark:text-violet-300">
           Notes on {book} {chapter}
         </div>
-        <ScopePill scope={scope} onChange={setScope} />
+        <ScopePill scope={scope} onChange={setScope} groupPalette={groupPalette} />
       </div>
       <ul className="space-y-1.5">
         {filteredNotes.length === 0 && (
@@ -2383,30 +2449,28 @@ function TodaysReadingBanner({
   }
 
   return (
-    <div className="mb-3 rounded-2xl border border-amber-200 bg-amber-50/70 px-3 py-2 text-[12px] text-amber-900 shadow-sm backdrop-blur-md dark:border-amber-800/60 dark:bg-amber-900/30 dark:text-amber-100">
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <span aria-hidden>{justDone ? "✓" : "📖"}</span>
-          <span className="font-semibold">
-            {justDone ? "Done!" : "Today's reading"}
-          </span>
-          <span className="text-amber-700/80 dark:text-amber-200/70">
-            {plan.name} · Day {today.day_index}
-          </span>
-        </div>
-        {!justDone && (
-          <button
-            onClick={() => setHidden(true)}
-            aria-label="Dismiss for now"
-            title="Dismiss for now"
-            className="rounded-full px-1.5 text-amber-700/70 hover:bg-amber-100 dark:text-amber-200/70 dark:hover:bg-amber-800/40"
-          >
-            ×
-          </button>
-        )}
+    <div className="relative mx-auto mb-3 max-w-md rounded-2xl border border-amber-200 bg-amber-50/70 px-3 py-2 text-center text-[12px] text-amber-900 shadow-sm backdrop-blur-md dark:border-amber-800/60 dark:bg-amber-900/30 dark:text-amber-100">
+      {!justDone && (
+        <button
+          onClick={() => setHidden(true)}
+          aria-label="Dismiss for now"
+          title="Dismiss for now"
+          className="absolute right-2 top-1.5 rounded-full px-1.5 text-amber-700/70 hover:bg-amber-100 dark:text-amber-200/70 dark:hover:bg-amber-800/40"
+        >
+          ×
+        </button>
+      )}
+      <div className="flex flex-wrap items-center justify-center gap-x-2">
+        <span aria-hidden>{justDone ? "✓" : "📖"}</span>
+        <span className="font-semibold">
+          {justDone ? "Done!" : "Today's reading"}
+        </span>
+        <span className="text-amber-700/80 dark:text-amber-200/70">
+          {plan.name} · Day {today.day_index}
+        </span>
       </div>
       {!justDone && (
-        <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+        <div className="mt-1.5 flex flex-wrap items-center justify-center gap-1.5">
           {parsed.map(({ ref, book, chapter, label, visited: v }) => (
             <button
               key={ref}
@@ -2425,7 +2489,7 @@ function TodaysReadingBanner({
             onClick={() => void markDone()}
             disabled={busy}
             aria-label="Mark today's reading as done"
-            className={`ml-auto inline-flex items-center gap-1 rounded-full px-3 py-1 text-[11px] font-semibold transition disabled:opacity-60 ${
+            className={`inline-flex items-center gap-1 rounded-full px-3 py-1 text-[11px] font-semibold transition disabled:opacity-60 ${
               allVisited
                 ? "bg-emerald-600 text-white shadow-sm hover:bg-emerald-500"
                 : "border border-amber-400 bg-paper text-amber-900 hover:bg-amber-100 dark:border-amber-600 dark:bg-neutral-900 dark:text-amber-100 dark:hover:bg-amber-900/40"

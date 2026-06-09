@@ -10,6 +10,10 @@ pycrdt-websocket>=0.15
 alembic>=1.13
 pywebpush>=2.0
 py-vapid>=1.9
+# Optional cross-process pub/sub for chat_hub. Falls back to in-process
+# only when REDIS_URL isn't set, so the dep is required but the runtime
+# is opt-in.
+redis>=5.0
 # dev / test
 pytest>=8.0
 pytest-asyncio>=0.23
