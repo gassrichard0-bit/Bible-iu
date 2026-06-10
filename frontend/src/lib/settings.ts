@@ -81,6 +81,38 @@ export interface Settings {
 }
 
 const KEY = "bible-iu:settings";
+const MIGRATIONS_KEY = "bible-iu:settings-migrations";
+
+/** Bump this and add a branch in `runMigrations` to retroactively
+ *  change a default for users who already had the old value persisted. */
+const CURRENT_MIGRATION_VERSION = 1;
+
+function runMigrations(saved: Partial<Settings>): Partial<Settings> {
+  if (typeof localStorage === "undefined") return saved;
+  let applied = 0;
+  try {
+    applied = parseInt(localStorage.getItem(MIGRATIONS_KEY) || "0", 10) || 0;
+  } catch {
+    applied = 0;
+  }
+  if (applied >= CURRENT_MIGRATION_VERSION) return saved;
+  const next = { ...saved };
+  // Migration 1: promote socialNotesEnabled to true for everyone. The
+  // feature was already built but the default-off shipped before it
+  // was ready, so most users saved `false` without ever realizing the
+  // toggle existed. New opt-outs after this migration runs persist
+  // normally — we only force the value once, not every load.
+  if (applied < 1) {
+    next.socialNotesEnabled = true;
+  }
+  try {
+    localStorage.setItem(MIGRATIONS_KEY, String(CURRENT_MIGRATION_VERSION));
+  } catch {
+    // localStorage write failed — accept that the migration will retry
+    // next load, which is idempotent for this set of changes.
+  }
+  return next;
+}
 
 export const defaultSettings: Settings = {
   debugMode: false,
@@ -106,8 +138,26 @@ export function readSettings(): Settings {
   if (typeof localStorage === "undefined") return { ...defaultSettings };
   try {
     const raw = localStorage.getItem(KEY);
-    if (!raw) return { ...defaultSettings };
-    return { ...defaultSettings, ...(JSON.parse(raw) as Partial<Settings>) };
+    if (!raw) {
+      // Fresh install — record that all current migrations are "applied"
+      // since there's nothing to retro-fix.
+      try {
+        localStorage.setItem(MIGRATIONS_KEY, String(CURRENT_MIGRATION_VERSION));
+      } catch {}
+      return { ...defaultSettings };
+    }
+    const saved = JSON.parse(raw) as Partial<Settings>;
+    const migrated = runMigrations(saved);
+    const merged: Settings = { ...defaultSettings, ...migrated };
+    // If the migration changed anything, persist immediately so the
+    // user's stored copy reflects the new value on every subsequent
+    // load (and any other tab that reads from localStorage).
+    if (migrated !== saved) {
+      try {
+        localStorage.setItem(KEY, JSON.stringify(merged));
+      } catch {}
+    }
+    return merged;
   } catch {
     return { ...defaultSettings };
   }
