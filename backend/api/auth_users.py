@@ -1414,14 +1414,27 @@ _VERSE_ID_RE = re.compile(r"^[A-Z0-9]{2,4}\.\d{1,3}\.\d{1,3}$")
 
 
 class AnnotationOut(BaseModel):
+    # `id` is now part of the wire shape — sub-verse ranges can stack
+    # so the frontend needs a stable handle to refer to one row.
+    id: str
     verse_id: str
     kind: str
     color: str
+    # Both null means "whole verse" — the v1 / paper-Bible shape.
+    # Both set means a [start, end) range over the verse text.
+    start_offset: Optional[int] = None
+    end_offset: Optional[int] = None
     updated_at: str
 
 
 class AnnotationUpsert(BaseModel):
     color: str
+    # Both null = whole-verse upsert (the original v1 behavior — one
+    # row per (verse, kind), overwrite color). Both set = create a
+    # new sub-verse row at that range; multiple ranges per kind are
+    # allowed.
+    start_offset: Optional[int] = None
+    end_offset: Optional[int] = None
 
 
 @router.get(
@@ -1443,9 +1456,12 @@ def list_annotations(
     ).all()
     return [
         AnnotationOut(
+            id=r.id,
             verse_id=r.verse_id,
             kind=r.kind,
             color=r.color,
+            start_offset=r.start_offset,
+            end_offset=r.end_offset,
             updated_at=_utc_iso(r.updated_at),
         )
         for r in rows
@@ -1475,33 +1491,114 @@ def set_annotation(
         raise HTTPException(
             400, f"color must be one of {sorted(_ANNOTATION_COLORS)}"
         )
-    existing = s.scalar(
-        select(Annotation).where(
-            Annotation.user_id == user.id,
-            Annotation.verse_id == verse_id,
-            Annotation.kind == kind,
+    start = payload.start_offset
+    end = payload.end_offset
+    # Either both offsets are set (sub-verse) or both are null (whole
+    # verse). Mixed half-set / half-null is meaningless — reject so a
+    # UI bug surfaces rather than silently writing nonsense.
+    if (start is None) != (end is None):
+        raise HTTPException(
+            400, "start_offset and end_offset must be both set or both null"
         )
-    )
-    if existing is None:
-        row = Annotation(
-            id=str(uuid4()),
-            user_id=user.id,
-            verse_id=verse_id,
-            kind=kind,
-            color=payload.color,
+    if start is not None and end is not None:
+        if start < 0 or end < 0:
+            raise HTTPException(400, "offsets must be non-negative")
+        if end <= start:
+            raise HTTPException(400, "end_offset must be greater than start_offset")
+        # Cap at a sane ceiling so a malformed value can't run away —
+        # the longest single verse in any seeded translation is around
+        # 528 chars (KJV Esther 8:9), so 2000 is comfortably above.
+        if end > 2000 or start > 2000:
+            raise HTTPException(400, "offsets out of range")
+    # Whole-verse upserts keep the v1 semantics: one row per (verse,
+    # kind), update color in place. Sub-verse calls insert a NEW row
+    # at the given range — multiple stacks are allowed, but the
+    # uq_annotations_user_verse_kind_range constraint prevents the
+    # exact same range from being inserted twice.
+    if start is None and end is None:
+        existing = s.scalar(
+            select(Annotation).where(
+                Annotation.user_id == user.id,
+                Annotation.verse_id == verse_id,
+                Annotation.kind == kind,
+                Annotation.start_offset.is_(None),
+                Annotation.end_offset.is_(None),
+            )
         )
-        s.add(row)
+        if existing is None:
+            row = Annotation(
+                id=str(uuid4()),
+                user_id=user.id,
+                verse_id=verse_id,
+                kind=kind,
+                color=payload.color,
+            )
+            s.add(row)
+        else:
+            existing.color = payload.color
+            row = existing
     else:
-        existing.color = payload.color
-        row = existing
+        existing = s.scalar(
+            select(Annotation).where(
+                Annotation.user_id == user.id,
+                Annotation.verse_id == verse_id,
+                Annotation.kind == kind,
+                Annotation.start_offset == start,
+                Annotation.end_offset == end,
+            )
+        )
+        if existing is None:
+            row = Annotation(
+                id=str(uuid4()),
+                user_id=user.id,
+                verse_id=verse_id,
+                kind=kind,
+                color=payload.color,
+                start_offset=start,
+                end_offset=end,
+            )
+            s.add(row)
+        else:
+            existing.color = payload.color
+            row = existing
     s.commit()
     s.refresh(row)
     return AnnotationOut(
+        id=row.id,
         verse_id=row.verse_id,
         kind=row.kind,
         color=row.color,
+        start_offset=row.start_offset,
+        end_offset=row.end_offset,
         updated_at=_utc_iso(row.updated_at),
     )
+
+
+@router.delete(
+    "/annotations/by-id/{annotation_id}",
+    dependencies=[Depends(require_password)],
+)
+def delete_annotation_by_id(
+    annotation_id: str,
+    s: Session = Depends(_db_session),
+    x_session_token: Optional[str] = Header(default=None),
+) -> dict:
+    """Remove a single annotation row — used when the user taps a
+    specific sub-verse highlight to clear just that range. The
+    `/annotations/{verse_id}/{kind}` route still works for
+    "clear all my yellow underlines on this verse" if the UI wants
+    a kind-scoped wipe; this is the row-precise version."""
+    user = _resolve_session(s, x_session_token)
+    if user is None:
+        raise HTTPException(401, "not signed in")
+    row = s.get(Annotation, annotation_id)
+    if row is None or row.user_id != user.id:
+        # 404 for both not-found and "belongs to someone else" so an
+        # attacker can't probe which IDs exist.
+        raise HTTPException(404, "annotation not found")
+    s.delete(row)
+    s.commit()
+    return {"ok": True}
 
 
 @router.delete(

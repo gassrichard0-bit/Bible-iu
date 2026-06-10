@@ -22,6 +22,7 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     ForeignKey,
+    Integer,
     String,
     Text,
     UniqueConstraint,
@@ -140,20 +141,41 @@ class ReadingPlanProgress(Base, TimestampMixin):
 
 
 class Annotation(Base, TimestampMixin):
-    """A per-user mark on a single verse. `kind` distinguishes the
-    different paper-Bible tools the toolbar offers (highlight,
-    underline, strikethrough); each kind has its own row so a verse
-    can carry several simultaneously (e.g. yellow highlight + blue
-    underline). `color` is a palette key from the frontend
-    (`yellow|green|blue|pink|orange`); the renderer translates that
-    into Tailwind classes."""
+    """A per-user mark on a (sub-range of a) single verse. `kind`
+    distinguishes the paper-Bible tools the toolbar offers (highlight,
+    underline, strikethrough); each (kind, range) is its own row so a
+    verse can carry several simultaneously (e.g. yellow highlight on
+    "For God so loved" + green highlight on "everlasting life" within
+    one verse). `start_offset` / `end_offset` are character offsets
+    into the verse text; both null means "whole verse" — the v1
+    shape, preserved for backward compat. `color` is a palette key
+    from the frontend (`yellow|green|blue|pink|orange`); the renderer
+    translates into Tailwind classes."""
     __tablename__ = "annotations"
-    __table_args__ = (UniqueConstraint("user_id", "verse_id", "kind"),)
+    __table_args__ = (
+        # Wider uniqueness so a user can stack multiple sub-ranges of
+        # the same kind on one verse, but still can't double-write the
+        # SAME range twice (a duplicate would be a UI bug we want to
+        # surface, not a write to retry).
+        UniqueConstraint(
+            "user_id",
+            "verse_id",
+            "kind",
+            "start_offset",
+            "end_offset",
+            name="uq_annotations_user_verse_kind_range",
+        ),
+    )
     id: Mapped[str] = mapped_column(String, primary_key=True)
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
     verse_id: Mapped[str] = mapped_column(String, index=True)
     kind: Mapped[str] = mapped_column(String)
     color: Mapped[str] = mapped_column(String)
+    # null + null = whole verse (legacy / explicit "verse-wide" tools).
+    # otherwise [start_offset, end_offset) in JS-string-character terms
+    # over the canonical translation text the verse renders with.
+    start_offset: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    end_offset: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
 
 class RegisteredGroupNote(Base, TimestampMixin):
