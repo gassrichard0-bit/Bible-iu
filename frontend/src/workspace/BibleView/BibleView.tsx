@@ -1013,7 +1013,12 @@ export function BibleView({
           userSelect: "none",
           ...(bottomInset
             ? {
-                paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 160px)",
+                // Floating AI pill (~64px) + tab nav (~70px) +
+                // spacing + safe area. 160px wasn't enough — the
+                // last verses ended up tucked behind the nav on
+                // iPhone SE / 14 Pro. 240px gives a comfortable
+                // gap above the nav even with the AI composer open.
+                paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 240px)",
               }
             : {}),
         }}
