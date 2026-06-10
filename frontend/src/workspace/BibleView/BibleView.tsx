@@ -22,7 +22,7 @@ import {
   type VerseTokenOut,
 } from "../../lib/api";
 import { BottomSheet } from "../../shell/BottomSheet";
-import { speakSequence } from "../../lib/tts";
+import { speakSequence, armAudioSession } from "../../lib/tts";
 import type { VerseFocus } from "../Workspace";
 import type { NotesApi } from "../NotesSidebar/notesStore";
 import { NoteSocialBlock } from "../NotesSidebar/NoteSocialBlock";
@@ -187,6 +187,35 @@ export function BibleView({
   const [voiceCurrentVerseId, setVoiceCurrentVerseId] = useState<string | null>(
     null,
   );
+  // Diagnostic state — captures the very first verse a play session
+  // started at + a tail of the last `[tts]` events. Lets us read off
+  // EXACTLY where playback began and where it stopped after the
+  // sequence stalls. Render lives in <VoiceDiagPanel /> below.
+  const [voiceStartVerseId, setVoiceStartVerseId] = useState<string | null>(
+    null,
+  );
+  const [voiceDiagLog, setVoiceDiagLog] = useState<
+    Array<{ stage: string; detail: string; at: number }>
+  >([]);
+  useEffect(() => {
+    const onDiag = (e: Event) => {
+      const ce = e as CustomEvent<{ stage: string; detail?: unknown; at: number }>;
+      const stage = ce.detail?.stage ?? "?";
+      let detail = "";
+      const d = ce.detail?.detail;
+      if (typeof d === "string") detail = d;
+      else if (d != null) {
+        try { detail = JSON.stringify(d); } catch { detail = String(d); }
+      }
+      setVoiceDiagLog((prev) => {
+        const next = [...prev, { stage, detail, at: ce.detail?.at ?? Date.now() }];
+        // Keep the last 18 events — enough to see context of a stall.
+        return next.length > 18 ? next.slice(next.length - 18) : next;
+      });
+    };
+    window.addEventListener("tts:diag", onDiag);
+    return () => window.removeEventListener("tts:diag", onDiag);
+  }, []);
   const voiceHandleRef = useRef<{ stop: () => void } | null>(null);
   // Root of the Bible view — used to attach a native `selectstart`
   // killer so iOS Safari's magnifier + word-callout never engage on
@@ -321,6 +350,13 @@ export function BibleView({
   }, [voicePlaying, voicePaused, voiceCurrentVerseId, voiceStartFrom]);
 
   function startVoiceReader() {
+    // CRITICAL for iOS Safari: arm the AudioContext synchronously
+    // inside the tap handler. We rely on BufferSource for chained
+    // playback (HTMLAudio gets killed at natural silences mid-verse,
+    // e.g. the colon in "righteous: but ..."). BufferSource only
+    // works if the AudioContext is `running` before .start() is
+    // called, and resume() must run inside a user gesture on iOS.
+    armAudioSession();
     // Saved-position resume takes priority over every start-from mode
     // so the user's pause/resume gesture is honored exactly — even
     // across chapter or book boundaries (and across page reloads,
@@ -333,6 +369,8 @@ export function BibleView({
         if (idx >= 0) {
           const { items, startIndex } = _buildSequenceFromVerses(verses, idx);
           voiceHandleRef.current?.stop();
+          setVoiceStartVerseId(items[startIndex]?.id ?? null);
+          setVoiceDiagLog([]);
           const handle = speakSequence(items, {
             startIndex,
             onAdvance: (_i, item) => {
@@ -340,7 +378,12 @@ export function BibleView({
               _saveVoiceResume(item.id);
             },
             onEnd: () => {
-              if (voiceStartFrom === "book" && chapter < chapterCount) {
+              // Always continue across chapter boundaries. iOS users
+              // expect the reader to flow like an audiobook — stopping
+              // at chapter end forced them to tap Play repeatedly.
+              // When we reach the last chapter of the last book we
+              // genuinely run out; the inner branch handles that.
+              if (chapter < chapterCount) {
                 voiceContinueRef.current = true;
                 onPickChapter(chapter + 1);
               } else {
@@ -391,6 +434,8 @@ export function BibleView({
     const { items, startIndex } = _buildSequenceFromVerses(verses, startIdx);
     if (items.length === 0) return;
     voiceHandleRef.current?.stop();
+    setVoiceStartVerseId(items[startIndex]?.id ?? null);
+    setVoiceDiagLog([]);
     const handle = speakSequence(items, {
       startIndex,
       onAdvance: (_i, item) => {
@@ -398,10 +443,10 @@ export function BibleView({
         _saveVoiceResume(item.id);
       },
       onEnd: () => {
-        // Reached the last verse of the current chapter. When the user
-        // chose "Book start", auto-advance to the next chapter and
-        // queue a fresh sequence on the new verse list.
-        if (voiceStartFrom === "book" && chapter < chapterCount) {
+        // Always continue across chapter boundaries — voice reader
+        // should flow like an audiobook regardless of start-from mode.
+        // Last chapter of the last book is the only natural stop.
+        if (chapter < chapterCount) {
           voiceContinueRef.current = true;
           onPickChapter(chapter + 1);
           // Leave voicePlaying = true so the chapter-change effect
@@ -471,6 +516,9 @@ export function BibleView({
     }
     const { items, startIndex } = _buildSequenceFromVerses(verses, startIdx);
     voiceHandleRef.current?.stop();
+    setVoiceStartVerseId(items[startIndex]?.id ?? null);
+    // Don't clear the diag log on chapter-bridge: we WANT to see the
+    // tail of events that led to the bridge.
     const handle = speakSequence(items, {
       startIndex,
       onAdvance: (_i, item) => {
@@ -478,7 +526,9 @@ export function BibleView({
         _saveVoiceResume(item.id);
       },
       onEnd: () => {
-        if (voiceStartFrom === "book" && chapter < chapterCount) {
+        // Continue across chapter boundaries on every start mode.
+        // Stops naturally at the last chapter of the current book.
+        if (chapter < chapterCount) {
           voiceContinueRef.current = true;
           onPickChapter(chapter + 1);
         } else {
@@ -929,6 +979,40 @@ export function BibleView({
           onPickChapter(hit.chapter);
         }}
       />
+
+      {/* Voice diagnostic strip. Surfaces the exact verse the reader
+       *  started at, the verse it's currently on (or stopped at), and
+       *  the last few `[tts]` events so transient stalls are
+       *  attributable. Renders only while a session has been started
+       *  this app run; collapses to zero footprint otherwise. */}
+      {(voiceStartVerseId || voiceCurrentVerseId || voiceDiagLog.length > 0) && (
+        <VoiceDiagPanel
+          startVerseId={voiceStartVerseId}
+          currentVerseId={voiceCurrentVerseId}
+          isPlaying={voicePlaying && !voicePaused}
+          log={voiceDiagLog}
+          onCopy={() => {
+            try {
+              const text = [
+                `start: ${voiceStartVerseId ?? "—"}`,
+                `current: ${voiceCurrentVerseId ?? "—"}`,
+                `playing: ${voicePlaying}, paused: ${voicePaused}`,
+                "---",
+                ...voiceDiagLog.map(
+                  (e) => `${new Date(e.at).toISOString().slice(11, 23)} ${e.stage} ${e.detail}`,
+                ),
+              ].join("\n");
+              navigator.clipboard?.writeText(text);
+            } catch {
+              /* best-effort */
+            }
+          }}
+          onDismiss={() => {
+            setVoiceStartVerseId(null);
+            setVoiceDiagLog([]);
+          }}
+        />
+      )}
 
       {onToggleFocus && (
         <div className="relative flex h-0 justify-center">
@@ -2502,6 +2586,91 @@ function TodaysReadingBanner({
     </div>
   );
 }
+
+/** Floating debug panel for voice-reader sessions. Shows the verse
+ *  the reader started at + the verse it's currently on (or stopped
+ *  at after a stall), and a tail of the last `[tts]` diag events so
+ *  we can read the failure off the screen without opening Safari Web
+ *  Inspector. Tap "Copy" to dump everything to the clipboard. */
+function VoiceDiagPanel({
+  startVerseId,
+  currentVerseId,
+  isPlaying,
+  log,
+  onCopy,
+  onDismiss,
+}: {
+  startVerseId: string | null;
+  currentVerseId: string | null;
+  isPlaying: boolean;
+  log: Array<{ stage: string; detail: string; at: number }>;
+  onCopy: () => void;
+  onDismiss: () => void;
+}) {
+  const [expanded, setExpanded] = useState(true);
+  return (
+    <div
+      className="pointer-events-auto fixed left-2 right-2 top-2 z-30 mx-auto max-w-md rounded-2xl border border-amber-300/80 bg-amber-50/95 px-3 py-2 text-[11px] text-amber-900 shadow-[0_4px_14px_rgba(0,0,0,0.12)] backdrop-blur dark:border-amber-700/70 dark:bg-amber-900/70 dark:text-amber-100"
+      role="status"
+      aria-label="Voice reader diagnostic"
+    >
+      <div className="flex items-center gap-2">
+        <span
+          className={`inline-block h-2 w-2 shrink-0 rounded-full ${
+            isPlaying
+              ? "animate-pulse bg-emerald-500"
+              : "bg-red-500"
+          }`}
+          aria-hidden
+        />
+        <span className="font-semibold">
+          {isPlaying ? "Reading" : "Stopped"}
+        </span>
+        <span className="font-mono">
+          {startVerseId ?? "—"} → {currentVerseId ?? "—"}
+        </span>
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          className="ml-auto rounded-full px-2 py-0.5 text-[10px] font-semibold hover:bg-amber-200/70 dark:hover:bg-amber-800/40"
+          aria-label={expanded ? "Collapse log" : "Expand log"}
+        >
+          {expanded ? "▾" : "▸"}
+        </button>
+        <button
+          type="button"
+          onClick={onCopy}
+          className="rounded-full px-2 py-0.5 text-[10px] font-semibold hover:bg-amber-200/70 dark:hover:bg-amber-800/40"
+          aria-label="Copy diagnostic to clipboard"
+        >
+          Copy
+        </button>
+        <button
+          type="button"
+          onClick={onDismiss}
+          className="rounded-full px-1.5 text-[12px] hover:bg-amber-200/70 dark:hover:bg-amber-800/40"
+          aria-label="Dismiss diagnostic"
+        >
+          ✕
+        </button>
+      </div>
+      {expanded && log.length > 0 && (
+        <ul className="mt-1.5 max-h-44 overflow-y-auto font-mono text-[10px] leading-tight">
+          {log.map((e, i) => (
+            <li key={i} className="flex gap-2">
+              <span className="shrink-0 opacity-70">
+                {new Date(e.at).toISOString().slice(14, 23)}
+              </span>
+              <span className="shrink-0 font-semibold">{e.stage}</span>
+              <span className="truncate opacity-90">{e.detail}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 
 function BookmarkRibbon({ filled }: { filled: boolean }) {
   return (

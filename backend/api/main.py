@@ -81,7 +81,7 @@ from .auth import require_password
 from .auth_users import require_user, router as auth_router, resolve_user
 from .push import fanout_to_room, send_push_to_user, vapid_public_key
 from .observability import configure_logging, configure_sentry
-from .rate_limit import rate_limit
+from .rate_limit import rate_limit, tts_rate_limit
 from . import chat_hub, reading_plan_scheduler, reading_plans, yjs_sync
 from .schemas import (
     AgentNoteAppended,
@@ -3780,7 +3780,7 @@ class TTSRequest(BaseModel):
 
 @app.post(
     "/tts/speak",
-    dependencies=[Depends(require_password), Depends(rate_limit)],
+    dependencies=[Depends(require_password), Depends(tts_rate_limit)],
 )
 def tts_speak(payload: TTSRequest) -> Response:
     """Proxy to Deepgram Aura for human-sounding TTS. Long inputs are

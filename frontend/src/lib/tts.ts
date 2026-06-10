@@ -524,21 +524,27 @@ export async function playAudioBuffer(
   };
 }
 
-/** Register a one-time global gesture listener that resumes the
- *  AudioContext + arms the silent oscillator. */
+/** Continuous gesture listener that keeps the AudioContext alive
+ *  AND recovers it after iOS interrupts the audio session mid-
+ *  sequence. iOS Safari can flip an active context to "interrupted"
+ *  on lock-screen / notification / app-switch and that state is
+ *  only resumable from inside a fresh user gesture. By re-running
+ *  armAudioSession on every pointerdown / touchstart we get a free
+ *  recovery every time the user touches the screen — no UI prompt
+ *  needed. Idempotent: the silent-oscillator branch in
+ *  armAudioSession bails when already armed. */
 export function installAudioPrimer(): void {
   if (typeof window === "undefined") return;
-  let installed = false;
   const handler = () => {
-    if (installed) return;
-    installed = true;
     armAudioSession();
-    window.removeEventListener("pointerdown", handler, true);
-    window.removeEventListener("touchstart", handler, true);
-    window.removeEventListener("keydown", handler, true);
   };
-  window.addEventListener("pointerdown", handler, true);
-  window.addEventListener("touchstart", handler, true);
+  // pointerdown alone is enough — modern Safari fires it for touches,
+  // mouse clicks, and pen events. Doubling up with touchstart used to
+  // fire armAudioSession twice per tap which polluted the diag panel.
+  window.addEventListener("pointerdown", handler, {
+    capture: true,
+    passive: true,
+  });
   window.addEventListener("keydown", handler, true);
 }
 
@@ -560,7 +566,14 @@ export function armAudioSession(): void {
     _ttsLog("arm-no-ctx");
     return;
   }
-  if (ctx.state === "suspended") {
+  // iOS Safari adds a non-standard "interrupted" state when the OS
+  // pauses our audio session (lock screen, other audio app, etc.).
+  // resume() works on both — we just need to check beyond the spec'd
+  // "suspended". Skipping this branch was why a single notification
+  // could permanently kill the read-aloud session.
+  const needsResume =
+    ctx.state === "suspended" || (ctx.state as string) === "interrupted";
+  if (needsResume) {
     void ctx.resume().then(() => {
       _ttsLog("arm-resumed", ctx.state);
     }).catch((e) => {
@@ -568,7 +581,9 @@ export function armAudioSession(): void {
     });
   }
   if (_silentOsc) {
-    _ttsLog("arm-already");
+    // Don't log — this fires on every screen tap and drowns out the
+    // signal in the diagnostic panel. armAudioSession is idempotent
+    // by design; the no-op case is expected, not noteworthy.
     return;
   }
   try {
@@ -716,39 +731,83 @@ export function speakSequence(
 
   let index = Math.max(0, Math.min(items.length - 1, opts?.startIndex ?? 0));
   let stopped = false;
-  // ONE Audio element reused across the whole sequence. iOS Safari
-  // grants playback permission to the specific HTMLAudioElement
-  // tapped by the user — creating a NEW element per verse would lose
-  // that permission and the sequence stalls after the first verse.
-  // Reusing the same element + just swapping `src` for each verse
-  // keeps autoplay alive for the rest of the chapter.
-  const audio = new Audio();
-  audio.preload = "auto";
-  // 0.9 is enough to take the rush off without making Athena sound
-  // syrupy — she's natively a brisk speaker. The caller can override
-  // via opts.rate for short utterances (e.g. the one-shot agent
-  // answer which fits the default cadence).
-  audio.playbackRate = opts?.rate ?? 0.9;
-  // Breath gap between verses so the listener can land each phrase
-  // before the next one starts. Deepgram packs the audio tight — a
-  // ~450ms gap matches how a human narrator would pace verse-by-verse.
-  const VERSE_GAP_MS = 450;
-  let currentBlobUrl: string | null = null;
+  const rate = opts?.rate ?? 0.9;
+
+  // PRIMARY playback path: AudioContext + BufferSource. iOS Safari's
+  // HTMLAudioElement gets KILLED at natural silences inside a verse
+  // (e.g. the colon in "righteous: but ..."). A decoded AudioBuffer
+  // plays straight through silences because the whole audio is
+  // already in memory and the BufferSource isn't a streamed media
+  // element — iOS can't decide "no audio activity, suspend".
+  //
+  // Requirement: the AudioContext must be `running` before .start()
+  // is called. The caller (BibleView.startVoiceReader) primes it
+  // synchronously inside the Play-tap handler before invoking
+  // speakSequence, so on iOS PWA this works on the first verse too.
+  let stopCurrentSource: (() => void) | null = null;
+  // HTMLAudio fallback (browsers without WebAudio decode support or
+  // when decode fails for a verse).
+  const fallbackAudio = new Audio();
+  fallbackAudio.preload = "auto";
+  fallbackAudio.playbackRate = rate;
+  let fallbackBlobUrl: string | null = null;
   let webSpeechFallback: SpeakHandle | null = null;
 
-  function cleanupBlob() {
-    if (currentBlobUrl) {
+  // Prefetch cache: map verse index → {bytes, decoded} promise.
+  // Pre-fetching the NEXT verse while the current one is playing
+  // eliminates the dead-air gap.
+  const prefetch = new Map<
+    number,
+    Promise<{ buf: ArrayBuffer; decoded: AudioBuffer | null } | null>
+  >();
+
+  async function fetchVerseAudio(
+    i: number,
+  ): Promise<{ buf: ArrayBuffer; decoded: AudioBuffer | null } | null> {
+    if (i < 0 || i >= items.length) return null;
+    const cleanText = stripForTTS(items[i].text);
+    if (!cleanText) return null;
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+    const password = _getPassword();
+    if (password) headers["X-App-Password"] = password;
+    try {
+      const resp = await fetch("/api/tts/speak", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          text: cleanText,
+          voice: opts?.voice ?? _readPreferredVoice(),
+        }),
+      });
+      if (!resp.ok || resp.status === 204) return null;
+      const buf = await resp.arrayBuffer();
+      const decoded = await decodeAudioBuffer(buf).catch(() => null);
+      return { buf, decoded };
+    } catch {
+      return null;
+    }
+  }
+
+  function schedulePrefetch(i: number): void {
+    if (i < 0 || i >= items.length) return;
+    if (prefetch.has(i)) return;
+    prefetch.set(i, fetchVerseAudio(i));
+  }
+
+  function cleanupFallbackBlob() {
+    if (fallbackBlobUrl) {
       try {
-        URL.revokeObjectURL(currentBlobUrl);
+        URL.revokeObjectURL(fallbackBlobUrl);
       } catch {
         // ignore
       }
-      currentBlobUrl = null;
+      fallbackBlobUrl = null;
     }
   }
 
   function advance(i: number) {
-    cleanupBlob();
     if (stopped) return;
     if (i >= items.length) {
       opts?.onEnd?.();
@@ -756,21 +815,6 @@ export function speakSequence(
     }
     speakAt(i);
   }
-
-  audio.onended = () => {
-    if (stopped) return;
-    // Wait a beat before the next verse so the cadence reads as
-    // narration, not a teleprompter.
-    window.setTimeout(() => {
-      if (!stopped) advance(index + 1);
-    }, VERSE_GAP_MS);
-  };
-  audio.onerror = () => {
-    // Audio decoding failed for this verse — skip ahead rather than
-    // stalling the sequence.
-    if (stopped) return;
-    advance(index + 1);
-  };
 
   async function speakAt(i: number) {
     if (stopped) return;
@@ -780,94 +824,140 @@ export function speakSequence(
     }
     index = i;
     opts?.onAdvance?.(i, items[i]);
+    _ttsLog("speak-at", `${i}: ${items[i].id}`);
+
     const cleanText = stripForTTS(items[i].text);
     if (!cleanText) {
-      // Nothing left to speak after cleanup (verse was pure Hebrew/Greek,
-      // citation markers, etc.) — skip to the next item.
-      advance(i + 1);
+      _ttsLog("empty-after-strip", items[i].id);
+      speakAt(i + 1);
       return;
     }
-    // Fetch this verse's audio from the Deepgram proxy.
-    let resp: Response;
-    try {
-      const headers: Record<string, string> = {
-        "Content-Type": "application/json",
-      };
-      const password = _getPassword();
-      if (password) headers["X-App-Password"] = password;
-      resp = await fetch("/api/tts/speak", {
-        method: "POST",
-        headers,
-        body: JSON.stringify({
-          text: cleanText,
-          voice: opts?.voice ?? _readPreferredVoice(),
-        }),
-      });
-    } catch {
-      // Network failure — fall back to Web Speech for THIS verse, then
-      // chain to the next.
-      if (stopped) return;
+
+    // Get audio (from prefetch cache or fresh fetch).
+    let cached = prefetch.get(i);
+    if (!cached) {
+      cached = fetchVerseAudio(i);
+      prefetch.set(i, cached);
+    }
+    const result = await cached;
+    prefetch.delete(i);
+    if (stopped) return;
+
+    // Kick the next-verse fetch in parallel.
+    schedulePrefetch(i + 1);
+
+    if (!result) {
+      _ttsLog("fetch-failed", items[i].id);
       webSpeechFallback = _speakWebSpeech(cleanText, {
         language: opts?.language,
-        rate: opts?.rate,
+        rate,
         pitch: opts?.pitch,
         onEnd: () => advance(i + 1),
       });
       return;
     }
-    if (stopped) return;
-    if (resp.status === 204 || !resp.ok) {
-      // Key missing or backend failure — Web Speech this verse.
-      webSpeechFallback = _speakWebSpeech(cleanText, {
-        language: opts?.language,
-        rate: opts?.rate,
-        pitch: opts?.pitch,
-        onEnd: () => advance(i + 1),
+
+    // Preferred: BufferSource. Plays the whole verse in one go;
+    // immune to iOS's "silence = suspend" rule.
+    if (result.decoded) {
+      const duration = result.decoded.duration;
+      _ttsLog("play-buffer", `${items[i].id} ${duration.toFixed(1)}s`);
+      // Watchdog: if onEnd doesn't fire by duration + 2s, iOS likely
+      // killed the source without firing the event. Force-advance so
+      // the sequence keeps going.
+      let endedNormally = false;
+      const watchdog = window.setTimeout(
+        () => {
+          if (stopped || endedNormally) return;
+          _ttsLog("buffer-watchdog-fired", `${items[i].id}`);
+          stopCurrentSource = null;
+          advance(i + 1);
+        },
+        Math.ceil(duration * 1000) + 2000,
+      );
+      const handle = await playAudioBuffer(result.decoded, {
+        rate,
+        onEnd: () => {
+          endedNormally = true;
+          window.clearTimeout(watchdog);
+          stopCurrentSource = null;
+          _ttsLog("buffer-ended", items[i].id);
+          if (!stopped) advance(i + 1);
+        },
       });
-      return;
+      if (handle) {
+        stopCurrentSource = handle;
+        return;
+      }
+      window.clearTimeout(watchdog);
+      _ttsLog("buffer-not-running");
+      // playAudioBuffer returned null — context suspended/interrupted
+      // and resume failed. Fall through to HTMLAudio.
     }
-    const buf = await resp.arrayBuffer();
-    if (stopped) return;
-    const blob = new Blob([buf], { type: "audio/mpeg" });
-    cleanupBlob();
-    currentBlobUrl = URL.createObjectURL(blob);
-    audio.src = currentBlobUrl;
-    try {
-      await audio.play();
-    } catch {
-      // play() rejected (autoplay block, etc.) — skip to next.
+
+    // Fallback: HTMLAudio + blob URL.
+    cleanupFallbackBlob();
+    fallbackBlobUrl = URL.createObjectURL(
+      new Blob([result.buf], { type: "audio/mpeg" }),
+    );
+    fallbackAudio.src = fallbackBlobUrl;
+    fallbackAudio.onended = () => {
       if (!stopped) advance(i + 1);
+    };
+    fallbackAudio.onerror = () => {
+      if (stopped) return;
+      _ttsLog("audio-error-mid", items[i].id);
+      // Skip to next verse — re-trying the same audio almost never
+      // helps if HTMLAudio has already errored.
+      advance(i + 1);
+    };
+    try {
+      await fallbackAudio.play();
+      _ttsLog("fallback-play-ok", items[i].id);
+    } catch (e) {
+      _ttsLog("play-rejected", (e as Error).message ?? "");
+      if (!stopped) {
+        webSpeechFallback = _speakWebSpeech(cleanText, {
+          language: opts?.language,
+          rate,
+          pitch: opts?.pitch,
+          onEnd: () => advance(i + 1),
+        });
+      }
     }
   }
 
+  // Warm-start the prefetch chain before first play.
+  schedulePrefetch(index + 1);
   speakAt(index);
 
   return {
-    // pause/resume can't reliably pause a streaming Audio element on
-    // iOS, so they just stop. Caller (BibleView) saves the resume
-    // verse index and re-creates the sequence on the next play.
     pause: () => {
       stopped = true;
+      stopCurrentSource?.();
       try {
-        audio.pause();
+        fallbackAudio.pause();
       } catch {
         // ignore
       }
       webSpeechFallback?.stop();
-      cleanupBlob();
+      cleanupFallbackBlob();
+      prefetch.clear();
     },
     resume: () => {
       // No-op (see pause comment).
     },
     stop: () => {
       stopped = true;
+      stopCurrentSource?.();
       try {
-        audio.pause();
+        fallbackAudio.pause();
       } catch {
         // ignore
       }
       webSpeechFallback?.stop();
-      cleanupBlob();
+      cleanupFallbackBlob();
+      prefetch.clear();
       try {
         window.speechSynthesis?.cancel();
       } catch {
@@ -876,6 +966,13 @@ export function speakSequence(
     },
     goto: (i: number) => {
       if (i < 0 || i >= items.length) return;
+      stopCurrentSource?.();
+      try {
+        fallbackAudio.pause();
+      } catch {
+        // ignore
+      }
+      prefetch.clear();
       speakAt(i);
     },
     current: () => index,
