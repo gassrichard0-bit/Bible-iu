@@ -114,6 +114,16 @@ from .schemas import (
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     configure_logging()
     configure_sentry()
+    # Bump the anyio threadpool. FastAPI routes sync handlers through
+    # `run_in_threadpool` → anyio's default limiter (40 tokens). Our
+    # handlers are sync + I/O-bound (SQLAlchemy + DeepSeek), so when
+    # /reason calls park 4-6 tokens for 20-30s each, the rest of the
+    # cohort head-of-lines waiting for a worker. Lift to 200 so a
+    # saturated agent path doesn't stall chat / reads / status posts.
+    # Surfaced by the MiroFish multi-group stress (every endpoint's
+    # p50 jumped from ~30ms to ~2500ms despite zero backend errors).
+    import anyio
+    anyio.to_thread.current_default_thread_limiter().total_tokens = 200
     init_db()
     # Persist provenance to the SQL ledger so the audit trail survives a
     # restart (CLAUDE.md §7.5). The Sql session is created per-write so
@@ -2549,7 +2559,13 @@ def create_note(
         author = session.get(User, user_id)
         room = session.get(Room, room_id)
         anchor = (payload.verse_anchors[0] if payload.verse_anchors else None)
-        preview = (payload.snapshot or "")[:140]
+        # NoteCreate.snapshot is the Tiptap doc dict, not a string —
+        # surfaced by MiroFish multi-group stress (28x KeyError(slice)
+        # when scholars posted group notes). Coerce to JSON so the push
+        # preview never crashes; the body is just a tease in the
+        # notification anyway.
+        import json as _json
+        preview = (_json.dumps(payload.snapshot) if payload.snapshot else "")[:140]
         fanout_to_room(
             session, room_id,
             exclude_user_id=user_id,

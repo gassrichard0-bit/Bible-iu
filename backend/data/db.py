@@ -39,8 +39,13 @@ engine = create_engine(
     echo=False,
     future=True,
     connect_args={"check_same_thread": False} if _IS_SQLITE else {},
-    pool_size=50,
-    max_overflow=50,
+    # Pool must hold at least as many connections as the FastAPI
+    # threadpool tokens (raised to 200 in main.py lifespan), or
+    # requests pile up at the pool boundary instead of executing.
+    # Surfaced by MiroFish multi-group stress: 249 QueuePool timeouts
+    # under 120 concurrent personas when limit was 50 + 50 overflow.
+    pool_size=200,
+    max_overflow=200,
     pool_timeout=10,
     pool_recycle=1800,
 )
