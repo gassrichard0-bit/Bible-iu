@@ -670,11 +670,14 @@ export function MobileShell({
   useEffect(() => {
     const onHide = () => setPanelHidden(true);
     const onShow = () => setPanelHidden(false);
+    const onToggle = () => setPanelHidden((v) => !v);
     window.addEventListener("bible:panel-hide", onHide);
     window.addEventListener("bible:panel-show", onShow);
+    window.addEventListener("bible:panel-toggle", onToggle);
     return () => {
       window.removeEventListener("bible:panel-hide", onHide);
       window.removeEventListener("bible:panel-show", onShow);
+      window.removeEventListener("bible:panel-toggle", onToggle);
     };
   }, []);
   useEffect(() => {

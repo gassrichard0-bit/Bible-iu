@@ -793,7 +793,10 @@ export function BibleView({
     if (g?.overscrolled) {
       const now = Date.now();
       if (now - lastBounceAtRef.current < 1500) {
-        window.dispatchEvent(new CustomEvent("bible:panel-hide"));
+        // Second bounce within 1.5s — toggle the panel. Used to be
+        // hide-only, which left the user stuck if they wanted the
+        // panel back without scrolling away from the closing verses.
+        window.dispatchEvent(new CustomEvent("bible:panel-toggle"));
         lastBounceAtRef.current = 0;
       } else {
         lastBounceAtRef.current = now;
