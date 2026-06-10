@@ -140,13 +140,27 @@ export function SocialShell({
     verseId: string,
     kind: AnnotationKind,
     color: AnnotationColor,
+    range?: { start: number; end: number } | null,
   ) => {
     try {
-      const r = await api.authAnnotationSet(verseId, kind, color);
-      setAnnotations((as) => [
-        r,
-        ...as.filter((a) => !(a.verse_id === verseId && a.kind === kind)),
-      ]);
+      const r = await api.authAnnotationSet(verseId, kind, color, range);
+      setAnnotations((as) => {
+        if (range != null) {
+          return [r, ...as.filter((a) => a.id !== r.id)];
+        }
+        return [
+          r,
+          ...as.filter(
+            (a) =>
+              !(
+                a.verse_id === verseId &&
+                a.kind === kind &&
+                a.start_offset == null &&
+                a.end_offset == null
+              ),
+          ),
+        ];
+      });
     } catch {}
   };
   const clearAnnotationKind = async (verseId: string, kind: AnnotationKind) => {

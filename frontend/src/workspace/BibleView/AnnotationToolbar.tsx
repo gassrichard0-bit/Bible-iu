@@ -29,6 +29,11 @@ export interface AnnotationTarget {
   verseId: string;
   /** Optional short label shown in the banner header (e.g. "Gen 1:1"). */
   label?: string;
+  /** Sub-verse character range — both set together when the user
+   *  drag-selected a portion of the verse text. Both null (the
+   *  default) means apply to the whole verse, matching v1. */
+  selStart?: number | null;
+  selEnd?: number | null;
 }
 
 interface Props {
@@ -38,6 +43,7 @@ interface Props {
     verseId: string,
     kind: AnnotationKind,
     color: AnnotationColor,
+    range?: { start: number; end: number } | null,
   ) => void;
   onClearKind: (verseId: string, kind: AnnotationKind) => void;
   onClearAll: (verseId: string) => void;
@@ -125,9 +131,21 @@ export function AnnotationToolbar({
             section={s}
             activeColor={activeColorFor(s.kind)}
             onTap={(color) => {
-              activeColorFor(s.kind) === color
-                ? onClearKind(target.verseId, s.kind)
-                : onApply(target.verseId, s.kind, color);
+              const range =
+                target.selStart != null && target.selEnd != null
+                  ? { start: target.selStart, end: target.selEnd }
+                  : null;
+              // Sub-verse selection always APPLIES — toggling to clear
+              // doesn't compose with a fresh drag selection (the user
+              // explicitly highlighted text, they want to mark it).
+              // Whole-verse keeps the v1 toggle semantics.
+              if (range) {
+                onApply(target.verseId, s.kind, color, range);
+              } else if (activeColorFor(s.kind) === color) {
+                onClearKind(target.verseId, s.kind);
+              } else {
+                onApply(target.verseId, s.kind, color, null);
+              }
             }}
           />
         ))}

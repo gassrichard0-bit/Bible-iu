@@ -231,15 +231,33 @@ export function MobileShell({
     verseId: string,
     kind: AnnotationKind,
     color: AnnotationColor,
+    range?: { start: number; end: number } | null,
   ) => {
     try {
-      const r = await api.authAnnotationSet(verseId, kind, color);
-      setAnnotations((as) => [
-        r,
-        ...as.filter(
-          (a) => !(a.verse_id === verseId && a.kind === kind),
-        ),
-      ]);
+      const r = await api.authAnnotationSet(verseId, kind, color, range);
+      setAnnotations((as) => {
+        // Whole-verse rows still upsert by (verse, kind) — drop the
+        // old whole-verse row of the same kind. Sub-verse rows stack
+        // by id, so we just remove the matching id if the same
+        // (verse, kind, range) was re-applied (the server returned
+        // the same id).
+        const isSubVerse = range != null;
+        if (isSubVerse) {
+          return [r, ...as.filter((a) => a.id !== r.id)];
+        }
+        return [
+          r,
+          ...as.filter(
+            (a) =>
+              !(
+                a.verse_id === verseId &&
+                a.kind === kind &&
+                a.start_offset == null &&
+                a.end_offset == null
+              ),
+          ),
+        ];
+      });
     } catch (e) {
       setToast({ text: annotationErrorText(e), kind: "error" });
     }

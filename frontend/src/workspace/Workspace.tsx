@@ -162,14 +162,25 @@ interface Props {
     verseId: string,
     kind: AnnotationKind,
     color: AnnotationColor,
+    range?: { start: number; end: number } | null,
   ) => void;
   onClearAnnotationKind?: (verseId: string, kind: AnnotationKind) => void;
   onClearAnnotations?: (verseId: string) => void;
   /** Lifted from BibleView so the bottom panel can render the
    *  annotation tool strip when a verse is long-pressed. */
-  annotationTarget?: { verseId: string; label?: string } | null;
+  annotationTarget?: {
+    verseId: string;
+    label?: string;
+    selStart?: number | null;
+    selEnd?: number | null;
+  } | null;
   onAnnotationTargetChange?: (
-    t: { verseId: string; label?: string } | null,
+    t: {
+      verseId: string;
+      label?: string;
+      selStart?: number | null;
+      selEnd?: number | null;
+    } | null,
   ) => void;
   /** Tells BibleView's scroller to leave room at the bottom for the
    *  floating composer + AI pill (mobile only). */
