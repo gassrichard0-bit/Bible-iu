@@ -682,6 +682,7 @@ export const Workspace = forwardRef<WorkspaceHandle, Props>(function Workspace(
               annotationTarget={annotationTarget}
               onAnnotationTargetChange={onAnnotationTargetChange}
               accentKey={accentKey}
+              bottomInset={bottomInset}
           />
           {/* Mobile slide-over for Resources */}
           {resourcesOpen && (
