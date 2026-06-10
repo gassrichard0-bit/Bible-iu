@@ -408,10 +408,24 @@ function PreferencesForm({
             onChange={(e) => setDefaultTranslation(e.target.value)}
             className="w-full rounded-2xl border border-neutral-200 bg-paper px-3 py-2.5 text-[15px] outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-200/40 dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100 dark:focus:border-amber-700 dark:focus:ring-amber-800/40"
           >
-            <option>King James Version</option>
-            <option>Hebrew (WLC)</option>
-            <option>Greek (TR)</option>
-            <option>Arabic (SVD)</option>
+            <optgroup label="Modern English">
+              <option>Berean Standard Bible</option>
+              <option>World English Bible</option>
+              <option>New English Translation</option>
+            </optgroup>
+            <optgroup label="Classic English">
+              <option>King James Version</option>
+              <option>Geneva Bible (1599)</option>
+              <option>Douay-Rheims Bible</option>
+            </optgroup>
+            <optgroup label="Literal / Study">
+              <option>Young's Literal Translation</option>
+            </optgroup>
+            <optgroup label="Original languages">
+              <option>Hebrew (WLC)</option>
+              <option>Greek (TR)</option>
+              <option>Arabic (SVD)</option>
+            </optgroup>
           </select>
         </Field>
         <Field label="Default note scope">

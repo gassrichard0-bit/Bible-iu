@@ -464,8 +464,19 @@ export function SettingsModal({
                 aria-label="Default translation"
                 className="ml-3 max-w-[50%] rounded-xl border border-neutral-200 bg-paper px-2.5 py-2 text-[12px] outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-200/40 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100 dark:focus:border-amber-700 dark:focus:ring-amber-800/40"
               >
-                <option value="King James Version">KJV (1611)</option>
-                <option value="World English Bible">WEB (modern)</option>
+                <optgroup label="Modern English">
+                  <option value="Berean Standard Bible">BSB (modern, free)</option>
+                  <option value="World English Bible">WEB (modern, public domain)</option>
+                  <option value="New English Translation">NET (scholarly, free)</option>
+                </optgroup>
+                <optgroup label="Classic English">
+                  <option value="King James Version">KJV (1611)</option>
+                  <option value="Geneva Bible (1599)">Geneva (1599)</option>
+                  <option value="Douay-Rheims Bible">Douay-Rheims (Catholic)</option>
+                </optgroup>
+                <optgroup label="Literal / Study">
+                  <option value="Young's Literal Translation">YLT (literal, 1898)</option>
+                </optgroup>
               </select>
             </Row>
             <Row>
@@ -798,6 +809,9 @@ export function SettingsModal({
                   <ProvenanceViewer />
                 </Section>
               )}
+              <Section title="Voice reader diagnostic">
+                <VoiceDiagPanel />
+              </Section>
             </>
           )}
           </div>
@@ -1437,4 +1451,146 @@ function autoTz(): string {
   } catch {
     return "system";
   }
+}
+
+
+/** Voice-reader diagnostic. Subscribes to the global `tts:diag` event
+ *  stream + `voice:session-start` so we can read off exactly where a
+ *  read session began, the verse it's currently on (or stopped at),
+ *  and the last 18 `[tts]` events. Lets us debug stalls without
+ *  opening Safari Web Inspector. Lives in Settings → Advanced
+ *  because it's a debug surface, not a primary UI affordance. */
+function VoiceDiagPanel() {
+  const [startVerseId, setStartVerseId] = useState<string | null>(null);
+  const [currentVerseId, setCurrentVerseId] = useState<string | null>(null);
+  const [log, setLog] = useState<
+    Array<{ stage: string; detail: string; at: number }>
+  >([]);
+
+  useEffect(() => {
+    const onDiag = (e: Event) => {
+      const ce = e as CustomEvent<{
+        stage: string;
+        detail?: unknown;
+        at: number;
+      }>;
+      const stage = ce.detail?.stage ?? "?";
+      let detail = "";
+      const d = ce.detail?.detail;
+      if (typeof d === "string") detail = d;
+      else if (d != null) {
+        try {
+          detail = JSON.stringify(d);
+        } catch {
+          detail = String(d);
+        }
+      }
+      setLog((prev) => {
+        const next = [
+          ...prev,
+          { stage, detail, at: ce.detail?.at ?? Date.now() },
+        ];
+        return next.length > 18 ? next.slice(next.length - 18) : next;
+      });
+      // Track "current verse" off the speak-at events — that's the
+      // verse the reader is announcing right now.
+      if (stage === "speak-at" && typeof detail === "string") {
+        // detail shape: "14: PSA.10.15" — pull the verse id.
+        const m = detail.match(/:\s*(\S+)/);
+        if (m) setCurrentVerseId(m[1]);
+      }
+    };
+    const onStart = (e: Event) => {
+      const ce = e as CustomEvent<{ startVerseId: string | null }>;
+      setStartVerseId(ce.detail?.startVerseId ?? null);
+      setCurrentVerseId(null);
+      setLog([]);
+    };
+    window.addEventListener("tts:diag", onDiag);
+    window.addEventListener("voice:session-start", onStart);
+    return () => {
+      window.removeEventListener("tts:diag", onDiag);
+      window.removeEventListener("voice:session-start", onStart);
+    };
+  }, []);
+
+  // Idle state: nothing to show yet.
+  if (!startVerseId && !currentVerseId && log.length === 0) {
+    return (
+      <Row>
+        <div className="flex-1">
+          <div className="text-[12px] text-neutral-500 dark:text-neutral-400">
+            Start the voice reader from the Bible page; events will show
+            up here in real time.
+          </div>
+        </div>
+      </Row>
+    );
+  }
+
+  const copyAll = () => {
+    try {
+      const text = [
+        `start: ${startVerseId ?? "—"}`,
+        `current: ${currentVerseId ?? "—"}`,
+        "---",
+        ...log.map(
+          (e) =>
+            `${new Date(e.at).toISOString().slice(11, 23)} ${e.stage} ${e.detail}`,
+        ),
+      ].join("\n");
+      navigator.clipboard?.writeText(text);
+    } catch {
+      // best-effort
+    }
+  };
+
+  return (
+    <>
+      <Row>
+        <div className="flex-1">
+          <div className="flex items-center gap-2">
+            <span className="font-mono text-[12px] text-neutral-700 dark:text-neutral-200">
+              {startVerseId ?? "—"} → {currentVerseId ?? "—"}
+            </span>
+            <button
+              type="button"
+              onClick={copyAll}
+              className="ml-auto rounded-full bg-amber-500 px-2.5 py-0.5 text-[11px] font-semibold text-white shadow-sm hover:bg-amber-600"
+            >
+              Copy
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setStartVerseId(null);
+                setCurrentVerseId(null);
+                setLog([]);
+              }}
+              className="rounded-full border border-neutral-300 px-2.5 py-0.5 text-[11px] font-semibold text-neutral-700 hover:bg-neutral-100 dark:border-neutral-600 dark:text-neutral-200 dark:hover:bg-neutral-800"
+            >
+              Clear
+            </button>
+          </div>
+          {log.length > 0 && (
+            <ul className="mt-2 max-h-56 overflow-y-auto rounded-xl border border-neutral-200 bg-paper-soft px-2 py-1.5 font-mono text-[10px] leading-tight dark:border-neutral-800 dark:bg-neutral-950">
+              {log.map((e, i) => (
+                <li key={i} className="flex gap-2">
+                  <span className="shrink-0 opacity-70">
+                    {new Date(e.at).toISOString().slice(14, 23)}
+                  </span>
+                  <span className="shrink-0 font-semibold text-amber-700 dark:text-amber-300">
+                    {e.stage}
+                  </span>
+                  <span className="truncate text-neutral-700 dark:text-neutral-300">
+                    {e.detail}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </Row>
+    </>
+  );
 }
