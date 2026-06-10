@@ -13,8 +13,8 @@ import { useEffect, useRef, useState } from "react";
 import type { ClaimOut } from "../../lib/api";
 import { RichText } from "../../lib/RichText";
 import type { ConversationTurn } from "../Workspace";
-import { speak, ttsSupported, armAudioSession } from "../../lib/tts";
-import { SpeakerIcon } from "../../lib/Icons";
+import { speak, ttsSupported, armAudioSession, type SpeakHandle } from "../../lib/tts";
+import { SpeakerIcon, StopIcon } from "../../lib/Icons";
 
 /** Strip the inline citation markers `[trans:KJV:GEN.1.1]` /
  *  `[note:abc]` etc. before sending the answer to TTS — read aloud
@@ -159,6 +159,20 @@ function TurnBlock({
   isFresh: boolean;
 }) {
   const r = turn.response;
+  // Read-aloud play/stop toggle. The handle is kept in a ref so a
+  // re-render mid-utterance (auto-scroll, isFresh pulse expiring,
+  // etc.) doesn't drop our pointer to the live audio. `isSpeaking`
+  // mirrors it in state for the button label.
+  const speakHandleRef = useRef<SpeakHandle | null>(null);
+  const [isSpeaking, setIsSpeaking] = useState(false);
+  // Stop the audio when this turn unmounts so navigating away
+  // doesn't leave a stranded utterance playing.
+  useEffect(() => {
+    return () => {
+      speakHandleRef.current?.stop();
+      speakHandleRef.current = null;
+    };
+  }, []);
   return (
     <article className="mb-5 border-b border-neutral-200 pb-4 last:mb-0 last:border-b-0 last:pb-0 dark:border-neutral-800">
       <section className="mb-3 rounded-2xl border border-neutral-200 bg-paper-soft px-3.5 py-2.5 shadow-[0_1px_2px_rgba(0,0,0,0.04),inset_0_1px_0_rgba(255,255,255,0.5)] dark:border-neutral-800 dark:bg-neutral-900 dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
@@ -208,25 +222,44 @@ function TurnBlock({
                 <button
                   type="button"
                   onClick={() => {
-                    // Re-arm the audio session synchronously inside
-                    // the tap gesture — without this, iOS PWA blocks
-                    // playback because the MP3 fetch finishes after
-                    // the user gesture has ended.
+                    // Toggle: if we're already speaking THIS answer,
+                    // a second tap stops it. Otherwise start fresh —
+                    // arming the audio session synchronously inside
+                    // the tap gesture so iOS PWA accepts playback.
+                    if (isSpeaking) {
+                      speakHandleRef.current?.stop();
+                      speakHandleRef.current = null;
+                      setIsSpeaking(false);
+                      return;
+                    }
                     armAudioSession();
-                    speak(stripCitationMarkers(r.answer), {
+                    const handle = speak(stripCitationMarkers(r.answer), {
                       language: "en-US",
+                      onEnd: () => {
+                        speakHandleRef.current = null;
+                        setIsSpeaking(false);
+                      },
                     });
+                    if (handle) {
+                      speakHandleRef.current = handle;
+                      setIsSpeaking(true);
+                    }
                   }}
-                  title="Read the answer aloud"
-                  aria-label="Read the answer aloud"
+                  title={isSpeaking ? "Stop reading" : "Read the answer aloud"}
+                  aria-label={isSpeaking ? "Stop reading" : "Read the answer aloud"}
+                  aria-pressed={isSpeaking}
                   className={`inline-flex h-10 items-center gap-1.5 rounded-full border border-amber-300 bg-amber-100 px-3 text-[13px] font-semibold text-amber-900 shadow-[0_2px_6px_rgba(0,0,0,0.10),inset_0_1px_0_rgba(255,255,255,0.55)] transition-all active:scale-[0.96] dark:border-amber-700 dark:bg-amber-900/60 dark:text-amber-100 dark:shadow-[0_2px_6px_rgba(0,0,0,0.40),inset_0_1px_0_rgba(255,255,255,0.10)] ${
-                    isFresh
+                    isFresh && !isSpeaking
                       ? "animate-pulse ring-2 ring-amber-400/60 ring-offset-2 ring-offset-paper-soft dark:ring-amber-500/60 dark:ring-offset-neutral-900"
                       : ""
                   }`}
                 >
-                  <SpeakerIcon className="h-5 w-5" />
-                  Read aloud
+                  {isSpeaking ? (
+                    <StopIcon className="h-4 w-4" />
+                  ) : (
+                    <SpeakerIcon className="h-5 w-5" />
+                  )}
+                  {isSpeaking ? "Stop" : "Read aloud"}
                 </button>
               )}
             </div>
