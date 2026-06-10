@@ -1630,8 +1630,6 @@ export function BibleView({
                         </button>
                       )}
                       {(() => {
-                        const isAnnTarget =
-                          annotationTarget?.verseId === v.verse_id;
                         const noSelect: React.CSSProperties = {
                           WebkitTouchCallout: "none",
                           WebkitUserSelect: "none",
