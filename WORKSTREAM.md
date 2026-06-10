@@ -39,7 +39,14 @@ new work.
 
 ## Quick reference
 
-- **Restart backend with env loaded:**
+- **Backend autostart (survives reboot):** managed by
+  `~/Library/LaunchAgents/com.user.bible-iu-backend.plist`. Regenerate /
+  reload after rotating `backend/.env`: `bash scripts/install-launchagent.sh`.
+  Logs at `/tmp/bible-iu-backend.log`. Runtime uses a venv at
+  `~/Library/Application Support/bible-iu/venv/` (homebrew python3.12 —
+  the only interpreter with the `kTCCServiceSystemPolicyDesktopFolder`
+  TCC grant launchd needs to read this repo from `~/Desktop/`).
+- **Manual restart (dev shell, no launchd):**
   ```bash
   cd "/Users/richardgass/Desktop/Bible IU/files"
   set -a && source backend/.env && set +a

@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Template for the Bible IU backend LaunchAgent. Do NOT edit the live
+  copy at ~/Library/LaunchAgents/com.user.bible-iu-backend.plist by
+  hand — regenerate it by running scripts/install-launchagent.sh,
+  which substitutes the @PLACEHOLDERS@ below from backend/.env.
+
+  The @VENV_PYTHON@ path points at a venv whose bin/python is a symlink
+  to homebrew python3.12 — that interpreter already has the macOS
+  "Desktop Folder" TCC consent that launchd-spawned binaries need to
+  read this repo, which lives under ~/Desktop/. CommandLineTools
+  Python 3.9 does NOT, even with Full Disk Access granted — FDA does
+  not subsume Desktop Folder in this context. See the comment in
+  install-launchagent.sh for the full rationale.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.user.bible-iu-backend</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>@VENV_PYTHON@</string>
+    <string>-m</string>
+    <string>uvicorn</string>
+    <string>backend.api.main:app</string>
+    <string>--host</string>
+    <string>127.0.0.1</string>
+    <string>--port</string>
+    <string>8765</string>
+    <string>--ws-ping-interval</string>
+    <string>30</string>
+    <string>--ws-ping-timeout</string>
+    <string>10</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>@REPO_DIR@</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>@HOME@</string>
+    <key>USER</key>
+    <string>@USER@</string>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>LANG</key>
+    <string>en_US.UTF-8</string>
+    <key>LC_ALL</key>
+    <string>en_US.UTF-8</string>
+    <key>PYTHONUNBUFFERED</key>
+    <string>1</string>
+@ENV_VARS@
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>5</integer>
+  <key>SessionCreate</key>
+  <true/>
+  <key>LimitLoadToSessionType</key>
+  <string>Aqua</string>
+  <key>StandardOutPath</key>
+  <string>/tmp/bible-iu-backend.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/bible-iu-backend.log</string>
+</dict>
+</plist>
