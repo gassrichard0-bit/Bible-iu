@@ -1369,8 +1369,11 @@ export function BibleView({
                         className="my-2 flex w-full touch-manipulation items-center gap-2 text-left"
                         aria-label={`Last-read marker at ${book} ${chapter}:${v.verse} — double-tap to walk up the stack or delete`}
                       >
+                        {/* w-9 + place-items-center mirrors the verse
+                            icon column above (line 1177) so the arrow
+                            sits directly below the verse number. */}
                         <span
-                          className={c.text}
+                          className={`grid w-9 shrink-0 place-items-center ${c.text}`}
                           aria-hidden="true"
                         >
                           <UpArrow />
