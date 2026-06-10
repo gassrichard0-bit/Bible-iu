@@ -65,6 +65,20 @@
   <true/>
   <key>LimitLoadToSessionType</key>
   <string>Aqua</string>
+  <!-- macOS default soft maxfiles is 256, which the MiroFish stress
+       test (60 personas: registers + 60 WS + DB connection pool)
+       blows past. SQLite then reports it as
+       `OperationalError: unable to open database file` mid-burst. -->
+  <key>SoftResourceLimits</key>
+  <dict>
+    <key>NumberOfFiles</key>
+    <integer>8192</integer>
+  </dict>
+  <key>HardResourceLimits</key>
+  <dict>
+    <key>NumberOfFiles</key>
+    <integer>8192</integer>
+  </dict>
   <key>StandardOutPath</key>
   <string>/tmp/bible-iu-backend.log</string>
   <key>StandardErrorPath</key>
