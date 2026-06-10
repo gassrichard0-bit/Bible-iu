@@ -348,6 +348,151 @@ export function BibleView({
   useEffect(() => {
     if (!annotationTarget) setLiveSel(null);
   }, [annotationTarget]);
+
+  // Blue handle dots — visible at the start/end of the live selection
+  // (or any annotationTarget with a sub-verse range). Position is
+  // viewport-relative (we use position: fixed) and recomputed on
+  // scroll so the dots track the verse as the user scrolls. Drag-to-
+  // refine isn't wired tonight; the dots are visual anchors for now.
+  const [handlePos, setHandlePos] = useState<
+    | {
+        start: { x: number; y: number };
+        end: { x: number; y: number };
+        // Height of the line the boundary sits on — sized the dot's
+        // vertical center to the baseline.
+        height: number;
+      }
+    | null
+  >(null);
+
+  // Walk the verse's text descendants to find the (textNode, offset)
+  // tuple corresponding to an absolute character offset. Required
+  // because the verse text is split into multiple <span> children
+  // (run-split render) — a flat offset doesn't map directly to one
+  // text node anymore.
+  const pointInVerse = useCallback(
+    (
+      root: Element,
+      absOffset: number,
+    ): { node: Text; offset: number } | null => {
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      let walked = 0;
+      let lastSeen: Text | null = null;
+      let node = walker.nextNode() as Text | null;
+      while (node) {
+        lastSeen = node;
+        const len = node.nodeValue?.length ?? 0;
+        if (walked + len >= absOffset) {
+          return { node, offset: Math.max(0, absOffset - walked) };
+        }
+        walked += len;
+        node = walker.nextNode() as Text | null;
+      }
+      // Past end — pin to the last text node's tail so handles still
+      // get a valid point (otherwise they vanish on stale ranges).
+      if (lastSeen) {
+        return { node: lastSeen, offset: lastSeen.nodeValue?.length ?? 0 };
+      }
+      return null;
+    },
+    [],
+  );
+
+  const recomputeHandles = useCallback(() => {
+    const sel =
+      liveSel ??
+      (annotationTarget?.selStart != null && annotationTarget?.selEnd != null
+        ? {
+            verseId: annotationTarget.verseId,
+            start: annotationTarget.selStart,
+            end: annotationTarget.selEnd,
+          }
+        : null);
+    if (!sel || sel.end <= sel.start) {
+      setHandlePos(null);
+      return;
+    }
+    const verseEl = document.querySelector(
+      `[data-verse-id="${sel.verseId}"]`,
+    );
+    if (!verseEl) {
+      setHandlePos(null);
+      return;
+    }
+    const startPt = pointInVerse(verseEl, sel.start);
+    const endPt = pointInVerse(verseEl, sel.end);
+    if (!startPt || !endPt) {
+      setHandlePos(null);
+      return;
+    }
+    try {
+      const startRange = document.createRange();
+      startRange.setStart(startPt.node, startPt.offset);
+      startRange.setEnd(startPt.node, startPt.offset);
+      const endRange = document.createRange();
+      endRange.setStart(endPt.node, endPt.offset);
+      endRange.setEnd(endPt.node, endPt.offset);
+      const sRect = startRange.getBoundingClientRect();
+      const eRect = endRange.getBoundingClientRect();
+      // Collapsed ranges can return (0,0,0,0) on some browsers.
+      // Fall back to a small expanded range to get a usable rect.
+      const sUsable =
+        sRect.width === 0 && sRect.height === 0
+          ? (() => {
+              const r = document.createRange();
+              r.setStart(startPt.node, startPt.offset);
+              r.setEnd(
+                startPt.node,
+                Math.min(
+                  startPt.node.nodeValue?.length ?? startPt.offset,
+                  startPt.offset + 1,
+                ),
+              );
+              return r.getBoundingClientRect();
+            })()
+          : sRect;
+      const eUsable =
+        eRect.width === 0 && eRect.height === 0
+          ? (() => {
+              const r = document.createRange();
+              r.setStart(
+                endPt.node,
+                Math.max(0, endPt.offset - 1),
+              );
+              r.setEnd(endPt.node, endPt.offset);
+              return r.getBoundingClientRect();
+            })()
+          : eRect;
+      setHandlePos({
+        start: { x: sUsable.left, y: sUsable.bottom },
+        end: { x: eUsable.right, y: eUsable.bottom },
+        height: Math.max(sUsable.height, eUsable.height, 18),
+      });
+    } catch {
+      setHandlePos(null);
+    }
+  }, [annotationTarget, liveSel, pointInVerse]);
+
+  useEffect(() => {
+    recomputeHandles();
+  }, [recomputeHandles]);
+
+  // The scroller is the BibleView's flex-1 child; listen at the
+  // document level so we catch scrolls anywhere up the tree (the
+  // shell scroller, the page, etc.) and re-pin the handles.
+  useEffect(() => {
+    if (!handlePos) return;
+    const onScroll = () => recomputeHandles();
+    window.addEventListener("scroll", onScroll, true);
+    window.addEventListener("resize", onScroll);
+    return () => {
+      window.removeEventListener("scroll", onScroll, true);
+      window.removeEventListener("resize", onScroll);
+    };
+    // recomputeHandles is referentially stable until annotationTarget
+    // changes, which already triggers the previous effect.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [handlePos !== null]);
   const [autoFocusVerse, setAutoFocusVerse] = useState<string | null>(null);
   // Which verses have their token-study block open. Per-verse so
   // multiple expansions can coexist; the user might want to compare
@@ -1055,6 +1200,32 @@ export function BibleView({
 
   return (
     <>
+    {/* Blue handle dots — visible at the boundaries of a sub-verse
+     *  selection. Position: fixed in the viewport, re-pinned on
+     *  scroll/resize via recomputeHandles. Visual-only anchors for
+     *  the moment — they show the user where the selection ends so
+     *  they don't lose track after the live tint has been mistaken
+     *  for a "real" highlight. */}
+    {handlePos && (
+      <>
+        <div
+          aria-hidden
+          className="pointer-events-none fixed z-50 grid h-3 w-3 -translate-x-1/2 -translate-y-1/2 place-items-center rounded-full bg-sky-500 shadow-[0_0_0_2px_white,0_2px_6px_rgba(0,0,0,0.25)] dark:shadow-[0_0_0_2px_rgb(23,23,23),0_2px_6px_rgba(0,0,0,0.5)]"
+          style={{
+            left: `${handlePos.start.x}px`,
+            top: `${handlePos.start.y}px`,
+          }}
+        />
+        <div
+          aria-hidden
+          className="pointer-events-none fixed z-50 grid h-3 w-3 -translate-x-1/2 -translate-y-1/2 place-items-center rounded-full bg-sky-500 shadow-[0_0_0_2px_white,0_2px_6px_rgba(0,0,0,0.25)] dark:shadow-[0_0_0_2px_rgb(23,23,23),0_2px_6px_rgba(0,0,0,0.5)]"
+          style={{
+            left: `${handlePos.end.x}px`,
+            top: `${handlePos.end.y}px`,
+          }}
+        />
+      </>
+    )}
     {/* Scoped no-select. iOS Safari fires the selection magnifier
      *  + callout off any descendant that doesn't itself opt out,
      *  so we cover the whole tree from the root and explicitly
