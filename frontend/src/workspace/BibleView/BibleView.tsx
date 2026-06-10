@@ -897,7 +897,7 @@ export function BibleView({
       onContextMenu={(e) => e.preventDefault()}
     >
       {!hideToolbar && (
-      <div className="ml-3 flex flex-nowrap items-center gap-2 overflow-x-auto border-b border-neutral-200 px-3 py-2 text-xs [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden dark:border-neutral-800">
+      <div className="flex flex-nowrap items-center gap-2 overflow-x-auto border-b border-neutral-200 px-3 py-2 text-xs [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden dark:border-neutral-800">
         <select
           value={book}
           onChange={(e) => {
@@ -1035,7 +1035,7 @@ export function BibleView({
             onPickChapter(c);
           }}
         />
-        <div className="mb-3 flex items-center gap-2">
+        <div className="mb-3 ml-3 flex items-center gap-2">
           <h2 className="text-lg font-semibold">
             {bookName} {chapter}
           </h2>
