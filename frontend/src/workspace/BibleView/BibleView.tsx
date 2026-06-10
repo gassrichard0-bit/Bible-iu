@@ -1638,9 +1638,14 @@ export function BibleView({
                           userSelect: "none",
                           touchAction: "manipulation",
                         };
-                        const ringClasses = isAnnTarget
-                          ? "ring-2 ring-offset-2 ring-neutral-900/80 dark:ring-neutral-100/80 ring-offset-paper dark:ring-offset-neutral-900 rounded"
-                          : "";
+                        // Old white-ish focus ring around the selected
+                        // verse — removed by user request. The
+                        // bottom AnnotationToolbar already shows
+                        // which verse it's acting on via its header
+                        // label, and sub-verse mode has the live
+                        // blue tint + handles, so the ring was
+                        // redundant + read as a hard boundary line.
+                        const ringClasses = "";
                         const primaryText = v.translations[0].text;
                         const runs = splitVerseIntoRuns(
                           primaryText,
