@@ -9,7 +9,7 @@
 import { useEffect, useState } from "react";
 import type { Settings } from "../lib/settings";
 import type { Theme } from "../lib/theme";
-import { TTS_VOICES } from "../lib/tts";
+import { TTS_VOICES, armAudioSession, speak as ttsSpeak } from "../lib/tts";
 import {
   BellIcon,
   BellMuteIcon,
@@ -491,12 +491,14 @@ export function SettingsModal({
                 value={settings.ttsVoice}
                 onChange={(e) => {
                   onChange({ ...settings, ttsVoice: e.target.value });
-                  void import("../lib/tts").then((m) => {
-                    m.speak(
-                      "This is the voice that will read scripture and agent answers.",
-                      { voice: e.target.value, language: "en-US" },
-                    );
-                  });
+                  // Arm the audio session synchronously inside the
+                  // change gesture so iOS PWA accepts the playback
+                  // that the async fetch eventually triggers.
+                  armAudioSession();
+                  ttsSpeak(
+                    "This is the voice that will read scripture and agent answers.",
+                    { voice: e.target.value, language: "en-US" },
+                  );
                 }}
                 className="ml-3 rounded-md border border-neutral-300 bg-paper px-2 py-1 text-[12px] dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-100"
               >

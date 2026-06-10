@@ -13,7 +13,7 @@ import { useEffect, useRef, useState } from "react";
 import type { ClaimOut } from "../../lib/api";
 import { RichText } from "../../lib/RichText";
 import type { ConversationTurn } from "../Workspace";
-import { speak, ttsSupported } from "../../lib/tts";
+import { speak, ttsSupported, armAudioSession } from "../../lib/tts";
 import { SpeakerIcon } from "../../lib/Icons";
 
 /** Strip the inline citation markers `[trans:KJV:GEN.1.1]` /
@@ -207,11 +207,16 @@ function TurnBlock({
               {r.answer && ttsSupported() && (
                 <button
                   type="button"
-                  onClick={() =>
+                  onClick={() => {
+                    // Re-arm the audio session synchronously inside
+                    // the tap gesture — without this, iOS PWA blocks
+                    // playback because the MP3 fetch finishes after
+                    // the user gesture has ended.
+                    armAudioSession();
                     speak(stripCitationMarkers(r.answer), {
                       language: "en-US",
-                    })
-                  }
+                    });
+                  }}
                   title="Read the answer aloud"
                   aria-label="Read the answer aloud"
                   className={`inline-flex h-10 items-center gap-1.5 rounded-full border border-amber-300 bg-amber-100 px-3 text-[13px] font-semibold text-amber-900 shadow-[0_2px_6px_rgba(0,0,0,0.10),inset_0_1px_0_rgba(255,255,255,0.55)] transition-all active:scale-[0.96] dark:border-amber-700 dark:bg-amber-900/60 dark:text-amber-100 dark:shadow-[0_2px_6px_rgba(0,0,0,0.40),inset_0_1px_0_rgba(255,255,255,0.10)] ${
