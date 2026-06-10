@@ -929,6 +929,12 @@ export function streamReason(
      *  to expand or narrow the scripture context. Deeper → narrower,
      *  wider → broader (markdown-style hierarchy). */
     scope_kind?: "verse" | "chapter" | "book" | "testament" | "bible";
+    /** Which English translation the user is reading on the Bible
+     *  page. Only affects the WORDING the agent quotes when citing
+     *  verses so it matches what's on screen. Grounding always
+     *  anchors to the original-language Hebrew/Greek anchor —
+     *  independent of this field. Defaults to KJV server-side. */
+    citation_translation?: string;
   },
   cb: {
     onStage?: (name: string, count: number | null) => void;

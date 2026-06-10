@@ -3994,8 +3994,20 @@ def _orchestrator(session: Session, allow_web: bool = False) -> AgentOrchestrato
         verifier = StackedVerifier(DeepSeekVerifier(), LocalNLIVerifier())
     else:
         verifier = LocalNLIVerifier()
+    # Citation translation = the English wording the agent quotes when
+    # citing a verse to the user. Grounding (Hebrew/Greek + Strong's /
+    # morphology) is independent and always runs against the original-
+    # language anchor; this only affects the verbatim text shown in
+    # cited verses so it matches what the user sees on the Bible page.
+    citation_translation = (
+        payload.citation_translation or "King James Version"
+    )
     engine = CitationEngine(
-        retriever=SqlRetriever(session, web_searcher=make_searcher(allow_web)),
+        retriever=SqlRetriever(
+            session,
+            web_searcher=make_searcher(allow_web),
+            translation_name=citation_translation,
+        ),
         generator=generator,
         verifier=verifier,
         ledger=ledger,

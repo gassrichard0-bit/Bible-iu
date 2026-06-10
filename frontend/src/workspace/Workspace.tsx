@@ -476,6 +476,10 @@ export const Workspace = forwardRef<WorkspaceHandle, Props>(function Workspace(
         bypass_citation_engine: bypassCitationEngine,
         scope_kind: scopeKind,
         target_language: detectLanguage(question) ?? undefined,
+        // Grounding is always Hebrew/Greek; this only controls which
+        // English translation's wording the agent quotes back so it
+        // matches what the user is reading on screen.
+        citation_translation: translation || undefined,
       },
       {
         onStage: (name, count) => {

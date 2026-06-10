@@ -239,6 +239,15 @@ class ReasoningRequest(BaseModel):
     #   testament → no retrieval; LLM general knowledge + framing
     #   bible     → no retrieval; LLM general knowledge + framing
     scope_kind: Literal["verse", "chapter", "book", "testament", "bible"] = "verse"
+    # The English translation the user is reading on the Bible page.
+    # Grounding ALWAYS happens against the original-language anchor
+    # (Hebrew WLC for OT, Greek TR for NT) per rule-guide.MD §2 —
+    # this field only governs which translation's WORDING the agent
+    # quotes back when citing verses to the user, so on-screen text
+    # matches the answer. Default falls through to KJV at the
+    # retriever. Honored on both the citation-engine and
+    # citation-engine-bypass paths.
+    citation_translation: Optional[str] = None
 
 
 class CitationOut(BaseModel):
