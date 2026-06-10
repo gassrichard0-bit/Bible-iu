@@ -3747,9 +3747,20 @@ function ChatPanel({
   }, [roomId, messages.length]);
 
   const q = (searchQuery ?? "").trim().toLowerCase();
+  // Filter out "ghost" rows — bodies that still hold the deepseek
+  // pre-parse scratchpad while we wait for the backend update with
+  // the polished answer. If there's no extractable polished answer
+  // AND no attachment, hide the whole bubble; otherwise the body
+  // will be stripped at render time by stripRawCoT.
+  const notGhost = (m: ChatMessageOut) => {
+    if (!isRawCoTBody(m.body)) return true;
+    if (m.attachment_image_url) return true;
+    return extractPolishedAnswer(m.body) !== null;
+  };
+  const baseMessages = messages.filter(notGhost);
   const visibleMessages = q
-    ? messages.filter((m) => m.body.toLowerCase().includes(q))
-    : messages;
+    ? baseMessages.filter((m) => m.body.toLowerCase().includes(q))
+    : baseMessages;
   return (
     <div className="flex h-full flex-col">
       {/* Status strip (24h "stories") above the chat header. */}
@@ -3893,26 +3904,55 @@ function ChatPanel({
 }
 
 /**
- * Defensive strip for chat bodies that briefly contain the raw
- * deepseek model output — the orchestrator's pre-parse text that
- * carries `note_to_append`, `S<N> says`, and `Answer: "<polished>"`
- * tokens. The backend may broadcast the pre-parse body once before
- * an update lands with the polished answer. While we hunt the
- * writer, render only the polished `Answer: "..."` payload so the
- * "ghost message" can't surface to readers.
+ * Detect chat bodies that briefly contain the raw deepseek model
+ * output — the orchestrator's pre-parse text that carries
+ * `note_to_append`, `S<N> says`, and `Answer: "<polished>"` tokens.
+ * The backend may broadcast the pre-parse body once before an
+ * update lands with the polished answer.
  *
- * Conservative: requires BOTH a long preamble (>40 chars before
- * `Answer:`) and a quoted answer to fire, so normal messages that
- * happen to contain the word "Answer:" pass through untouched.
+ * Strong signals (any one is a smoking gun, since none of these
+ * tokens appear in human-written chat):
+ *   - the literal `note_to_append` field name
+ *   - `S<N> says` claim references
+ *   - `For note_to_append:` planning line
+ *   - the literal `Answer: "` prompt-template prefix with preamble
  */
-function stripRawCoT(body: string): string {
-  if (!body || body.length < 80) return body;
-  if (!/\bAnswer:\s*["“]/.test(body)) return body;
+function isRawCoTBody(body: string): boolean {
+  if (!body) return false;
+  return (
+    /\bnote_to_append\b/.test(body) ||
+    /\bS\d+\s+says\b/i.test(body) ||
+    /\bFor\s+note_to_append\b/i.test(body) ||
+    /^[\s\S]{40,}\bAnswer:\s*["“]/m.test(body)
+  );
+}
+
+/**
+ * Pull the polished answer out of a raw-CoT body when the
+ * `Answer: "..."` segment is present. Returns null if no clean
+ * extract is possible — the caller should hide the bubble in that
+ * case instead of showing the scratchpad.
+ */
+function extractPolishedAnswer(body: string): string | null {
   const m = body.match(/\bAnswer:\s*["“]([\s\S]+?)["”]\s*\.?\s*$/);
-  if (!m) return body;
-  const preamble = body.slice(0, body.lastIndexOf(m[0])).trim();
-  if (preamble.length < 40) return body;
-  return m[1].trim();
+  if (m && m[1].trim().length > 0) return m[1].trim();
+  // Fallback: take everything after the LAST `Answer:` up to end of
+  // body if there's no quoted segment but the marker exists.
+  const idx = body.lastIndexOf("Answer:");
+  if (idx >= 0) {
+    const tail = body
+      .slice(idx + "Answer:".length)
+      .replace(/^\s*["“]?/, "")
+      .replace(/["”]\s*\.?\s*$/, "")
+      .trim();
+    if (tail.length > 0) return tail;
+  }
+  return null;
+}
+
+function stripRawCoT(body: string): string {
+  if (!isRawCoTBody(body)) return body;
+  return extractPolishedAnswer(body) ?? "";
 }
 
 function ChatBubble({
