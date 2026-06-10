@@ -468,7 +468,10 @@ before its area is built:
 
 - **Citation / grounding engine** — **designed in `citation-engine.MD`.** Build it
   **before** the agent's user-facing skills; it is where "no deception" actually lives.
-  Remaining `TODO(spec)` within it: pick the local entailment/verifier model.
+  ~~Remaining `TODO(spec)` within it: pick the local entailment/verifier model.~~
+  **RESOLVED:** verifier is `cross-encoder/nli-deberta-v3-base` (lazy-loaded;
+  `backend/agent/skills/local_nli.py`). Asymmetric gate: claim entails
+  source AND source does not contradict claim, both ≥ 0.5.
 - **Group lifecycle & permissions** — create / invite / remove members, roles
   (admin/member), who may add the agent to a room, leaving a room and what happens to your
   notes.
