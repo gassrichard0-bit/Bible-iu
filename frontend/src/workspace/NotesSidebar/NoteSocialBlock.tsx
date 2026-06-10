@@ -9,7 +9,7 @@
  * delete their own comment.
  */
 import { useCallback, useEffect, useState } from "react";
-import { api, type NoteSocialOut } from "../../lib/api";
+import { api, type NoteReactionKind, type NoteSocialOut } from "../../lib/api";
 import { GLASS_CARD_INLINE } from "../../lib/glass";
 
 export function NoteSocialBlock({
@@ -38,11 +38,11 @@ export function NoteSocialBlock({
     void load();
   }, [load]);
 
-  async function toggleLike() {
+  async function toggleReaction(kind: NoteReactionKind) {
     if (busy) return;
     setBusy(true);
     try {
-      setState(await api.noteLikeToggle(roomId, noteId));
+      setState(await api.noteLikeToggle(roomId, noteId, kind));
     } catch {
       // ignore
     } finally {
@@ -80,13 +80,15 @@ export function NoteSocialBlock({
 
   const likes = state?.likes ?? 0;
   const liked = state?.liked_by_me ?? false;
+  const thumbsups = state?.thumbsups ?? 0;
+  const thumbed = state?.thumbsuped_by_me ?? false;
   const commentCount = state?.comments.length ?? 0;
 
   return (
     <div className="mt-2 border-t border-neutral-200/70 pt-1.5 dark:border-neutral-800/70">
       <div className="flex items-center gap-3 text-[11px]">
         <button
-          onClick={toggleLike}
+          onClick={() => toggleReaction("heart")}
           disabled={busy}
           aria-pressed={liked}
           className={`flex items-center gap-1 rounded px-1 py-0.5 transition ${
@@ -94,10 +96,24 @@ export function NoteSocialBlock({
               ? "text-rose-600 dark:text-rose-300"
               : "text-neutral-500 hover:text-rose-500 dark:text-neutral-400 dark:hover:text-rose-300"
           }`}
-          title={liked ? "Unlike" : "Like"}
+          title={liked ? "Remove heart" : "Heart"}
         >
           <HeartIcon filled={liked} />
           <span className="tabular-nums">{likes}</span>
+        </button>
+        <button
+          onClick={() => toggleReaction("thumbsup")}
+          disabled={busy}
+          aria-pressed={thumbed}
+          className={`flex items-center gap-1 rounded px-1 py-0.5 transition ${
+            thumbed
+              ? "text-amber-600 dark:text-amber-300"
+              : "text-neutral-500 hover:text-amber-500 dark:text-neutral-400 dark:hover:text-amber-300"
+          }`}
+          title={thumbed ? "Unlike" : "Like"}
+        >
+          <ThumbIcon filled={thumbed} />
+          <span className="tabular-nums">{thumbsups}</span>
         </button>
         <button
           onClick={() => setOpen((v) => !v)}
@@ -177,6 +193,25 @@ function HeartIcon({ filled }: { filled: boolean }) {
       aria-hidden
     >
       <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" />
+    </svg>
+  );
+}
+
+function ThumbIcon({ filled }: { filled: boolean }) {
+  return (
+    <svg
+      width="13"
+      height="13"
+      viewBox="0 0 24 24"
+      fill={filled ? "currentColor" : "none"}
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <path d="M7 10v12" />
+      <path d="M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H7V10l5-8h.86a2 2 0 0 1 1.97 2.34l-.83 1.54z" />
     </svg>
   );
 }

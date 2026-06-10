@@ -154,16 +154,21 @@ class RegisteredGroupNote(Base, TimestampMixin):
 
 
 class NoteLike(Base, TimestampMixin):
-    """One heart per (note, user). Only group-scope notes are exposed in
-    the UI for likes — personal notes never leave the author's view
-    (rule-guide.MD §12). `room_id` is duplicated for the membership
-    check on every read/write."""
+    """One reaction per (note, user, kind). `kind` is "heart" (the
+    original react) or "thumbsup"; a user can stack different kinds
+    on the same note but not the same kind twice. Only group-scope
+    notes are exposed in the UI for reactions — personal notes never
+    leave the author's view (rule-guide.MD §12). `room_id` is
+    duplicated for the membership check on every read/write."""
     __tablename__ = "note_likes"
-    __table_args__ = (UniqueConstraint("note_id", "user_id"),)
+    __table_args__ = (
+        UniqueConstraint("note_id", "user_id", "kind", name="uq_note_likes_note_user_kind"),
+    )
     id: Mapped[str] = mapped_column(String, primary_key=True)
     note_id: Mapped[str] = mapped_column(String, index=True)
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
     room_id: Mapped[str] = mapped_column(ForeignKey("rooms.id"), index=True)
+    kind: Mapped[str] = mapped_column(String, default="heart", index=True)
 
 
 class NoteComment(Base, TimestampMixin):

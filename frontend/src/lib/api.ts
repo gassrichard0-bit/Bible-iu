@@ -756,10 +756,15 @@ export const api = {
     }),
   noteSocial: (room_id: string, note_id: string) =>
     jsonFetch<NoteSocialOut>(`/rooms/${room_id}/notes/${note_id}/social`),
-  noteLikeToggle: (room_id: string, note_id: string) =>
-    jsonFetch<NoteSocialOut>(`/rooms/${room_id}/notes/${note_id}/like`, {
-      method: "POST",
-    }),
+  noteLikeToggle: (
+    room_id: string,
+    note_id: string,
+    kind: NoteReactionKind = "heart",
+  ) =>
+    jsonFetch<NoteSocialOut>(
+      `/rooms/${room_id}/notes/${note_id}/like?kind=${encodeURIComponent(kind)}`,
+      { method: "POST" },
+    ),
   noteCommentAdd: (room_id: string, note_id: string, body: string) =>
     jsonFetch<NoteSocialOut>(`/rooms/${room_id}/notes/${note_id}/comments`, {
       method: "POST",
@@ -880,10 +885,17 @@ export interface NoteCommentOut {
 }
 
 export interface NoteSocialOut {
+  /** Heart count + my-heart flag — original reaction kind. */
   likes: number;
   liked_by_me: boolean;
+  /** Thumbs-up count + my-thumb flag. Backend defaults these to
+   *  0 / false so old clients see no thumbs (forward-compat). */
+  thumbsups?: number;
+  thumbsuped_by_me?: boolean;
   comments: NoteCommentOut[];
 }
+
+export type NoteReactionKind = "heart" | "thumbsup";
 
 export interface RoomMemberOut {
   user_id: string;

@@ -2701,9 +2701,17 @@ class NoteCommentOut(BaseModel):
 
 
 class NoteSocialOut(BaseModel):
+    # `likes` / `liked_by_me` are the heart count + flag — kept for
+    # backward compatibility with PWA bundles cached in the SW before
+    # the thumbs-up kind shipped. New fields cover the thumbsup kind.
     likes: int
     liked_by_me: bool
+    thumbsups: int = 0
+    thumbsuped_by_me: bool = False
     comments: list[NoteCommentOut]
+
+
+_NOTE_REACTION_KINDS = {"heart", "thumbsup"}
 
 
 class NoteCommentCreate(BaseModel):
@@ -2801,9 +2809,13 @@ def get_note_social(
         if author_ids
         else {}
     )
+    hearts = [l for l in likes if (l.kind or "heart") == "heart"]
+    thumbs = [l for l in likes if l.kind == "thumbsup"]
     return NoteSocialOut(
-        likes=len(likes),
-        liked_by_me=any(l.user_id == user_id for l in likes),
+        likes=len(hearts),
+        liked_by_me=any(l.user_id == user_id for l in hearts),
+        thumbsups=len(thumbs),
+        thumbsuped_by_me=any(l.user_id == user_id for l in thumbs),
         comments=[
             NoteCommentOut(
                 id=c.id,
@@ -2844,14 +2856,24 @@ def get_note_social(
 def toggle_note_like(
     room_id: str,
     note_id: str,
+    kind: str = "heart",
     session: Session = Depends(db),
     user_id: str = Depends(current_user_id),
 ) -> NoteSocialOut:
+    """Toggle a (kind) reaction for (note, user). `kind` defaults to
+    "heart" so the path stays backward-compatible with PWA bundles
+    that shipped before thumbs-up — they post without a query string
+    and get the original heart behavior. New PWA passes `?kind=thumbsup`
+    for the second reaction."""
+    if kind not in _NOTE_REACTION_KINDS:
+        raise HTTPException(400, f"unknown reaction kind: {kind!r}")
     _require_member(session, room_id, user_id)
     _require_group_note(session, note_id, room_id)
     existing = session.scalar(
         select(NoteLike).where(
-            NoteLike.note_id == note_id, NoteLike.user_id == user_id
+            NoteLike.note_id == note_id,
+            NoteLike.user_id == user_id,
+            NoteLike.kind == kind,
         )
     )
     if existing is not None:
@@ -2863,6 +2885,7 @@ def toggle_note_like(
                 note_id=note_id,
                 user_id=user_id,
                 room_id=room_id,
+                kind=kind,
             )
         )
     session.commit()
