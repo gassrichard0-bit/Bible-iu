@@ -1013,19 +1013,13 @@ export function BibleView({
           userSelect: "none",
           ...(bottomInset
             ? {
-                // Move the scroller's bottom EDGE above the floating
-                // nav instead of just padding the scrolled content.
-                // Original Apple-Liquid-Glass design intent was for
-                // text to scroll behind the bar, but reading-while-
-                // scrolling that way leaves the bottom visible verse
-                // always tucked under the nav, which is unreadable.
-                // marginBottom shrinks the flex-1 scroll region so
-                // its bottom edge sits above the nav at every scroll
-                // position; paddingBottom adds a comfortable empty
-                // tail at the end of the chapter so reaching verse
-                // N feels finished rather than abrupt.
-                marginBottom: "calc(env(safe-area-inset-bottom, 0px) + 130px)",
-                paddingBottom: "80px",
+                // Keep the Apple-Liquid-Glass design: text scrolls
+                // behind the floating nav. Only the END of the chapter
+                // gets an empty tail so the last verses can scroll all
+                // the way above the nav when the reader reaches them.
+                // 240px ≈ floating AI pill (~64px) + tab nav (~70px)
+                // + spacing + safe-area-inset.
+                paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 240px)",
               }
             : {}),
         }}
