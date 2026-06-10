@@ -86,7 +86,7 @@ export const defaultSettings: Settings = {
   debugMode: false,
   bypassCitationEngine: false,
   timezone: "",
-  socialNotesEnabled: false,
+  socialNotesEnabled: true,
   bypassAgentGate: false,
   todaysReadingBanner: true,
   defaultNoteScope: "personal",
