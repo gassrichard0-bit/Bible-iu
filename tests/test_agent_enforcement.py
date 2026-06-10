@@ -276,7 +276,11 @@ class TestOriginalLanguage:
 
         data_mod.init_db()
         with data_mod.SessionLocal() as s:
+            # FK ordering: insert Verse, flush, THEN Translations.
+            # `PRAGMA foreign_keys=ON` (db.py) checks the FK on commit;
+            # interleaving per-row breaks the batched insert order.
             s.add(m.Verse(id="GEN.1.1", book="GEN", chapter=1, verse=1))
+            s.flush()
             s.add(m.Translation(
                 id="KJV:GEN.1.1", name="King James Version",
                 verse_id="GEN.1.1",
@@ -306,7 +310,9 @@ class TestOriginalLanguage:
 
         data_mod.init_db()
         with data_mod.SessionLocal() as s:
+            # FK ordering: insert Verse, flush, THEN Translations.
             s.add(m.Verse(id="GEN.1.1", book="GEN", chapter=1, verse=1))
+            s.flush()
             s.add(m.Translation(
                 id="KJV:GEN.1.1", name="King James Version",
                 verse_id="GEN.1.1",

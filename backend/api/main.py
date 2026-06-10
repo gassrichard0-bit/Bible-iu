@@ -3961,7 +3961,11 @@ def list_agent_notes(
 # ---------------------------------------------------------------------------
 # Reasoning — the core path (architecture.MD §4.1)
 # ---------------------------------------------------------------------------
-def _orchestrator(session: Session, allow_web: bool = False) -> AgentOrchestrator:
+def _orchestrator(
+    session: Session,
+    allow_web: bool = False,
+    citation_translation: Optional[str] = None,
+) -> AgentOrchestrator:
     ledger = app.state.ledger
     # Generator selection ranks:
     #   1. Ollama (env: OLLAMA_MODEL) — local-first
@@ -3999,14 +4003,12 @@ def _orchestrator(session: Session, allow_web: bool = False) -> AgentOrchestrato
     # morphology) is independent and always runs against the original-
     # language anchor; this only affects the verbatim text shown in
     # cited verses so it matches what the user sees on the Bible page.
-    citation_translation = (
-        payload.citation_translation or "King James Version"
-    )
+    resolved_translation = citation_translation or "King James Version"
     engine = CitationEngine(
         retriever=SqlRetriever(
             session,
             web_searcher=make_searcher(allow_web),
-            translation_name=citation_translation,
+            translation_name=resolved_translation,
         ),
         generator=generator,
         verifier=verifier,
@@ -4094,7 +4096,11 @@ def reason(
         payload.bypass_citation_engine
         and settings.bypass_citation_engine_allowed
     )
-    orch = _orchestrator(session, allow_web=_web_search_allowed(room))
+    orch = _orchestrator(
+        session,
+        allow_web=_web_search_allowed(room),
+        citation_translation=payload.citation_translation,
+    )
     turn = orch.reason(
         OrchestratorReq(
             room_id=payload.room_id,
@@ -4528,7 +4534,11 @@ async def reason_ws(ws: WebSocket) -> None:
                     await ws.send_json({"type": "error", "message": e.detail})
                     break
 
-            orch = _orchestrator(session, allow_web=_web_search_allowed(room))
+            orch = _orchestrator(
+                session,
+                allow_web=_web_search_allowed(room),
+                citation_translation=req.citation_translation,
+            )
 
             queue: asyncio.Queue = asyncio.Queue()
 

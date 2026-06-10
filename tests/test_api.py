@@ -16,6 +16,12 @@ def client(tmp_path) -> TestClient:
     import backend.data.db as db_mod
 
     reload(db_mod)
+    # `backend.data.__init__` re-exports SessionLocal — without reloading
+    # the package, modules that do `from backend.data import SessionLocal`
+    # keep the previous test's stale engine reference.
+    import backend.data as data_mod
+
+    reload(data_mod)
     import backend.api.main as main_mod
 
     reload(main_mod)

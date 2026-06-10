@@ -34,9 +34,27 @@ def retriever(tmp_path):
     # with the keyword "more" — used to verify scope gating excludes it
     # at chapter scope but allows it at verse / bible.
     from backend.data import models as m
+    # FK contract: translations.verse_id → verses.id. With
+    # `PRAGMA foreign_keys=ON` now in db.py, interleaving Verse+
+    # Translation adds per-row trips the constraint at commit time
+    # because SQLAlchemy's UoW topo sort batches per-table and the
+    # batched Translation insert can race the batched Verse insert.
+    # Adding all Verses, flushing, THEN adding Translations keeps the
+    # foreign-key invariant satisfied without changing production code.
+    _seed_data: list[tuple[str, str, int, int, str]] = [
+        ("JHN.3.1",  "JHN", 3,  1,  "There was a man of the Pharisees, named Nicodemus."),
+        ("JHN.3.16", "JHN", 3, 16, "For God so loved the world."),
+        ("JHN.3.36", "JHN", 3, 36, "He that believeth on the Son hath everlasting life."),
+        ("JHN.16.18","JHN", 16, 18, "We cannot tell what he saith."),
+        ("GEN.1.1",  "GEN", 1,  1,  "In the beginning God created the heaven and the earth."),
+        ("PRO.30.4", "PRO", 30, 4,  "Who hath ascended up into heaven, or descended?"),
+        ("MAT.1.1",  "MAT", 1,  1,  "The book of the generation of Jesus Christ."),
+    ]
     with data_mod.SessionLocal() as s:
-        def _seed(verse_id: str, book: str, ch: int, v: int, text: str):
+        for verse_id, book, ch, v, _text in _seed_data:
             s.add(m.Verse(id=verse_id, book=book, chapter=ch, verse=v))
+        s.flush()
+        for verse_id, _b, _c, _v, text in _seed_data:
             s.add(m.Translation(
                 id=f"KJV:{verse_id}",
                 name="King James Version",
@@ -44,13 +62,6 @@ def retriever(tmp_path):
                 text=text,
                 license="Public Domain (KJV)",
             ))
-        _seed("JHN.3.1",  "JHN", 3,  1,  "There was a man of the Pharisees, named Nicodemus.")
-        _seed("JHN.3.16", "JHN", 3, 16, "For God so loved the world.")
-        _seed("JHN.3.36", "JHN", 3, 36, "He that believeth on the Son hath everlasting life.")
-        _seed("JHN.16.18","JHN", 16, 18, "We cannot tell what he saith.")
-        _seed("GEN.1.1",  "GEN", 1,  1,  "In the beginning God created the heaven and the earth.")
-        _seed("PRO.30.4", "PRO", 30, 4,  "Who hath ascended up into heaven, or descended?")
-        _seed("MAT.1.1",  "MAT", 1,  1,  "The book of the generation of Jesus Christ.")
         s.commit()
         retriever = backends.SqlRetriever(s, related_limit=20)
         yield retriever
@@ -123,11 +134,13 @@ class TestScopeKeywordWindow:
         import backend.data as data_mod
         from backend.data import models as m
         with data_mod.SessionLocal() as s:
-            for i, vid in enumerate(
-                ["GEN.24.60", "GEN.26.27", "GEN.27.41", "GEN.37.4", "GEN.49.23"],
-                start=1,
-            ):
+            # FK ordering: seed all Verses first, flush, then Translations.
+            gen_ids = ["GEN.24.60", "GEN.26.27", "GEN.27.41", "GEN.37.4", "GEN.49.23"]
+            for i, vid in enumerate(gen_ids, start=1):
                 s.add(m.Verse(id=vid, book="GEN", chapter=24, verse=60 + i))
+            s.add(m.Verse(id="PSA.97.10", book="PSA", chapter=97, verse=10))
+            s.flush()
+            for vid in gen_ids:
                 s.add(m.Translation(
                     id=f"KJV:{vid}",
                     name="King James Version",
@@ -135,7 +148,6 @@ class TestScopeKeywordWindow:
                     text=f"{vid} those who hate them",
                     license="Public Domain (KJV)",
                 ))
-            s.add(m.Verse(id="PSA.97.10", book="PSA", chapter=97, verse=10))
             s.add(m.Translation(
                 id="KJV:PSA.97.10",
                 name="King James Version",
@@ -205,9 +217,13 @@ class TestScopeKeywordWindow:
         for i in range(3):
             plan.append(("JHN", "JHN", 5 + i, 20))
         with data_mod.SessionLocal() as s:
+            # FK ordering: Verses first, flush, then Translations.
             for book, code, ch, v in plan:
                 vid = f"{code}.{ch}.{v}"
                 s.add(m.Verse(id=vid, book=book, chapter=ch, verse=v))
+            s.flush()
+            for book, code, ch, v in plan:
+                vid = f"{code}.{ch}.{v}"
                 s.add(m.Translation(
                     id=f"KJV:{vid}",
                     name="King James Version",
