@@ -65,7 +65,8 @@ echo "[2/4] installing/upgrading runtime deps"
   "transformers" \
   "torch" \
   "python-multipart" \
-  "email-validator"
+  "email-validator" \
+  "Pillow"
 
 echo "[3/4] rendering plist from template"
 # Build the EnvironmentVariables block as XML key/string pairs by
