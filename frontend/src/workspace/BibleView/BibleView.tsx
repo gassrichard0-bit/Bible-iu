@@ -5,7 +5,7 @@
  * GET /bible/{book}/{chapter}. Books and verses come from the backend;
  * no scripture text is bundled in the frontend.
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   api,
   originalForBook,
@@ -121,14 +121,7 @@ interface Props {
     selStart?: number | null;
     selEnd?: number | null;
   } | null;
-  onAnnotationTargetChange?: (
-    t: {
-      verseId: string;
-      label?: string;
-      selStart?: number | null;
-      selEnd?: number | null;
-    } | null,
-  ) => void;
+  onAnnotationTargetChange?: (t: AnnotationTarget | null) => void;
   /** When true the scripture scroller pads its bottom to clear the
    *  floating glass composer + AI pill in MobileShell. Otherwise
    *  the last verse hides behind the bar. */
@@ -175,24 +168,12 @@ export function BibleView({
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
 
-  // Sub-verse drag-to-select state. `liveSel` is the in-progress
-  // selection — it paints as a blue tint via the same per-run render
-  // path that draws committed annotations (it's injected as a
-  // synthetic "blue highlight" into the active list of each verse
-  // span). When the gesture ends we report the offsets via
-  // onAnnotationTargetChange so the bottom AnnotationToolbar can
-  // apply a tool to the range. Mirrors the shape Richard converged on
-  // in orphan branch d64ae06 after ~10 iterations of fighting iOS
-  // Safari's native selection model.
-  const [liveSel, setLiveSel] = useState<{
-    verseId: string;
-    start: number;
-    end: number;
-  } | null>(null);
-  const liveSelDup = useRef<{ start: number; end: number } | null>(null);
-  liveSelDup.current = liveSel
-    ? { start: liveSel.start, end: liveSel.end }
-    : null;
+  // Sub-verse selection is fully native now — iOS / the desktop
+  // browser draws blue grab handles, magnifier, and the selection
+  // menu. A document-level `selectionchange` listener catches the
+  // user's range and pushes (verseId, start, end) into
+  // `annotationTarget` so the bottom AnnotationToolbar can apply a
+  // tool to it. No custom UI state required.
 
   // Compute the absolute character offset of a (node, offset) point
   // within the verse-id container. With my new render the verse text
@@ -210,227 +191,122 @@ export function BibleView({
     return pre.toString().length;
   };
 
-  // Word-based selection — feels concrete because the selection snaps
-  // to whole-word boundaries instead of jittering character-by-character.
-  // Punctuation glued to a word (e.g. "world.") goes with it.
-  const wordSpansFor = (text: string): Array<{ start: number; end: number }> => {
-    const spans: Array<{ start: number; end: number }> = [];
-    const re = /\S+/g;
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(text)) !== null) {
-      spans.push({ start: m.index, end: m.index + m[0].length });
-    }
-    return spans;
-  };
-
-  /** Find the word span containing `offset`. If `offset` lands in
-   *  whitespace, snap to the nearest word (the side `direction`
-   *  prefers, defaulting to the next word forward). */
-  const wordAt = (
-    spans: Array<{ start: number; end: number }>,
-    offset: number,
-    direction: "start" | "end" = "start",
-  ): { start: number; end: number } | null => {
-    if (spans.length === 0) return null;
-    for (let i = 0; i < spans.length; i++) {
-      const w = spans[i];
-      if (offset >= w.start && offset <= w.end) return w;
-      if (offset < w.start) {
-        // In whitespace BEFORE this word. For drag-end-handles we
-        // want the previous word; for everything else we want this
-        // (the next forward) word.
-        if (direction === "end" && i > 0) return spans[i - 1];
-        return w;
-      }
-    }
-    return spans[spans.length - 1];
-  };
-
-  // Selection state held in refs so the long-press timer + global
-  // listeners can read it without re-binding on every render.
-  // (Distinct from the older `longPressTimerRef` used for the
-  // whole-verse toolbar long-press elsewhere in this file.)
-  const wordSelLpTimerRef = useRef<number | null>(null);
-  const selModeRef = useRef<{
-    verseId: string;
-    el: Element;
-    spans: Array<{ start: number; end: number }>;
-    anchor: { start: number; end: number };
-  } | null>(null);
-  const lastTouchRef = useRef<{ x: number; y: number } | null>(null);
-
-  const verseLabelFromId = (verseId: string): string => {
-    const parts = verseId.split(".");
-    return parts.length === 3
-      ? `${parts[0]} ${Number(parts[1])}:${Number(parts[2])}`
-      : verseId;
-  };
-
-  const cancelLongPressTimer = () => {
-    if (wordSelLpTimerRef.current != null) {
-      window.clearTimeout(wordSelLpTimerRef.current);
-      wordSelLpTimerRef.current = null;
-    }
-  };
-
-  /** Touchstart on a verse span. Doesn't preventDefault yet — that
-   *  would kill scroll. Schedules a 250ms hold; if the finger moves
-   *  before then, we cancel and the browser scrolls normally. If the
-   *  hold fires, we lock into selection mode and start grabbing
-   *  preventDefault on touchmove. */
-  const onVerseTouchStart = useCallback(
-    (e: React.TouchEvent) => {
-      if (!onApplyAnnotation) return;
-      const t = e.touches[0];
-      if (!t) return;
-      const el = (e.target as Element).closest("[data-verse-id]");
-      if (!el) return;
-      const verseId = el.getAttribute("data-verse-id");
-      if (!verseId) return;
-      lastTouchRef.current = { x: t.clientX, y: t.clientY };
-      cancelLongPressTimer();
-      wordSelLpTimerRef.current = window.setTimeout(() => {
-        const last = lastTouchRef.current;
-        if (!last) return;
-        const range = (document as Document & {
-          caretRangeFromPoint?: (x: number, y: number) => Range | null;
-        }).caretRangeFromPoint?.(last.x, last.y);
-        if (!range) return;
-        const text = el.textContent ?? "";
-        const spans = wordSpansFor(text);
-        const abs = offsetWithinVerse(el, range);
-        const word = wordAt(spans, abs);
-        if (!word) return;
-        selModeRef.current = { verseId, el, spans, anchor: word };
-        setLiveSel({ verseId, start: word.start, end: word.end });
-        // Optional haptic confirm — short pulse when the selection
-        // pops into existence so the user feels the commit.
-        try {
-          (navigator as Navigator & { vibrate?: (p: number) => void }).vibrate?.(8);
-        } catch {
-          /* ignore — desktop / iOS Safari don't support vibrate */
-        }
-      }, 250);
-    },
-    [onApplyAnnotation],
-  );
-
-  /** Touchmove on a verse span. Before the long-press fires this is
-   *  treated as scrolling — bail if we detect ANY movement and let the
-   *  browser handle the scroll. After selection mode is locked we
-   *  preventDefault to keep iOS from scrolling the page under us and
-   *  extend the selection word-by-word. */
-  const onVerseTouchMove = useCallback(
-    (e: React.TouchEvent) => {
-      const t = e.touches[0];
-      if (!t) return;
-      lastTouchRef.current = { x: t.clientX, y: t.clientY };
-      const sel = selModeRef.current;
-      if (!sel) {
-        // Pre-selection move = the user is scrolling. Cancel the
-        // pending long-press so we don't pop a selection mid-scroll.
-        cancelLongPressTimer();
+  // selectionchange — native OS-driven sub-verse selection. When the
+  // user drag-selects text inside a verse using iOS's grab handles
+  // (or a mouse drag on desktop), pick up the range, compute the
+  // (verseId, start, end) offsets, and feed them into
+  // `annotationTarget` so the bottom AnnotationToolbar can act on it.
+  // No custom UI — the OS draws everything we used to do by hand.
+  useEffect(() => {
+    const fmtLabel = (vid: string): string => {
+      const parts = vid.split(".");
+      return parts.length === 3
+        ? `${parts[0]} ${Number(parts[1])}:${Number(parts[2])}`
+        : vid;
+    };
+    const onSelChange = () => {
+      const sel = window.getSelection();
+      if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return;
+      const range = sel.getRangeAt(0);
+      const startEl =
+        (range.startContainer.nodeType === Node.ELEMENT_NODE
+          ? (range.startContainer as Element)
+          : range.startContainer.parentElement
+        )?.closest("[data-verse-id]");
+      const endEl =
+        (range.endContainer.nodeType === Node.ELEMENT_NODE
+          ? (range.endContainer as Element)
+          : range.endContainer.parentElement
+        )?.closest("[data-verse-id]");
+      if (!startEl) return;
+      // Single-verse selection — keep the legacy fast path so the
+      // toolbar's same-color toggle-off still works.
+      if (startEl === endEl) {
+        const verseId = startEl.getAttribute("data-verse-id");
+        if (!verseId) return;
+        const startOffset = offsetWithinVerse(startEl, range);
+        const endRange = document.createRange();
+        endRange.setStart(startEl, 0);
+        endRange.setEnd(range.endContainer, range.endOffset);
+        const endOffset = endRange.toString().length;
+        if (endOffset <= startOffset) return;
+        onAnnotationTargetChange?.({
+          verseId,
+          label: fmtLabel(verseId),
+          selStart: startOffset,
+          selEnd: endOffset,
+        });
         return;
       }
-      e.preventDefault();
-      const range = (document as Document & {
-        caretRangeFromPoint?: (x: number, y: number) => Range | null;
-      }).caretRangeFromPoint?.(t.clientX, t.clientY);
-      if (!range) return;
-      const abs = offsetWithinVerse(sel.el, range);
-      const cur = wordAt(sel.spans, abs);
-      if (!cur) return;
-      const start = Math.min(sel.anchor.start, cur.start);
-      const end = Math.max(sel.anchor.end, cur.end);
-      setLiveSel((prev) =>
-        prev && prev.verseId === sel.verseId ? { ...prev, start, end } : prev,
+      // Multi-verse selection — walk every [data-verse-id] between
+      // startEl and endEl in document order and emit one span per
+      // verse. The toolbar applies the chosen tool to each.
+      if (!endEl) return;
+      const root = bibleRootRef.current;
+      if (!root) return;
+      const allVerses = Array.from(
+        root.querySelectorAll<HTMLElement>("[data-verse-id]"),
       );
-    },
-    [],
-  );
-
-  const onVerseTouchEnd = useCallback(() => {
-    cancelLongPressTimer();
-    const sel = selModeRef.current;
-    selModeRef.current = null;
-    if (!sel) return;
-    const cur = liveSelDup.current;
-    if (cur && cur.end > cur.start) {
-      onAnnotationTargetChange?.({
-        verseId: sel.verseId,
-        label: verseLabelFromId(sel.verseId),
-        selStart: cur.start,
-        selEnd: cur.end,
-      });
-    }
-  }, [onAnnotationTargetChange]);
-
-  // Desktop / mouse fallback. Click-and-drag also selects, with the
-  // same word-snap behavior so the feel matches.
-  const onVersePointerDown = useCallback(
-    (e: React.PointerEvent) => {
-      if (!onApplyAnnotation) return;
-      if (e.pointerType !== "mouse" || e.button !== 0) return;
-      const el = (e.target as Element).closest("[data-verse-id]");
-      if (!el) return;
-      const verseId = el.getAttribute("data-verse-id");
-      if (!verseId) return;
-      const range = (document as Document & {
-        caretRangeFromPoint?: (x: number, y: number) => Range | null;
-      }).caretRangeFromPoint?.(e.clientX, e.clientY);
-      if (!range) return;
-      const text = el.textContent ?? "";
-      const spans = wordSpansFor(text);
-      const abs = offsetWithinVerse(el, range);
-      const word = wordAt(spans, abs);
-      if (!word) return;
-      selModeRef.current = { verseId, el, spans, anchor: word };
-      setLiveSel({ verseId, start: word.start, end: word.end });
-      const onMove = (ev: PointerEvent) => {
-        const s = selModeRef.current;
-        if (!s) return;
-        const r = (document as Document & {
-          caretRangeFromPoint?: (x: number, y: number) => Range | null;
-        }).caretRangeFromPoint?.(ev.clientX, ev.clientY);
-        if (!r) return;
-        const a = offsetWithinVerse(s.el, r);
-        const cur = wordAt(s.spans, a);
-        if (!cur) return;
-        const start = Math.min(s.anchor.start, cur.start);
-        const end = Math.max(s.anchor.end, cur.end);
-        setLiveSel((prev) =>
-          prev && prev.verseId === s.verseId
-            ? { ...prev, start, end }
-            : prev,
-        );
-      };
-      const onUp = () => {
-        document.removeEventListener("pointermove", onMove);
-        document.removeEventListener("pointerup", onUp);
-        const s = selModeRef.current;
-        selModeRef.current = null;
-        if (!s) return;
-        const cur = liveSelDup.current;
-        if (cur && cur.end > cur.start) {
-          onAnnotationTargetChange?.({
-            verseId: s.verseId,
-            label: verseLabelFromId(s.verseId),
-            selStart: cur.start,
-            selEnd: cur.end,
-          });
+      const startIdx = allVerses.indexOf(startEl as HTMLElement);
+      const endIdx = allVerses.indexOf(endEl as HTMLElement);
+      if (startIdx < 0 || endIdx < 0 || endIdx < startIdx) return;
+      const spans: Array<{
+        verseId: string;
+        selStart: number;
+        selEnd: number;
+      }> = [];
+      for (let i = startIdx; i <= endIdx; i++) {
+        const v = allVerses[i];
+        const vid = v.getAttribute("data-verse-id");
+        if (!vid) continue;
+        const fullLen = v.textContent?.length ?? 0;
+        let s = 0;
+        let e = fullLen;
+        if (v === startEl) {
+          s = offsetWithinVerse(v, range);
         }
-      };
-      document.addEventListener("pointermove", onMove);
-      document.addEventListener("pointerup", onUp);
-    },
-    [onApplyAnnotation, onAnnotationTargetChange],
-  );
+        if (v === endEl) {
+          const endRange = document.createRange();
+          endRange.setStart(v, 0);
+          endRange.setEnd(range.endContainer, range.endOffset);
+          e = endRange.toString().length;
+        }
+        if (e > s) spans.push({ verseId: vid, selStart: s, selEnd: e });
+      }
+      if (spans.length === 0) return;
+      const firstVid = spans[0].verseId;
+      const lastVid = spans[spans.length - 1].verseId;
+      const a = firstVid.split(".");
+      const b = lastVid.split(".");
+      // "Gen 1:1–3" when book + chapter match, else
+      // "Gen 1:31 – Gen 2:3".
+      const label =
+        a.length === 3 && b.length === 3 && a[0] === b[0] && a[1] === b[1]
+          ? `${a[0]} ${Number(a[1])}:${Number(a[2])}–${Number(b[2])}`
+          : `${fmtLabel(firstVid)} – ${fmtLabel(lastVid)}`;
+      onAnnotationTargetChange?.({
+        verseId: firstVid,
+        label,
+        spans,
+      });
+    };
+    document.addEventListener("selectionchange", onSelChange);
+    return () => document.removeEventListener("selectionchange", onSelChange);
+    // onAnnotationTargetChange is stable enough — adding it to deps
+    // would re-bind the listener on every parent render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  // Clear the live blue tint when the bottom-panel closes — keeps the
-  // selection visible while the user is choosing a tool, drops it
-  // when they tap the close button or apply a tool.
+  // When the bottom-panel closes, also collapse the native selection
+  // so iOS's grab handles + magnifier disappear with the toolbar.
   useEffect(() => {
-    if (!annotationTarget) setLiveSel(null);
+    if (!annotationTarget) {
+      try {
+        window.getSelection()?.removeAllRanges();
+      } catch {
+        /* ignore — some embeds restrict selection access */
+      }
+    }
   }, [annotationTarget]);
 
   // Blue handle dots — visible at the start/end of the live selection
@@ -438,231 +314,6 @@ export function BibleView({
   // viewport-relative (we use position: fixed) and recomputed on
   // scroll so the dots track the verse as the user scrolls. Drag a
   // dot to refine that boundary.
-  const [handlePos, setHandlePos] = useState<
-    | {
-        start: { x: number; y: number };
-        end: { x: number; y: number };
-        // Height of the line the boundary sits on — sized the dot's
-        // vertical center to the baseline.
-        height: number;
-      }
-    | null
-  >(null);
-
-  // Walk the verse's text descendants to find the (textNode, offset)
-  // tuple corresponding to an absolute character offset. Required
-  // because the verse text is split into multiple <span> children
-  // (run-split render) — a flat offset doesn't map directly to one
-  // text node anymore.
-  const pointInVerse = useCallback(
-    (
-      root: Element,
-      absOffset: number,
-    ): { node: Text; offset: number } | null => {
-      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-      let walked = 0;
-      let lastSeen: Text | null = null;
-      let node = walker.nextNode() as Text | null;
-      while (node) {
-        lastSeen = node;
-        const len = node.nodeValue?.length ?? 0;
-        if (walked + len >= absOffset) {
-          return { node, offset: Math.max(0, absOffset - walked) };
-        }
-        walked += len;
-        node = walker.nextNode() as Text | null;
-      }
-      // Past end — pin to the last text node's tail so handles still
-      // get a valid point (otherwise they vanish on stale ranges).
-      if (lastSeen) {
-        return { node: lastSeen, offset: lastSeen.nodeValue?.length ?? 0 };
-      }
-      return null;
-    },
-    [],
-  );
-
-  const recomputeHandles = useCallback(() => {
-    const sel =
-      liveSel ??
-      (annotationTarget?.selStart != null && annotationTarget?.selEnd != null
-        ? {
-            verseId: annotationTarget.verseId,
-            start: annotationTarget.selStart,
-            end: annotationTarget.selEnd,
-          }
-        : null);
-    if (!sel || sel.end <= sel.start) {
-      setHandlePos(null);
-      return;
-    }
-    const verseEl = document.querySelector(
-      `[data-verse-id="${sel.verseId}"]`,
-    );
-    if (!verseEl) {
-      setHandlePos(null);
-      return;
-    }
-    const startPt = pointInVerse(verseEl, sel.start);
-    const endPt = pointInVerse(verseEl, sel.end);
-    if (!startPt || !endPt) {
-      setHandlePos(null);
-      return;
-    }
-    try {
-      const startRange = document.createRange();
-      startRange.setStart(startPt.node, startPt.offset);
-      startRange.setEnd(startPt.node, startPt.offset);
-      const endRange = document.createRange();
-      endRange.setStart(endPt.node, endPt.offset);
-      endRange.setEnd(endPt.node, endPt.offset);
-      const sRect = startRange.getBoundingClientRect();
-      const eRect = endRange.getBoundingClientRect();
-      // Collapsed ranges can return (0,0,0,0) on some browsers.
-      // Fall back to a small expanded range to get a usable rect.
-      const sUsable =
-        sRect.width === 0 && sRect.height === 0
-          ? (() => {
-              const r = document.createRange();
-              r.setStart(startPt.node, startPt.offset);
-              r.setEnd(
-                startPt.node,
-                Math.min(
-                  startPt.node.nodeValue?.length ?? startPt.offset,
-                  startPt.offset + 1,
-                ),
-              );
-              return r.getBoundingClientRect();
-            })()
-          : sRect;
-      const eUsable =
-        eRect.width === 0 && eRect.height === 0
-          ? (() => {
-              const r = document.createRange();
-              r.setStart(
-                endPt.node,
-                Math.max(0, endPt.offset - 1),
-              );
-              r.setEnd(endPt.node, endPt.offset);
-              return r.getBoundingClientRect();
-            })()
-          : eRect;
-      setHandlePos({
-        start: { x: sUsable.left, y: sUsable.bottom },
-        end: { x: eUsable.right, y: eUsable.bottom },
-        height: Math.max(sUsable.height, eUsable.height, 18),
-      });
-    } catch {
-      setHandlePos(null);
-    }
-  }, [annotationTarget, liveSel, pointInVerse]);
-
-  useEffect(() => {
-    recomputeHandles();
-  }, [recomputeHandles]);
-
-  // The scroller is the BibleView's flex-1 child; listen at the
-  // document level so we catch scrolls anywhere up the tree (the
-  // shell scroller, the page, etc.) and re-pin the handles.
-  useEffect(() => {
-    if (!handlePos) return;
-    const onScroll = () => recomputeHandles();
-    window.addEventListener("scroll", onScroll, true);
-    window.addEventListener("resize", onScroll);
-    return () => {
-      window.removeEventListener("scroll", onScroll, true);
-      window.removeEventListener("resize", onScroll);
-    };
-    // recomputeHandles is referentially stable until annotationTarget
-    // changes, which already triggers the previous effect.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [handlePos !== null]);
-
-  // Drag a handle dot to refine that end of the selection. Reuses
-  // the existing caretRangeFromPoint pattern from startTouchDrag but
-  // edits only one boundary, keeping the other anchored.
-  const startHandleDrag = useCallback(
-    (which: "start" | "end") => (e: React.TouchEvent | React.PointerEvent) => {
-      const verseId = (liveSel ?? annotationTarget)?.verseId;
-      if (!verseId) return;
-      const el = document.querySelector(`[data-verse-id="${verseId}"]`);
-      if (!el) return;
-      // Prevent the page from scrolling under the finger.
-      e.preventDefault();
-      e.stopPropagation();
-      const isTouch = "touches" in e;
-      const getXY = (ev: TouchEvent | PointerEvent) => {
-        if ("touches" in ev) {
-          const t = ev.touches[0] ?? ev.changedTouches[0];
-          return t ? { x: t.clientX, y: t.clientY } : null;
-        }
-        return { x: ev.clientX, y: ev.clientY };
-      };
-      const text = el.textContent ?? "";
-      const spans = wordSpansFor(text);
-      const onMove = (ev: TouchEvent | PointerEvent) => {
-        if ("touches" in ev) ev.preventDefault();
-        const xy = getXY(ev);
-        if (!xy) return;
-        const r = (document as Document & {
-          caretRangeFromPoint?: (x: number, y: number) => Range | null;
-        }).caretRangeFromPoint?.(xy.x, xy.y);
-        if (!r) return;
-        const pos = offsetWithinVerse(el, r);
-        // Snap the dragged boundary to the nearest word. The start
-        // handle picks the word starting at-or-after this point; the
-        // end handle picks the word ending at-or-before.
-        const word = wordAt(spans, pos, which);
-        if (!word) return;
-        setLiveSel((prev) => {
-          if (!prev || prev.verseId !== verseId) return prev;
-          let start = prev.start;
-          let end = prev.end;
-          if (which === "start") start = Math.min(word.start, end);
-          else end = Math.max(word.end, start);
-          if (end === start) return prev;
-          return { ...prev, start, end };
-        });
-      };
-      const onEnd = () => {
-        if (isTouch) {
-          document.removeEventListener("touchmove", onMove as EventListener);
-          document.removeEventListener("touchend", onEnd);
-          document.removeEventListener("touchcancel", onEnd);
-        } else {
-          document.removeEventListener("pointermove", onMove as EventListener);
-          document.removeEventListener("pointerup", onEnd);
-        }
-        // Push the new bounds to annotationTarget so the
-        // AnnotationToolbar's onApply gets the refined range.
-        const sel = liveSelDup.current;
-        if (sel) {
-          const parts = verseId.split(".");
-          const label =
-            parts.length === 3
-              ? `${parts[0]} ${Number(parts[1])}:${Number(parts[2])}`
-              : verseId;
-          onAnnotationTargetChange?.({
-            verseId,
-            label,
-            selStart: sel.start,
-            selEnd: sel.end,
-          });
-        }
-      };
-      if (isTouch) {
-        document.addEventListener("touchmove", onMove as EventListener, {
-          passive: false,
-        });
-        document.addEventListener("touchend", onEnd);
-        document.addEventListener("touchcancel", onEnd);
-      } else {
-        document.addEventListener("pointermove", onMove as EventListener);
-        document.addEventListener("pointerup", onEnd);
-      }
-    },
-    [annotationTarget, liveSel, onAnnotationTargetChange],
-  );
   const [autoFocusVerse, setAutoFocusVerse] = useState<string | null>(null);
   // Which verses have their token-study block open. Per-verse so
   // multiple expansions can coexist; the user might want to compare
@@ -1307,6 +958,12 @@ export function BibleView({
     const dy = t.clientY - start.y;
     if (Math.abs(dy) > SWIPE_DY_MAX) return;
     if (Math.abs(dx) < SWIPE_DX_MIN) return;
+    // Suppress chapter advance while the user has an active text
+    // selection. Dragging an iOS selection grab handle to the left
+    // or right looks identical to a horizontal page-turn swipe and
+    // was stealing the gesture from the selector.
+    const sel = typeof window !== "undefined" ? window.getSelection() : null;
+    if (sel && !sel.isCollapsed && sel.toString().length > 0) return;
     // Drag left → next chapter; drag right → previous chapter. Mirrors
     // the natural "page turn" direction of a book in LTR languages.
     advanceChapter(dx < 0 ? 1 : -1);
@@ -1370,50 +1027,8 @@ export function BibleView({
 
   return (
     <>
-    {/* Blue handle dots — visible at the boundaries of a sub-verse
-     *  selection. Position: fixed in the viewport, re-pinned on
-     *  scroll/resize via recomputeHandles. Visual-only anchors for
-     *  the moment — they show the user where the selection ends so
-     *  they don't lose track after the live tint has been mistaken
-     *  for a "real" highlight. */}
-    {handlePos && (
-      <>
-        {/* Each handle = visible blue dot (h-3 w-3) wrapped in a
-            bigger 32×32 invisible touch target. Fingertips overshoot
-            tiny visual dots constantly; the bigger hit-target lets
-            the user drag without finger-precision. */}
-        <div
-          role="button"
-          aria-label="Selection start handle — drag to refine"
-          onTouchStart={startHandleDrag("start")}
-          onPointerDown={(e) => {
-            if (e.pointerType === "mouse") startHandleDrag("start")(e);
-          }}
-          className="fixed z-50 grid h-8 w-8 -translate-x-1/2 -translate-y-1/2 cursor-grab touch-none place-items-center active:cursor-grabbing"
-          style={{
-            left: `${handlePos.start.x}px`,
-            top: `${handlePos.start.y}px`,
-          }}
-        >
-          <span className="h-3 w-3 rounded-full bg-sky-500 shadow-[0_2px_6px_rgba(0,0,0,0.35)]" />
-        </div>
-        <div
-          role="button"
-          aria-label="Selection end handle — drag to refine"
-          onTouchStart={startHandleDrag("end")}
-          onPointerDown={(e) => {
-            if (e.pointerType === "mouse") startHandleDrag("end")(e);
-          }}
-          className="fixed z-50 grid h-8 w-8 -translate-x-1/2 -translate-y-1/2 cursor-grab touch-none place-items-center active:cursor-grabbing"
-          style={{
-            left: `${handlePos.end.x}px`,
-            top: `${handlePos.end.y}px`,
-          }}
-        >
-          <span className="h-3 w-3 rounded-full bg-sky-500 shadow-[0_2px_6px_rgba(0,0,0,0.35)]" />
-        </div>
-      </>
-    )}
+    {/* No custom handles anymore — iOS / the browser draws its
+     *  own selection grab handles and magnifier on the verse text. */}
     {/* Scoped no-select. iOS Safari fires the selection magnifier
      *  + callout off any descendant that doesn't itself opt out,
      *  so we cover the whole tree from the root and explicitly
@@ -1429,6 +1044,16 @@ export function BibleView({
       .bible-no-select textarea,
       .bible-no-select [contenteditable="true"],
       .bible-no-select [contenteditable=""] {
+        -webkit-user-select: text !important;
+        user-select: text !important;
+        -webkit-touch-callout: default !important;
+      }
+      /* Re-enable native iOS / desktop selection on verse text so
+         the user can drag-select with the OS-supplied magnifier +
+         grab handles. The selectionchange listener picks up the
+         range and feeds the bottom AnnotationToolbar. */
+      .bible-no-select [data-verse-id],
+      .bible-no-select [data-verse-id] * {
         -webkit-user-select: text !important;
         user-select: text !important;
         -webkit-touch-callout: default !important;
@@ -1682,28 +1307,11 @@ export function BibleView({
                 ...ann.wavy,
                 ...ann.bold,
               ];
-              // While the user drags, paint a live blue highlight on
-              // their current selection. We synthesize an AnnotationOut
-              // and inject it into the run-splitter — the same render
-              // path that draws committed annotations draws this one.
-              const liveOnThisVerse =
-                liveSel?.verseId === v.verse_id && liveSel.end > liveSel.start
-                  ? liveSel
-                  : null;
-              const subVerseSafeWithLive = liveOnThisVerse
-                ? [
-                    {
-                      id: "__live__",
-                      verse_id: v.verse_id,
-                      kind: "highlight" as const,
-                      color: "blue" as const,
-                      start_offset: liveOnThisVerse.start,
-                      end_offset: liveOnThisVerse.end,
-                      updated_at: "",
-                    },
-                    ...subVerseSafe,
-                  ]
-                : subVerseSafe;
+              // No synthetic live highlight — iOS / the browser
+              // draws its own selection tint and grab handles on
+              // the verse text, so the run-splitter only needs to
+              // know about COMMITTED annotations now.
+              const subVerseSafeWithLive = subVerseSafe;
               const verseLabel = `${book} ${chapter}:${v.verse}`;
               const longPressHandlers = onApplyAnnotation
                 ? {
@@ -1818,19 +1426,14 @@ export function BibleView({
                         </button>
                       )}
                       {(() => {
-                        const noSelect: React.CSSProperties = {
-                          WebkitTouchCallout: "none",
-                          WebkitUserSelect: "none",
-                          userSelect: "none",
-                          touchAction: "manipulation",
-                        };
                         // Old white-ish focus ring around the selected
                         // verse — removed by user request. The
                         // bottom AnnotationToolbar already shows
                         // which verse it's acting on via its header
-                        // label, and sub-verse mode has the live
-                        // blue tint + handles, so the ring was
-                        // redundant + read as a hard boundary line.
+                        // label, and native iOS selection draws its
+                        // own blue tint + grab handles, so the ring
+                        // was redundant + read as a hard boundary
+                        // line.
                         const ringClasses = "";
                         const primaryText = v.translations[0].text;
                         const runs = splitVerseIntoRuns(
@@ -1859,23 +1462,6 @@ export function BibleView({
                             dir={v.translations[0].direction}
                             data-verse-id={v.verse_id}
                             {...longPressHandlers}
-                            onTouchStart={onVerseTouchStart}
-                            onTouchMove={onVerseTouchMove}
-                            onTouchEnd={onVerseTouchEnd}
-                            onTouchCancel={onVerseTouchEnd}
-                            onPointerDown={(e) => {
-                              if (e.pointerType === "mouse") {
-                                onVersePointerDown(e);
-                                return;
-                              }
-                              // Touch goes through the touch handlers
-                              // above; only fall through to longPress
-                              // (whole-verse toolbar) for stylus or
-                              // other pointer types that don't fire
-                              // touch events.
-                              longPressHandlers.onPointerDown?.(e);
-                            }}
-                            style={noSelect}
                             className={`text-[15px] text-neutral-800 transition-shadow dark:text-neutral-100 ${annClasses} ${ringClasses}`}
                           >
                             {runChildren}
@@ -1884,18 +1470,6 @@ export function BibleView({
                           <span
                             data-verse-id={v.verse_id}
                             {...longPressHandlers}
-                            onTouchStart={onVerseTouchStart}
-                            onTouchMove={onVerseTouchMove}
-                            onTouchEnd={onVerseTouchEnd}
-                            onTouchCancel={onVerseTouchEnd}
-                            onPointerDown={(e) => {
-                              if (e.pointerType === "mouse") {
-                                onVersePointerDown(e);
-                                return;
-                              }
-                              longPressHandlers.onPointerDown?.(e);
-                            }}
-                            style={noSelect}
                             className={`text-[15px] text-neutral-800 transition-shadow dark:text-neutral-100 ${annClasses} ${ringClasses}`}
                           >
                             {runChildren}

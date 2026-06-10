@@ -20,6 +20,7 @@ import {
 import { Panel, PanelGroup } from "react-resizable-panels";
 import { ResourcesPanel } from "./ResourcesPanel/ResourcesPanel";
 import { BibleView } from "./BibleView/BibleView";
+import type { AnnotationTarget } from "./BibleView/AnnotationToolbar";
 import { ReasoningStream } from "./ReasoningStream/ReasoningStream";
 import { TestamentGrid } from "./TestamentGrid";
 import { BibleOverview } from "./BibleOverview";
@@ -168,20 +169,8 @@ interface Props {
   onClearAnnotations?: (verseId: string) => void;
   /** Lifted from BibleView so the bottom panel can render the
    *  annotation tool strip when a verse is long-pressed. */
-  annotationTarget?: {
-    verseId: string;
-    label?: string;
-    selStart?: number | null;
-    selEnd?: number | null;
-  } | null;
-  onAnnotationTargetChange?: (
-    t: {
-      verseId: string;
-      label?: string;
-      selStart?: number | null;
-      selEnd?: number | null;
-    } | null,
-  ) => void;
+  annotationTarget?: AnnotationTarget | null;
+  onAnnotationTargetChange?: (t: AnnotationTarget | null) => void;
   /** Tells BibleView's scroller to leave room at the bottom for the
    *  floating composer + AI pill (mobile only). */
   bottomInset?: boolean;
@@ -772,10 +761,8 @@ function CenterColumn(props: {
   ) => void;
   onClearAnnotationKind?: (verseId: string, kind: AnnotationKind) => void;
   onClearAnnotations?: (verseId: string) => void;
-  annotationTarget?: { verseId: string; label?: string } | null;
-  onAnnotationTargetChange?: (
-    t: { verseId: string; label?: string } | null,
-  ) => void;
+  annotationTarget?: AnnotationTarget | null;
+  onAnnotationTargetChange?: (t: AnnotationTarget | null) => void;
   bottomInset?: boolean;
   accentKey?: AccentKey;
 }) {

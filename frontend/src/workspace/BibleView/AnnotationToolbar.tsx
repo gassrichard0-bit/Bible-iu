@@ -34,6 +34,13 @@ export interface AnnotationTarget {
    *  default) means apply to the whole verse, matching v1. */
   selStart?: number | null;
   selEnd?: number | null;
+  /** Multi-verse selection. When set, the user dragged the OS
+   *  selection across more than one verse and the toolbar should
+   *  apply the chosen tool to every span in the list (one new
+   *  annotation row per verse). For a single-verse selection this
+   *  is undefined and the legacy verseId/selStart/selEnd path is
+   *  used unchanged. */
+  spans?: Array<{ verseId: string; selStart: number; selEnd: number }>;
 }
 
 interface Props {
@@ -137,6 +144,43 @@ export function AnnotationToolbar({
             section={s}
             activeColor={activeColorFor(s.kind)}
             onTap={(color) => {
+              // Multi-verse selection — apply (or toggle-off) the
+              // chosen tool on every span the user dragged across.
+              if (target.spans && target.spans.length > 0) {
+                const allMatched =
+                  annotations &&
+                  target.spans.every((sp) =>
+                    annotations.some(
+                      (a) =>
+                        a.verse_id === sp.verseId &&
+                        a.kind === s.kind &&
+                        a.color === color &&
+                        a.start_offset === sp.selStart &&
+                        a.end_offset === sp.selEnd,
+                    ),
+                  );
+                if (allMatched && onClearById) {
+                  for (const sp of target.spans) {
+                    const matched = annotations!.find(
+                      (a) =>
+                        a.verse_id === sp.verseId &&
+                        a.kind === s.kind &&
+                        a.color === color &&
+                        a.start_offset === sp.selStart &&
+                        a.end_offset === sp.selEnd,
+                    );
+                    if (matched) onClearById(matched.id);
+                  }
+                } else {
+                  for (const sp of target.spans) {
+                    onApply(sp.verseId, s.kind, color, {
+                      start: sp.selStart,
+                      end: sp.selEnd,
+                    });
+                  }
+                }
+                return;
+              }
               const range =
                 target.selStart != null && target.selEnd != null
                   ? { start: target.selStart, end: target.selEnd }

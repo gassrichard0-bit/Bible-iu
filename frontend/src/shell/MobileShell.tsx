@@ -3597,8 +3597,14 @@ function ChatPanel({
   const scrollerRef = useRef<HTMLDivElement | null>(null);
 
   // Initial load — most recent 100 messages, chronological.
+  // Reset the per-room state up-front so switching rooms doesn't
+  // briefly render the previous room's last message + statuses
+  // while the new fetches are in flight (the "ghost message" flash).
   useEffect(() => {
     if (!roomId) return;
+    setMessages([]);
+    setStatuses([]);
+    setMemberCount(null);
     let alive = true;
     api
       .chatList(roomId, 100)
@@ -3886,6 +3892,29 @@ function ChatPanel({
   );
 }
 
+/**
+ * Defensive strip for chat bodies that briefly contain the raw
+ * deepseek model output — the orchestrator's pre-parse text that
+ * carries `note_to_append`, `S<N> says`, and `Answer: "<polished>"`
+ * tokens. The backend may broadcast the pre-parse body once before
+ * an update lands with the polished answer. While we hunt the
+ * writer, render only the polished `Answer: "..."` payload so the
+ * "ghost message" can't surface to readers.
+ *
+ * Conservative: requires BOTH a long preamble (>40 chars before
+ * `Answer:`) and a quoted answer to fire, so normal messages that
+ * happen to contain the word "Answer:" pass through untouched.
+ */
+function stripRawCoT(body: string): string {
+  if (!body || body.length < 80) return body;
+  if (!/\bAnswer:\s*["“]/.test(body)) return body;
+  const m = body.match(/\bAnswer:\s*["“]([\s\S]+?)["”]\s*\.?\s*$/);
+  if (!m) return body;
+  const preamble = body.slice(0, body.lastIndexOf(m[0])).trim();
+  if (preamble.length < 40) return body;
+  return m[1].trim();
+}
+
 function ChatBubble({
   msg,
   mine,
@@ -4092,7 +4121,7 @@ function ChatBubble({
             />
           )}
           {msg.body && (
-            <div dir="auto" className="px-3.5 py-2 text-[15px]">{msg.body}</div>
+            <div dir="auto" className="px-3.5 py-2 text-[15px]">{stripRawCoT(msg.body)}</div>
           )}
           {msg.pinned_at && (
             <div className="flex items-center gap-1 border-t border-amber-200/60 bg-amber-50/70 px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-amber-800 dark:border-amber-700/40 dark:bg-amber-900/30 dark:text-amber-200">
