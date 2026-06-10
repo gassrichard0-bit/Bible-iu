@@ -1017,11 +1017,9 @@ export function BibleView({
                 // behind the floating nav. Only the END of the chapter
                 // gets an empty tail so the last verses can scroll all
                 // the way above the nav when the reader reaches them.
-                // 160px ≈ floating AI pill + tab nav with a small
-                // breathing margin above. Tighter than the 240px we
-                // tried first — that was too generous and left a
-                // dead band of empty space at the chapter end.
-                paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 160px)",
+                // 100px ≈ just enough to clear the nav at chapter end
+                // without leaving a dead band of empty space.
+                paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 100px)",
               }
             : {}),
         }}
