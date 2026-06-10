@@ -99,6 +99,7 @@ function ProfileForm({
   const [displayName, setDisplayName] = useState(profile.display_name);
   const [avatarUrl, setAvatarUrl] = useState(profile.avatar_url ?? "");
   const [languages, setLanguages] = useState((profile.languages || []).join(", "));
+  const [email, setEmail] = useState(profile.email ?? "");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [photoBusy, setPhotoBusy] = useState(false);
@@ -151,7 +152,8 @@ function ProfileForm({
   const dirty =
     displayName !== profile.display_name ||
     avatarUrl !== (profile.avatar_url ?? "") ||
-    languages !== (profile.languages || []).join(", ");
+    languages !== (profile.languages || []).join(", ") ||
+    email !== (profile.email ?? "");
 
   async function save() {
     setBusy(true);
@@ -164,6 +166,9 @@ function ProfileForm({
           .split(",")
           .map((s) => s.trim())
           .filter(Boolean),
+        // "" → clears the email on the backend; anything else is saved
+        // verbatim after a minimal shape check server-side.
+        email: email.trim(),
       });
       onSaved(next);
       setMsg("Saved.");
@@ -247,6 +252,21 @@ function ProfileForm({
             onChange={(e) => setDisplayName(e.target.value)}
             className="w-full rounded-2xl border border-neutral-200 bg-paper px-3 py-2.5 text-[15px] outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-200/40 dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100 dark:focus:border-amber-700 dark:focus:ring-amber-800/40"
           />
+        </Field>
+        <Field label="Email (for password reset)">
+          <input
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="you@example.com"
+            autoComplete="email"
+            className="w-full rounded-2xl border border-neutral-200 bg-paper px-3 py-2.5 text-[15px] outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-200/40 dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100 dark:focus:border-amber-700 dark:focus:ring-amber-800/40"
+          />
+          <p className="mt-1 text-[10px] text-neutral-500 dark:text-neutral-400">
+            Used only to send a password-reset link when you tap
+            "Forgot password?" on the sign-in screen. Leave blank to
+            stick with backup-code recovery.
+          </p>
         </Field>
         <Field label="Languages (comma-separated)">
           <input

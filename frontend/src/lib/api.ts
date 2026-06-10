@@ -219,6 +219,8 @@ export interface SessionResponse {
   token: string;
   handle: string;
   display_name: string;
+  email?: string | null;
+  email_verified_at?: string | null;
   expires_at: string;
 }
 
@@ -231,6 +233,11 @@ export interface UserProfile {
   preferences: Record<string, unknown>;
   phone_e164: string | null;
   phone_verified_at: string | null;
+  /** Optional — set via PATCH /auth/me. Used for password-reset
+   *  email delivery. `email_verified_at` stays null until a future
+   *  verification flow flips it. */
+  email?: string | null;
+  email_verified_at?: string | null;
 }
 
 export interface RoomOut {
@@ -328,6 +335,9 @@ export interface ProfilePatch {
   avatar_url?: string;
   languages?: string[];
   preferences?: Record<string, unknown>;
+  /** Pass "" to clear the email. Anything else is set verbatim (the
+   *  backend lowercases + validates shape). */
+  email?: string;
 }
 
 export const api = {
@@ -402,6 +412,23 @@ export const api = {
     jsonFetch<SessionResponse>("/auth/recover", {
       method: "POST",
       body: JSON.stringify({ handle, backup_code, new_password }),
+    }),
+  /** Request a password-reset email. Always succeeds on the wire (the
+   *  backend returns 200 even for unknown addresses to prevent
+   *  enumeration) — surface a generic "check your email" message in
+   *  the UI. The link in the email expires in 30 minutes. */
+  authForgotPassword: (email: string) =>
+    jsonFetch<{ ok: boolean }>("/auth/forgot-password", {
+      method: "POST",
+      body: JSON.stringify({ email }),
+    }),
+  /** Consume a reset token from the email link. On success the user's
+   *  password is changed AND every existing session is invalidated;
+   *  the caller has to sign in fresh with the new password. */
+  authResetPassword: (token: string, new_password: string) =>
+    jsonFetch<{ ok: boolean }>("/auth/reset-password", {
+      method: "POST",
+      body: JSON.stringify({ token, new_password }),
     }),
   authRegister: (
     handle: string,

@@ -3,6 +3,7 @@ import { JoinRoom } from "./shell/JoinRoom";
 import { Login } from "./shell/Login";
 import { MobileShell } from "./shell/MobileShell";
 import { PasswordGate } from "./shell/PasswordGate";
+import { ResetPasswordSheet } from "./shell/ResetPasswordSheet";
 import { SocialShell } from "./shell/SocialShell";
 import { useIsDesktop } from "./lib/useMediaQuery";
 import { applyTheme, readTheme, type Theme } from "./lib/theme";
@@ -47,6 +48,14 @@ export function App() {
   const [inviteCode, setInviteCode] = useState<string | null>(() => {
     if (typeof window === "undefined") return null;
     return new URLSearchParams(window.location.search).get("invite");
+  });
+  // `?reset=<token>` in the URL opens the password-reset sheet over
+  // whatever else is rendering. The link the backend sends from
+  // /auth/forgot-password points here. Token is opaque to us — the
+  // backend compares its SHA-256 against `password_reset_tokens`.
+  const [resetToken, setResetToken] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
+    return new URLSearchParams(window.location.search).get("reset");
   });
   // After accepting an invite, signal SocialShell to open that room.
   const [joinedRoomId, setJoinedRoomId] = useState<string | null>(null);
@@ -303,6 +312,23 @@ export function App() {
         onPendingRoomConsumed={() => setJoinedRoomId(null)}
       />
       <UpdateAvailableBanner />
+      {resetToken && (
+        <ResetPasswordSheet
+          token={resetToken}
+          onClose={() => {
+            setResetToken(null);
+            // Strip `?reset=` from the URL so a refresh doesn't
+            // reopen the sheet for the same (now-spent) token.
+            const url = new URL(window.location.href);
+            url.searchParams.delete("reset");
+            window.history.replaceState({}, "", url.toString());
+          }}
+          onReset={() => {
+            // Drop the session state so the next render shows Login.
+            setAuth({ phase: "signed-out" });
+          }}
+        />
+      )}
     </>
   );
 }

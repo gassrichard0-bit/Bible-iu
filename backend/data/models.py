@@ -77,6 +77,32 @@ class User(Base, TimestampMixin):
     phone_verified_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime, nullable=True
     )
+    # Email — optional. Lets the user request a password reset link
+    # via SMTP and (later) gates trust-sensitive flows behind
+    # `email_verified_at`. SQLite allows multiple NULL values through
+    # a unique constraint, so the unique-when-set semantics fall out
+    # naturally from the schema. `email_verified_at` is null until a
+    # future verification flow flips it; not gated on tonight.
+    email: Mapped[Optional[str]] = mapped_column(
+        String, unique=True, nullable=True, index=True
+    )
+    email_verified_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime, nullable=True
+    )
+
+
+class PasswordResetToken(Base, TimestampMixin):
+    """One-shot reset link. Created when the user requests a password
+    reset, consumed on click. Hashed in the DB so a SQL leak doesn't
+    yield usable reset links."""
+    __tablename__ = "password_reset_tokens"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id"), index=True
+    )
+    token_hash: Mapped[str] = mapped_column(String, unique=True, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    used_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
 
 class ReadingPlanEnrollment(Base, TimestampMixin):

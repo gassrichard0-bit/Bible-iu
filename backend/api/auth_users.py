@@ -25,8 +25,15 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
+import hashlib
+import logging
+import os
 import secrets
+import smtplib
+import ssl
 import string
+from email.message import EmailMessage
+from email.utils import formataddr
 
 from ..data import get_session
 from ..data.models import (
@@ -36,6 +43,7 @@ from ..data.models import (
     ChatMessage,
     NoteComment,
     NoteLike,
+    PasswordResetToken,
     PhoneVerification,
     RegisteredGroupNote,
     Room,
@@ -112,6 +120,8 @@ class SessionResponse(BaseModel):
     preferences: dict = Field(default_factory=dict)
     phone_e164: Optional[str] = None
     phone_verified_at: Optional[str] = None
+    email: Optional[str] = None
+    email_verified_at: Optional[str] = None
     expires_at: str
 
 
@@ -124,6 +134,8 @@ class MeResponse(BaseModel):
     preferences: dict = Field(default_factory=dict)
     phone_e164: Optional[str] = None
     phone_verified_at: Optional[str] = None
+    email: Optional[str] = None
+    email_verified_at: Optional[str] = None
 
 
 class ProfilePatch(BaseModel):
@@ -133,6 +145,19 @@ class ProfilePatch(BaseModel):
     avatar_url: Optional[str] = None
     languages: Optional[list[str]] = None
     preferences: Optional[dict] = None
+    # `None` means unchanged; `""` (empty string) means clear the email.
+    # Anything else is set verbatim — basic shape validation only, since
+    # we don't run a verification gate tonight.
+    email: Optional[str] = None
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=320)
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str = Field(min_length=8, max_length=200)
+    new_password: str = Field(min_length=8, max_length=200)
 
 
 class ChangePasswordRequest(BaseModel):
@@ -276,6 +301,29 @@ def patch_me(
         merged = dict(user.preferences or {})
         merged.update(patch.preferences)
         user.preferences = merged
+    if patch.email is not None:
+        raw = patch.email.strip().lower()
+        if raw == "":
+            user.email = None
+            user.email_verified_at = None
+        else:
+            # Minimal validation only — full validity check happens
+            # the moment we try to send. A typo'd address won't crash
+            # the backend; it just won't deliver, which is the same
+            # outcome as a valid-but-bad address.
+            if "@" not in raw or len(raw) > 320:
+                raise HTTPException(400, "invalid email")
+            # Uniqueness is enforced by the DB constraint — let the
+            # IntegrityError surface as a 409 rather than racing
+            # checks here.
+            existing = s.scalar(select(User).where(User.email == raw))
+            if existing is not None and existing.id != user.id:
+                raise HTTPException(409, "email already in use")
+            if raw != (user.email or ""):
+                # Email changed → re-verification needed when we wire
+                # the verify flow. For now we keep the cleared state.
+                user.email = raw
+                user.email_verified_at = None
     s.commit()
     return _user_to_response(user)
 
@@ -442,6 +490,217 @@ def change_password(
     for row in rows:
         if row.id != x_session_token:
             s.delete(row)
+    s.commit()
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Email-based password reset
+# ---------------------------------------------------------------------------
+_smtp_log = logging.getLogger("bible_iu.smtp")
+
+# How long a reset link stays valid. Short enough that a leaked link
+# isn't useful for long; long enough that the user has time to actually
+# check their email.
+_RESET_TOKEN_TTL = timedelta(minutes=30)
+
+# Per-email cooldown — prevents someone from hammering the Gmail SMTP
+# 500/day budget by spamming /auth/forgot-password for one address.
+_FORGOT_COOLDOWN = timedelta(seconds=60)
+_forgot_last_sent: dict[str, datetime] = {}
+
+
+def _smtp_config() -> Optional[dict]:
+    """Return SMTP creds from the env, or None if not configured. The
+    forgot endpoint logs + skips when None, so a missing config doesn't
+    break local dev — it just means reset emails don't get sent."""
+    host = os.environ.get("SMTP_HOST", "").strip()
+    user = os.environ.get("SMTP_USER", "").strip()
+    pw = os.environ.get("SMTP_PASSWORD", "").strip()
+    if not (host and user and pw):
+        return None
+    try:
+        port = int(os.environ.get("SMTP_PORT", "587"))
+    except ValueError:
+        port = 587
+    return {
+        "host": host,
+        "port": port,
+        "user": user,
+        "password": pw,
+        "from": os.environ.get("SMTP_FROM") or user,
+    }
+
+
+def _send_email(to: str, subject: str, body_text: str, body_html: str) -> bool:
+    """Send a transactional email via SMTP. Returns True on success.
+    Best-effort — caller decides whether to surface failures or stay
+    quiet (we stay quiet on forgot-password to avoid enumeration)."""
+    cfg = _smtp_config()
+    if cfg is None:
+        _smtp_log.warning("SMTP not configured — skipping send to %s", to[:3])
+        return False
+    msg = EmailMessage()
+    # `formataddr` keeps "Display Name <addr>" formatting intact even
+    # when the from string already has angle brackets in it.
+    msg["From"] = cfg["from"]
+    msg["To"] = to
+    msg["Subject"] = subject
+    msg.set_content(body_text)
+    msg.add_alternative(body_html, subtype="html")
+    try:
+        context = ssl.create_default_context()
+        if cfg["port"] == 465:
+            with smtplib.SMTP_SSL(cfg["host"], cfg["port"], context=context, timeout=10) as smtp:
+                smtp.login(cfg["user"], cfg["password"])
+                smtp.send_message(msg)
+        else:
+            with smtplib.SMTP(cfg["host"], cfg["port"], timeout=10) as smtp:
+                smtp.ehlo()
+                smtp.starttls(context=context)
+                smtp.ehlo()
+                smtp.login(cfg["user"], cfg["password"])
+                smtp.send_message(msg)
+        return True
+    except Exception:  # noqa: BLE001
+        _smtp_log.exception("SMTP send failed (to=%s subj=%r)", to[:3], subject)
+        return False
+
+
+def _hash_reset_token(token: str) -> str:
+    """Store the SHA-256 of the token in the DB so a SQL leak doesn't
+    yield usable reset links. The raw token only lives in the email."""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _reset_link(token: str, request: Optional[Request]) -> str:
+    """Compose the user-clickable link. Honors the Origin header (or
+    Host fallback) so the link works regardless of whether the user
+    is on the live tunnel or local dev. The frontend reads `?reset=`
+    on load and opens the reset form."""
+    base = ""
+    if request is not None:
+        # Prefer the explicit env var when present (set in prod), then
+        # the Origin header, then the Host header.
+        base = (os.environ.get("BIBLE_IU_PUBLIC_URL", "").strip()
+                or request.headers.get("origin", "").strip()
+                or "")
+        if not base:
+            scheme = request.url.scheme or "https"
+            host = request.headers.get("host", "")
+            if host:
+                base = f"{scheme}://{host}"
+    if not base:
+        base = "https://bible.access-term.com"
+    return f"{base.rstrip('/')}/?reset={token}"
+
+
+@router.post(
+    "/forgot-password",
+    dependencies=[Depends(require_password)],
+)
+def forgot_password(
+    payload: ForgotPasswordRequest,
+    request: Request,
+    s: Session = Depends(_db_session),
+) -> dict:
+    """Send a password-reset link to the address. Always returns 200 —
+    we don't leak whether the email is registered, matching the
+    handle-enumeration mitigation in `login()`. The link expires in
+    30 minutes; only the latest unconsumed link for a user is usable."""
+    raw = payload.email.strip().lower()
+    # Per-email cooldown so the endpoint can't burn the Gmail
+    # 500/day allowance for one address.
+    now = _utcnow()
+    last = _forgot_last_sent.get(raw)
+    if last is not None and now - last < _FORGOT_COOLDOWN:
+        return {"ok": True}  # silent — same as the success path
+
+    user = s.scalar(select(User).where(User.email == raw))
+    if user is None:
+        # Don't reveal whether the address exists. Spend ~equivalent
+        # wall time to a real send by hashing a dummy.
+        _hash_reset_token(secrets.token_urlsafe(32))
+        _forgot_last_sent[raw] = now
+        return {"ok": True}
+
+    # Mint a token; invalidate any older unused tokens for this user
+    # so a single account doesn't accumulate live reset links.
+    s.query(PasswordResetToken).filter(
+        PasswordResetToken.user_id == user.id,
+        PasswordResetToken.used_at.is_(None),
+    ).delete()
+
+    token = secrets.token_urlsafe(32)
+    s.add(
+        PasswordResetToken(
+            id=str(uuid4()),
+            user_id=user.id,
+            token_hash=_hash_reset_token(token),
+            expires_at=now + _RESET_TOKEN_TTL,
+        )
+    )
+    s.commit()
+    _forgot_last_sent[raw] = now
+
+    link = _reset_link(token, request)
+    minutes = int(_RESET_TOKEN_TTL.total_seconds() // 60)
+    subject = "Reset your Bible IU password"
+    body_text = (
+        f"Hi {user.display_name or user.handle},\n\n"
+        f"Someone (hopefully you) asked to reset the password for your\n"
+        f"Bible IU account. Click the link below to choose a new one:\n\n"
+        f"  {link}\n\n"
+        f"The link expires in {minutes} minutes. If you didn't request this,\n"
+        f"you can ignore this email.\n"
+    )
+    body_html = (
+        f"<p>Hi {user.display_name or user.handle},</p>"
+        f"<p>Someone (hopefully you) asked to reset the password for your "
+        f"Bible IU account. Click the link below to choose a new one:</p>"
+        f'<p><a href="{link}">Reset your password</a></p>'
+        f"<p style='color:#888'>The link expires in {minutes} minutes. "
+        f"If you didn't request this, you can ignore this email.</p>"
+    )
+    _send_email(raw, subject, body_text, body_html)
+    return {"ok": True}
+
+
+@router.post(
+    "/reset-password",
+    dependencies=[Depends(require_password)],
+)
+def reset_password(
+    payload: ResetPasswordRequest,
+    s: Session = Depends(_db_session),
+) -> dict:
+    """Consume a reset token, set the new password, and invalidate
+    every existing session so a stolen session doesn't outlive the
+    password change."""
+    token_hash = _hash_reset_token(payload.token.strip())
+    row = s.scalar(
+        select(PasswordResetToken).where(PasswordResetToken.token_hash == token_hash)
+    )
+    now = _utcnow()
+    bad = "this reset link has expired — request a new one"
+    if row is None or row.used_at is not None:
+        raise HTTPException(400, bad)
+    exp = row.expires_at
+    if exp.tzinfo is None:
+        exp = exp.replace(tzinfo=timezone.utc)
+    if exp < now:
+        raise HTTPException(400, bad)
+    user = s.get(User, row.user_id)
+    if user is None:
+        raise HTTPException(400, bad)
+    user.password_hash = _HASHER.hash(payload.new_password)
+    row.used_at = now
+    # Kill every session for this user — they must sign in again with
+    # the new password. Mirrors the change-password security stance.
+    for sess in s.scalars(
+        select(SessionRow).where(SessionRow.user_id == user.id)
+    ).all():
+        s.delete(sess)
     s.commit()
     return {"ok": True}
 
@@ -1327,6 +1586,12 @@ def _user_to_response(user: User) -> MeResponse:
             if user.phone_verified_at
             else None
         ),
+        email=user.email,
+        email_verified_at=(
+            user.email_verified_at.isoformat()
+            if user.email_verified_at
+            else None
+        ),
     )
 
 
@@ -1346,6 +1611,12 @@ def _issue_session(s: Session, user: User) -> SessionResponse:
         phone_verified_at=(
             user.phone_verified_at.isoformat()
             if user.phone_verified_at
+            else None
+        ),
+        email=user.email,
+        email_verified_at=(
+            user.email_verified_at.isoformat()
+            if user.email_verified_at
             else None
         ),
         expires_at=expires_at.isoformat(),
