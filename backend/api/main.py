@@ -879,6 +879,8 @@ def delete_room(
         Note,
         NoteComment,
         NoteLike,
+        Provenance,
+        ReasoningSession,
         RegisteredGroupNote,
         RoomInvite,
     )
@@ -933,6 +935,23 @@ def delete_room(
     session.query(RoomMember).filter(RoomMember.room_id == room_id).delete(
         synchronize_session=False
     )
+    # Agent activity: /reason creates ReasoningSession rows tied to the
+    # room, and Provenance rows tied to the session. Surfaced by the
+    # MiroFish stress test (room with active asker personas couldn't
+    # be deleted: FK constraint failed on rooms.id).
+    rs_ids = [
+        rs_id
+        for (rs_id,) in session.query(ReasoningSession.id).filter(
+            ReasoningSession.room_id == room_id
+        )
+    ]
+    if rs_ids:
+        session.query(Provenance).filter(
+            Provenance.session_id.in_(rs_ids)
+        ).delete(synchronize_session=False)
+        session.query(ReasoningSession).filter(
+            ReasoningSession.room_id == room_id
+        ).delete(synchronize_session=False)
     session.delete(room)
     session.commit()
     # Post-commit: drop the orphan webp files for any deleted statuses.
