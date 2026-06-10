@@ -292,6 +292,14 @@ export function MobileShell({
       });
     }
   };
+  const clearAnnotationById = async (annotationId: string) => {
+    try {
+      await api.authAnnotationRemoveById(annotationId);
+      setAnnotations((as) => as.filter((a) => a.id !== annotationId));
+    } catch (e) {
+      setToast({ text: annotationErrorText(e), kind: "error" });
+    }
+  };
   // The active annotation target lives at the shell level so the
   // bottom panel can swap from tab bar → annotation tool strip when
   // the user long-presses a verse. Setting this back to null restores
@@ -1526,6 +1534,7 @@ export function MobileShell({
             annotations={annotations}
             onApply={applyAnnotation}
             onClearKind={clearAnnotationKind}
+            onClearById={clearAnnotationById}
             onClearAll={clearAnnotations}
             onClose={() => setAnnotationTarget(null)}
             onShare={(verseId) => {

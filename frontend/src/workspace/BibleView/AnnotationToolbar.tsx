@@ -46,6 +46,11 @@ interface Props {
     range?: { start: number; end: number } | null,
   ) => void;
   onClearKind: (verseId: string, kind: AnnotationKind) => void;
+  /** Row-precise delete — used when the user taps a sub-verse swatch
+   *  whose (kind, color, range) already exists on this verse, which
+   *  reads as "toggle this exact mark off." Whole-verse rows still
+   *  go through onClearKind. */
+  onClearById?: (annotationId: string) => void;
   onClearAll: (verseId: string) => void;
   onClose: () => void;
   /** Triggers the share sheet for the active verse. Hidden when not
@@ -73,6 +78,7 @@ export function AnnotationToolbar({
   annotations,
   onApply,
   onClearKind,
+  onClearById,
   onClearAll,
   onClose,
   onShare,
@@ -135,12 +141,24 @@ export function AnnotationToolbar({
                 target.selStart != null && target.selEnd != null
                   ? { start: target.selStart, end: target.selEnd }
                   : null;
-              // Sub-verse selection always APPLIES — toggling to clear
-              // doesn't compose with a fresh drag selection (the user
-              // explicitly highlighted text, they want to mark it).
-              // Whole-verse keeps the v1 toggle semantics.
               if (range) {
-                onApply(target.verseId, s.kind, color, range);
+                // Sub-verse path: if the user already has THIS exact
+                // (kind, color, range) marked, the tap reads as a
+                // toggle-off — same color = "undo." Different color
+                // at the same range replaces it via apply.
+                const matched = annotations?.find(
+                  (a) =>
+                    a.verse_id === target.verseId &&
+                    a.kind === s.kind &&
+                    a.color === color &&
+                    a.start_offset === range.start &&
+                    a.end_offset === range.end,
+                );
+                if (matched && onClearById) {
+                  onClearById(matched.id);
+                } else {
+                  onApply(target.verseId, s.kind, color, range);
+                }
               } else if (activeColorFor(s.kind) === color) {
                 onClearKind(target.verseId, s.kind);
               } else {
