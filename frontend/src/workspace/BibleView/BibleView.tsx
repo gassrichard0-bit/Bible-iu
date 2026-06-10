@@ -352,8 +352,8 @@ export function BibleView({
   // Blue handle dots — visible at the start/end of the live selection
   // (or any annotationTarget with a sub-verse range). Position is
   // viewport-relative (we use position: fixed) and recomputed on
-  // scroll so the dots track the verse as the user scrolls. Drag-to-
-  // refine isn't wired tonight; the dots are visual anchors for now.
+  // scroll so the dots track the verse as the user scrolls. Drag a
+  // dot to refine that boundary.
   const [handlePos, setHandlePos] = useState<
     | {
         start: { x: number; y: number };
@@ -493,6 +493,88 @@ export function BibleView({
     // changes, which already triggers the previous effect.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [handlePos !== null]);
+
+  // Drag a handle dot to refine that end of the selection. Reuses
+  // the existing caretRangeFromPoint pattern from startTouchDrag but
+  // edits only one boundary, keeping the other anchored.
+  const startHandleDrag = useCallback(
+    (which: "start" | "end") => (e: React.TouchEvent | React.PointerEvent) => {
+      const verseId = (liveSel ?? annotationTarget)?.verseId;
+      if (!verseId) return;
+      const el = document.querySelector(`[data-verse-id="${verseId}"]`);
+      if (!el) return;
+      // Prevent the page from scrolling under the finger.
+      e.preventDefault();
+      e.stopPropagation();
+      const isTouch = "touches" in e;
+      const getXY = (ev: TouchEvent | PointerEvent) => {
+        if ("touches" in ev) {
+          const t = ev.touches[0] ?? ev.changedTouches[0];
+          return t ? { x: t.clientX, y: t.clientY } : null;
+        }
+        return { x: ev.clientX, y: ev.clientY };
+      };
+      const onMove = (ev: TouchEvent | PointerEvent) => {
+        if ("touches" in ev) ev.preventDefault();
+        const xy = getXY(ev);
+        if (!xy) return;
+        const r = (document as Document & {
+          caretRangeFromPoint?: (x: number, y: number) => Range | null;
+        }).caretRangeFromPoint?.(xy.x, xy.y);
+        if (!r) return;
+        const pos = offsetWithinVerse(el, r);
+        setLiveSel((prev) => {
+          if (!prev || prev.verseId !== verseId) {
+            // Selection may have been cleared while dragging — bail.
+            return prev;
+          }
+          let start = prev.start;
+          let end = prev.end;
+          if (which === "start") start = Math.min(pos, end);
+          else end = Math.max(pos, start);
+          if (end === start) return prev; // no zero-length collapses
+          return { ...prev, start, end };
+        });
+      };
+      const onEnd = () => {
+        if (isTouch) {
+          document.removeEventListener("touchmove", onMove as EventListener);
+          document.removeEventListener("touchend", onEnd);
+          document.removeEventListener("touchcancel", onEnd);
+        } else {
+          document.removeEventListener("pointermove", onMove as EventListener);
+          document.removeEventListener("pointerup", onEnd);
+        }
+        // Push the new bounds to annotationTarget so the
+        // AnnotationToolbar's onApply gets the refined range.
+        const sel = liveSelDup.current;
+        if (sel) {
+          const parts = verseId.split(".");
+          const label =
+            parts.length === 3
+              ? `${parts[0]} ${Number(parts[1])}:${Number(parts[2])}`
+              : verseId;
+          onAnnotationTargetChange?.({
+            verseId,
+            label,
+            selStart: sel.start,
+            selEnd: sel.end,
+          });
+        }
+      };
+      if (isTouch) {
+        document.addEventListener("touchmove", onMove as EventListener, {
+          passive: false,
+        });
+        document.addEventListener("touchend", onEnd);
+        document.addEventListener("touchcancel", onEnd);
+      } else {
+        document.addEventListener("pointermove", onMove as EventListener);
+        document.addEventListener("pointerup", onEnd);
+      }
+    },
+    [annotationTarget, liveSel, onAnnotationTargetChange],
+  );
   const [autoFocusVerse, setAutoFocusVerse] = useState<string | null>(null);
   // Which verses have their token-study block open. Per-verse so
   // multiple expansions can coexist; the user might want to compare
@@ -1208,22 +1290,40 @@ export function BibleView({
      *  for a "real" highlight. */}
     {handlePos && (
       <>
+        {/* Each handle = visible blue dot (h-3 w-3) wrapped in a
+            bigger 32×32 invisible touch target. Fingertips overshoot
+            tiny visual dots constantly; the bigger hit-target lets
+            the user drag without finger-precision. */}
         <div
-          aria-hidden
-          className="pointer-events-none fixed z-50 grid h-3 w-3 -translate-x-1/2 -translate-y-1/2 place-items-center rounded-full bg-sky-500 shadow-[0_0_0_2px_white,0_2px_6px_rgba(0,0,0,0.25)] dark:shadow-[0_0_0_2px_rgb(23,23,23),0_2px_6px_rgba(0,0,0,0.5)]"
+          role="button"
+          aria-label="Selection start handle — drag to refine"
+          onTouchStart={startHandleDrag("start")}
+          onPointerDown={(e) => {
+            if (e.pointerType === "mouse") startHandleDrag("start")(e);
+          }}
+          className="fixed z-50 grid h-8 w-8 -translate-x-1/2 -translate-y-1/2 cursor-grab touch-none place-items-center active:cursor-grabbing"
           style={{
             left: `${handlePos.start.x}px`,
             top: `${handlePos.start.y}px`,
           }}
-        />
+        >
+          <span className="h-3 w-3 rounded-full bg-sky-500 shadow-[0_2px_6px_rgba(0,0,0,0.35)]" />
+        </div>
         <div
-          aria-hidden
-          className="pointer-events-none fixed z-50 grid h-3 w-3 -translate-x-1/2 -translate-y-1/2 place-items-center rounded-full bg-sky-500 shadow-[0_0_0_2px_white,0_2px_6px_rgba(0,0,0,0.25)] dark:shadow-[0_0_0_2px_rgb(23,23,23),0_2px_6px_rgba(0,0,0,0.5)]"
+          role="button"
+          aria-label="Selection end handle — drag to refine"
+          onTouchStart={startHandleDrag("end")}
+          onPointerDown={(e) => {
+            if (e.pointerType === "mouse") startHandleDrag("end")(e);
+          }}
+          className="fixed z-50 grid h-8 w-8 -translate-x-1/2 -translate-y-1/2 cursor-grab touch-none place-items-center active:cursor-grabbing"
           style={{
             left: `${handlePos.end.x}px`,
             top: `${handlePos.end.y}px`,
           }}
-        />
+        >
+          <span className="h-3 w-3 rounded-full bg-sky-500 shadow-[0_2px_6px_rgba(0,0,0,0.35)]" />
+        </div>
       </>
     )}
     {/* Scoped no-select. iOS Safari fires the selection magnifier
