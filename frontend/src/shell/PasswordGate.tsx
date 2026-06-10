@@ -19,7 +19,7 @@ interface Props {
 export function PasswordGate({ onUnlock, message }: Props) {
   const [value, setValue] = useState("");
   return (
-    <div className="grid h-full place-items-center bg-paper-soft dark:bg-neutral-950">
+    <div className="grid h-full place-items-center bg-paper-soft px-4 dark:bg-neutral-950">
       <form
         onSubmit={(e) => {
           e.preventDefault();

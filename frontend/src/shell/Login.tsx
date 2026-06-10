@@ -73,7 +73,7 @@ export function Login({ onSignedIn, theme, onToggleTheme }: Props) {
   }
 
   return (
-    <div className="relative grid h-full place-items-center bg-paper-soft dark:bg-neutral-950">
+    <div className="relative grid h-full place-items-center bg-paper-soft px-4 dark:bg-neutral-950">
       <div className="absolute right-3 top-3">
         <ThemeToggle theme={theme} onToggle={onToggleTheme} />
       </div>
