@@ -33,6 +33,15 @@
     <string>30</string>
     <string>--ws-ping-timeout</string>
     <string>10</string>
+    <!-- 4 workers + Redis chat_hub. Each worker is its own asyncio
+         event loop, so 4× the WS/HTTP concurrency before the single
+         loop is the wall. chat_hub pubsubs through Redis so chat
+         broadcasts fan out across workers. NOTE: yjs_sync state is
+         per-process — multi-worker breaks Yjs sync until y-redis is
+         wired. Reading-plan scheduler runs in all 4 workers but the
+         duplicate-send check is idempotent (race window: rare). -->
+    <string>--workers</string>
+    <string>4</string>
   </array>
 
   <key>WorkingDirectory</key>

@@ -44,6 +44,11 @@ echo "[2/4] installing/upgrading runtime deps"
 # Mirror backend/pyproject.toml plus runtime extras the pyproject doesn't
 # list (multipart for form uploads, redis for chat fanout, pywebpush
 # for VAPID, transformers for the DeBERTa verifier).
+#
+# REDIS_URL is read from backend/.env if present; otherwise the plist's
+# default points at the local redis://127.0.0.1:6379/0 which we expect
+# from `brew services start redis`. With 4 workers, redis is required —
+# without it chat broadcasts won't fan out across worker processes.
 "$VENV_DIR/bin/pip" install --quiet \
   "fastapi>=0.110" \
   "uvicorn[standard]>=0.27" \
