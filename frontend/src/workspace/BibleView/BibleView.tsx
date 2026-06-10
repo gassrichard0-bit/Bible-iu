@@ -189,7 +189,6 @@ export function BibleView({
     start: number;
     end: number;
   } | null>(null);
-  const dragRef = useRef<{ verseId: string; el: Element } | null>(null);
   const liveSelDup = useRef<{ start: number; end: number } | null>(null);
   liveSelDup.current = liveSel
     ? { start: liveSel.start, end: liveSel.end }
@@ -211,7 +210,75 @@ export function BibleView({
     return pre.toString().length;
   };
 
-  const startTouchDrag = useCallback(
+  // Word-based selection — feels concrete because the selection snaps
+  // to whole-word boundaries instead of jittering character-by-character.
+  // Punctuation glued to a word (e.g. "world.") goes with it.
+  const wordSpansFor = (text: string): Array<{ start: number; end: number }> => {
+    const spans: Array<{ start: number; end: number }> = [];
+    const re = /\S+/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(text)) !== null) {
+      spans.push({ start: m.index, end: m.index + m[0].length });
+    }
+    return spans;
+  };
+
+  /** Find the word span containing `offset`. If `offset` lands in
+   *  whitespace, snap to the nearest word (the side `direction`
+   *  prefers, defaulting to the next word forward). */
+  const wordAt = (
+    spans: Array<{ start: number; end: number }>,
+    offset: number,
+    direction: "start" | "end" = "start",
+  ): { start: number; end: number } | null => {
+    if (spans.length === 0) return null;
+    for (let i = 0; i < spans.length; i++) {
+      const w = spans[i];
+      if (offset >= w.start && offset <= w.end) return w;
+      if (offset < w.start) {
+        // In whitespace BEFORE this word. For drag-end-handles we
+        // want the previous word; for everything else we want this
+        // (the next forward) word.
+        if (direction === "end" && i > 0) return spans[i - 1];
+        return w;
+      }
+    }
+    return spans[spans.length - 1];
+  };
+
+  // Selection state held in refs so the long-press timer + global
+  // listeners can read it without re-binding on every render.
+  // (Distinct from the older `longPressTimerRef` used for the
+  // whole-verse toolbar long-press elsewhere in this file.)
+  const wordSelLpTimerRef = useRef<number | null>(null);
+  const selModeRef = useRef<{
+    verseId: string;
+    el: Element;
+    spans: Array<{ start: number; end: number }>;
+    anchor: { start: number; end: number };
+  } | null>(null);
+  const lastTouchRef = useRef<{ x: number; y: number } | null>(null);
+
+  const verseLabelFromId = (verseId: string): string => {
+    const parts = verseId.split(".");
+    return parts.length === 3
+      ? `${parts[0]} ${Number(parts[1])}:${Number(parts[2])}`
+      : verseId;
+  };
+
+  const cancelLongPressTimer = () => {
+    if (wordSelLpTimerRef.current != null) {
+      window.clearTimeout(wordSelLpTimerRef.current);
+      wordSelLpTimerRef.current = null;
+    }
+  };
+
+  /** Touchstart on a verse span. Doesn't preventDefault yet — that
+   *  would kill scroll. Schedules a 250ms hold; if the finger moves
+   *  before then, we cancel and the browser scrolls normally. If the
+   *  hold fires, we lock into selection mode and start grabbing
+   *  preventDefault on touchmove. */
+  const onVerseTouchStart = useCallback(
     (e: React.TouchEvent) => {
       if (!onApplyAnnotation) return;
       const t = e.touches[0];
@@ -220,70 +287,87 @@ export function BibleView({
       if (!el) return;
       const verseId = el.getAttribute("data-verse-id");
       if (!verseId) return;
-      // Suppress iOS magnifier + the native scroll, both of which
-      // would hijack the drag if left alone.
+      lastTouchRef.current = { x: t.clientX, y: t.clientY };
+      cancelLongPressTimer();
+      wordSelLpTimerRef.current = window.setTimeout(() => {
+        const last = lastTouchRef.current;
+        if (!last) return;
+        const range = (document as Document & {
+          caretRangeFromPoint?: (x: number, y: number) => Range | null;
+        }).caretRangeFromPoint?.(last.x, last.y);
+        if (!range) return;
+        const text = el.textContent ?? "";
+        const spans = wordSpansFor(text);
+        const abs = offsetWithinVerse(el, range);
+        const word = wordAt(spans, abs);
+        if (!word) return;
+        selModeRef.current = { verseId, el, spans, anchor: word };
+        setLiveSel({ verseId, start: word.start, end: word.end });
+        // Optional haptic confirm — short pulse when the selection
+        // pops into existence so the user feels the commit.
+        try {
+          (navigator as Navigator & { vibrate?: (p: number) => void }).vibrate?.(8);
+        } catch {
+          /* ignore — desktop / iOS Safari don't support vibrate */
+        }
+      }, 250);
+    },
+    [onApplyAnnotation],
+  );
+
+  /** Touchmove on a verse span. Before the long-press fires this is
+   *  treated as scrolling — bail if we detect ANY movement and let the
+   *  browser handle the scroll. After selection mode is locked we
+   *  preventDefault to keep iOS from scrolling the page under us and
+   *  extend the selection word-by-word. */
+  const onVerseTouchMove = useCallback(
+    (e: React.TouchEvent) => {
+      const t = e.touches[0];
+      if (!t) return;
+      lastTouchRef.current = { x: t.clientX, y: t.clientY };
+      const sel = selModeRef.current;
+      if (!sel) {
+        // Pre-selection move = the user is scrolling. Cancel the
+        // pending long-press so we don't pop a selection mid-scroll.
+        cancelLongPressTimer();
+        return;
+      }
       e.preventDefault();
       const range = (document as Document & {
         caretRangeFromPoint?: (x: number, y: number) => Range | null;
       }).caretRangeFromPoint?.(t.clientX, t.clientY);
       if (!range) return;
-      const start = offsetWithinVerse(el, range);
-      setLiveSel({ verseId, start, end: start });
-      dragRef.current = { verseId, el };
-      const onMove = (ev: TouchEvent) => {
-        const tt = ev.touches[0];
-        if (!tt) return;
-        ev.preventDefault();
-        const d = dragRef.current;
-        if (!d) return;
-        const r = (document as Document & {
-          caretRangeFromPoint?: (x: number, y: number) => Range | null;
-        }).caretRangeFromPoint?.(tt.clientX, tt.clientY);
-        if (!r) return;
-        const pos = offsetWithinVerse(d.el, r);
-        setLiveSel((prev) => {
-          if (!prev || prev.verseId !== d.verseId) return prev;
-          const mn = Math.min(prev.start, pos);
-          const mx = Math.max(prev.start, pos);
-          // Anchor stays at the original press, end follows finger.
-          return { ...prev, start: mn, end: mx };
-        });
-      };
-      const onEnd = () => {
-        document.removeEventListener("touchmove", onMove);
-        document.removeEventListener("touchend", onEnd);
-        document.removeEventListener("touchcancel", onEnd);
-        const d = dragRef.current;
-        dragRef.current = null;
-        if (!d) return;
-        const sel = liveSelDup.current;
-        const parts = d.verseId.split(".");
-        const label =
-          parts.length === 3
-            ? `${parts[0]} ${Number(parts[1])}:${Number(parts[2])}`
-            : d.verseId;
-        if (sel && sel.end > sel.start) {
-          onAnnotationTargetChange?.({
-            verseId: d.verseId,
-            label,
-            selStart: sel.start,
-            selEnd: sel.end,
-          });
-        } else {
-          // No drag — caller fall through to the long-press path
-          // already attached on the same span (whole-verse toolbar).
-          setLiveSel(null);
-        }
-      };
-      document.addEventListener("touchmove", onMove, { passive: false });
-      document.addEventListener("touchend", onEnd);
-      document.addEventListener("touchcancel", onEnd);
+      const abs = offsetWithinVerse(sel.el, range);
+      const cur = wordAt(sel.spans, abs);
+      if (!cur) return;
+      const start = Math.min(sel.anchor.start, cur.start);
+      const end = Math.max(sel.anchor.end, cur.end);
+      setLiveSel((prev) =>
+        prev && prev.verseId === sel.verseId ? { ...prev, start, end } : prev,
+      );
     },
-    [onApplyAnnotation, onAnnotationTargetChange],
+    [],
   );
 
-  // Mouse fallback for desktop / coarse-pointer-less testing.
-  const startMouseDrag = useCallback(
+  const onVerseTouchEnd = useCallback(() => {
+    cancelLongPressTimer();
+    const sel = selModeRef.current;
+    selModeRef.current = null;
+    if (!sel) return;
+    const cur = liveSelDup.current;
+    if (cur && cur.end > cur.start) {
+      onAnnotationTargetChange?.({
+        verseId: sel.verseId,
+        label: verseLabelFromId(sel.verseId),
+        selStart: cur.start,
+        selEnd: cur.end,
+      });
+    }
+  }, [onAnnotationTargetChange]);
+
+  // Desktop / mouse fallback. Click-and-drag also selects, with the
+  // same word-snap behavior so the feel matches.
+  const onVersePointerDown = useCallback(
     (e: React.PointerEvent) => {
       if (!onApplyAnnotation) return;
       if (e.pointerType !== "mouse" || e.button !== 0) return;
@@ -295,45 +379,45 @@ export function BibleView({
         caretRangeFromPoint?: (x: number, y: number) => Range | null;
       }).caretRangeFromPoint?.(e.clientX, e.clientY);
       if (!range) return;
-      const start = offsetWithinVerse(el, range);
-      setLiveSel({ verseId, start, end: start });
-      dragRef.current = { verseId, el };
+      const text = el.textContent ?? "";
+      const spans = wordSpansFor(text);
+      const abs = offsetWithinVerse(el, range);
+      const word = wordAt(spans, abs);
+      if (!word) return;
+      selModeRef.current = { verseId, el, spans, anchor: word };
+      setLiveSel({ verseId, start: word.start, end: word.end });
       const onMove = (ev: PointerEvent) => {
-        const d = dragRef.current;
-        if (!d) return;
+        const s = selModeRef.current;
+        if (!s) return;
         const r = (document as Document & {
           caretRangeFromPoint?: (x: number, y: number) => Range | null;
         }).caretRangeFromPoint?.(ev.clientX, ev.clientY);
         if (!r) return;
-        const pos = offsetWithinVerse(d.el, r);
-        setLiveSel((prev) => {
-          if (!prev || prev.verseId !== d.verseId) return prev;
-          const mn = Math.min(prev.start, pos);
-          const mx = Math.max(prev.start, pos);
-          return { ...prev, start: mn, end: mx };
-        });
+        const a = offsetWithinVerse(s.el, r);
+        const cur = wordAt(s.spans, a);
+        if (!cur) return;
+        const start = Math.min(s.anchor.start, cur.start);
+        const end = Math.max(s.anchor.end, cur.end);
+        setLiveSel((prev) =>
+          prev && prev.verseId === s.verseId
+            ? { ...prev, start, end }
+            : prev,
+        );
       };
       const onUp = () => {
         document.removeEventListener("pointermove", onMove);
         document.removeEventListener("pointerup", onUp);
-        const d = dragRef.current;
-        dragRef.current = null;
-        if (!d) return;
-        const sel = liveSelDup.current;
-        const parts = d.verseId.split(".");
-        const label =
-          parts.length === 3
-            ? `${parts[0]} ${Number(parts[1])}:${Number(parts[2])}`
-            : d.verseId;
-        if (sel && sel.end > sel.start) {
+        const s = selModeRef.current;
+        selModeRef.current = null;
+        if (!s) return;
+        const cur = liveSelDup.current;
+        if (cur && cur.end > cur.start) {
           onAnnotationTargetChange?.({
-            verseId: d.verseId,
-            label,
-            selStart: sel.start,
-            selEnd: sel.end,
+            verseId: s.verseId,
+            label: verseLabelFromId(s.verseId),
+            selStart: cur.start,
+            selEnd: cur.end,
           });
-        } else {
-          setLiveSel(null);
         }
       };
       document.addEventListener("pointermove", onMove);
@@ -514,6 +598,8 @@ export function BibleView({
         }
         return { x: ev.clientX, y: ev.clientY };
       };
+      const text = el.textContent ?? "";
+      const spans = wordSpansFor(text);
       const onMove = (ev: TouchEvent | PointerEvent) => {
         if ("touches" in ev) ev.preventDefault();
         const xy = getXY(ev);
@@ -523,16 +609,18 @@ export function BibleView({
         }).caretRangeFromPoint?.(xy.x, xy.y);
         if (!r) return;
         const pos = offsetWithinVerse(el, r);
+        // Snap the dragged boundary to the nearest word. The start
+        // handle picks the word starting at-or-after this point; the
+        // end handle picks the word ending at-or-before.
+        const word = wordAt(spans, pos, which);
+        if (!word) return;
         setLiveSel((prev) => {
-          if (!prev || prev.verseId !== verseId) {
-            // Selection may have been cleared while dragging — bail.
-            return prev;
-          }
+          if (!prev || prev.verseId !== verseId) return prev;
           let start = prev.start;
           let end = prev.end;
-          if (which === "start") start = Math.min(pos, end);
-          else end = Math.max(pos, start);
-          if (end === start) return prev; // no zero-length collapses
+          if (which === "start") start = Math.min(word.start, end);
+          else end = Math.max(word.end, start);
+          if (end === start) return prev;
           return { ...prev, start, end };
         });
       };
@@ -1771,19 +1859,20 @@ export function BibleView({
                             dir={v.translations[0].direction}
                             data-verse-id={v.verse_id}
                             {...longPressHandlers}
-                            onTouchStart={(e) => {
-                              startTouchDrag(e);
-                              // Fall through to longPress so a quick
-                              // tap (no drag) still opens the whole-
-                              // verse toolbar — the drag handler only
-                              // arms a selection if the user moves.
-                              longPressHandlers.onPointerDown?.(
-                                e as unknown as React.PointerEvent,
-                              );
-                            }}
+                            onTouchStart={onVerseTouchStart}
+                            onTouchMove={onVerseTouchMove}
+                            onTouchEnd={onVerseTouchEnd}
+                            onTouchCancel={onVerseTouchEnd}
                             onPointerDown={(e) => {
-                              if (e.pointerType === "mouse")
-                                startMouseDrag(e);
+                              if (e.pointerType === "mouse") {
+                                onVersePointerDown(e);
+                                return;
+                              }
+                              // Touch goes through the touch handlers
+                              // above; only fall through to longPress
+                              // (whole-verse toolbar) for stylus or
+                              // other pointer types that don't fire
+                              // touch events.
                               longPressHandlers.onPointerDown?.(e);
                             }}
                             style={noSelect}
@@ -1795,15 +1884,15 @@ export function BibleView({
                           <span
                             data-verse-id={v.verse_id}
                             {...longPressHandlers}
-                            onTouchStart={(e) => {
-                              startTouchDrag(e);
-                              longPressHandlers.onPointerDown?.(
-                                e as unknown as React.PointerEvent,
-                              );
-                            }}
+                            onTouchStart={onVerseTouchStart}
+                            onTouchMove={onVerseTouchMove}
+                            onTouchEnd={onVerseTouchEnd}
+                            onTouchCancel={onVerseTouchEnd}
                             onPointerDown={(e) => {
-                              if (e.pointerType === "mouse")
-                                startMouseDrag(e);
+                              if (e.pointerType === "mouse") {
+                                onVersePointerDown(e);
+                                return;
+                              }
                               longPressHandlers.onPointerDown?.(e);
                             }}
                             style={noSelect}
