@@ -31,11 +31,10 @@ import { canDeleteNote } from "../NotesSidebar/noteOwnership";
 import { bookColor } from "../../lib/testament";
 import { type AnnotationTarget } from "./AnnotationToolbar";
 import {
-  BOLD_TEXT,
   BOX_BORDER,
-  DECORATION_COLOR,
-  HIGHLIGHT_BG,
   annotationsForVerse,
+  runClasses,
+  splitVerseIntoRuns,
 } from "./annotations";
 import { GLASS_CARD_INLINE } from "../../lib/glass";
 import { MagicIcon, JumpIcon } from "../../lib/Icons";
@@ -1117,29 +1116,28 @@ export function BibleView({
                 latestInBook.chapter === chapter &&
                 latestInBook.verse === v.verse;
               const ann = annotationsForVerse(annotations, v.verse_id);
-              // Decoration stacking: only one underline-style can win
-              // (CSS text-decoration is single-valued per element).
-              // Priority — wavy > double > single, matching the
-              // "more deliberate = more visible" mental model.
-              const underlineCls = ann.wavy
-                ? `underline decoration-wavy decoration-2 underline-offset-2 ${DECORATION_COLOR[ann.wavy.color]}`
-                : ann.double_underline
-                  ? `underline decoration-double decoration-2 underline-offset-2 ${DECORATION_COLOR[ann.double_underline.color]}`
-                  : ann.underline
-                    ? `underline decoration-2 underline-offset-2 ${DECORATION_COLOR[ann.underline.color]}`
-                    : "";
-              const annClasses = [
-                ann.highlight
-                  ? `rounded-sm px-0.5 ${HIGHLIGHT_BG[ann.highlight.color]}`
-                  : "",
-                underlineCls,
-                ann.box
-                  ? `rounded-md border-2 px-1 ${BOX_BORDER[ann.box.color]}`
-                  : "",
-                ann.bold ? `font-semibold ${BOLD_TEXT[ann.bold.color]}` : "",
-              ]
-                .filter(Boolean)
-                .join(" ");
+              // Box is the one kind that can't go sub-verse without
+              // shredding the layout (multiple inline borders in the
+              // middle of a sentence read as broken). Whole-verse boxes
+              // stay on the outer wrapper as before; sub-verse boxes
+              // are intentionally not exposed in the UI.
+              const wholeVerseBox = ann.box.find(
+                (a) => a.start_offset == null && a.end_offset == null,
+              );
+              const annClasses = wholeVerseBox
+                ? `rounded-md border-2 px-1 ${BOX_BORDER[wholeVerseBox.color]}`
+                : "";
+              // All sub-verse-safe kinds (highlight, underlines, bold)
+              // get flattened into a single list, then `splitVerseIntoRuns`
+              // converts that into character segments each tagged with
+              // the annotations covering it.
+              const subVerseSafe = [
+                ...ann.highlight,
+                ...ann.underline,
+                ...ann.double_underline,
+                ...ann.wavy,
+                ...ann.bold,
+              ];
               const verseLabel = `${book} ${chapter}:${v.verse}`;
               const longPressHandlers = onApplyAnnotation
                 ? {
@@ -1265,22 +1263,43 @@ export function BibleView({
                         const ringClasses = isAnnTarget
                           ? "ring-2 ring-offset-2 ring-neutral-900/80 dark:ring-neutral-100/80 ring-offset-paper dark:ring-offset-neutral-900 rounded"
                           : "";
+                        const primaryText = v.translations[0].text;
+                        const runs = splitVerseIntoRuns(primaryText, subVerseSafe);
+                        const runChildren = runs.map((r, idx) => {
+                          const cls = runClasses(r.active);
+                          // Stable key per run includes start offset so
+                          // React doesn't reuse a span across re-renders
+                          // when the run boundaries change.
+                          return cls ? (
+                            <span
+                              key={`r${idx}`}
+                              data-ann-run={cls}
+                              className={cls}
+                            >
+                              {r.text}
+                            </span>
+                          ) : (
+                            <span key={`r${idx}`}>{r.text}</span>
+                          );
+                        });
                         return v.translations.length === 1 ? (
                           <span
                             dir={v.translations[0].direction}
+                            data-verse-id={v.verse_id}
                             {...longPressHandlers}
                             style={noSelect}
                             className={`text-[15px] text-neutral-800 transition-shadow dark:text-neutral-100 ${annClasses} ${ringClasses}`}
                           >
-                            {v.translations[0].text}
+                            {runChildren}
                           </span>
                         ) : (
                           <span
+                            data-verse-id={v.verse_id}
                             {...longPressHandlers}
                             style={noSelect}
                             className={`text-[15px] text-neutral-800 transition-shadow dark:text-neutral-100 ${annClasses} ${ringClasses}`}
                           >
-                            {v.translations[0].text}
+                            {runChildren}
                           </span>
                         );
                       })()}

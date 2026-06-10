@@ -298,9 +298,16 @@ export type AnnotationKind =
 export type AnnotationColor = "yellow" | "green" | "blue" | "pink" | "orange";
 
 export interface AnnotationOut {
+  /** Stable id — needed for sub-verse delete (the same (verse, kind)
+   *  pair can yield multiple rows). */
+  id: string;
   verse_id: string;
   kind: AnnotationKind;
   color: AnnotationColor;
+  /** null + null = applies to the whole verse (legacy v1 shape).
+   *  Both set = [start, end) character range over the verse text. */
+  start_offset?: number | null;
+  end_offset?: number | null;
   updated_at: string;
 }
 
@@ -391,19 +398,31 @@ export const api = {
     ),
   authAnnotationsList: () =>
     jsonFetch<AnnotationOut[]>("/auth/annotations"),
+  /** Whole-verse or sub-verse upsert. Pass start/end to mark a
+   *  character range; omit them for the v1 whole-verse semantics. */
   authAnnotationSet: (
     verse_id: string,
     kind: AnnotationKind,
     color: AnnotationColor,
+    range?: { start: number; end: number } | null,
   ) =>
     jsonFetch<AnnotationOut>(`/auth/annotations/${verse_id}/${kind}`, {
       method: "PUT",
-      body: JSON.stringify({ color }),
+      body: JSON.stringify(
+        range
+          ? { color, start_offset: range.start, end_offset: range.end }
+          : { color },
+      ),
     }),
   authAnnotationRemoveKind: (verse_id: string, kind: AnnotationKind) =>
     jsonFetch<{ ok: boolean }>(`/auth/annotations/${verse_id}/${kind}`, {
       method: "DELETE",
     }),
+  authAnnotationRemoveById: (annotation_id: string) =>
+    jsonFetch<{ ok: boolean }>(
+      `/auth/annotations/by-id/${annotation_id}`,
+      { method: "DELETE" },
+    ),
   authAnnotationClear: (verse_id: string) =>
     jsonFetch<{ ok: boolean }>(`/auth/annotations/${verse_id}`, {
       method: "DELETE",
