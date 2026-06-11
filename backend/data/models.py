@@ -230,7 +230,11 @@ class NoteMention(Base, TimestampMixin):
         UniqueConstraint("note_id", "user_id", name="uq_note_mentions_note_user"),
     )
     id: Mapped[str] = mapped_column(String, primary_key=True)
-    note_id: Mapped[str] = mapped_column(ForeignKey("notes.id"), index=True)
+    # No FK on note_id — group notes live in Yjs + registered_group_notes,
+    # not in the `notes` table (which only holds personal notes). Matches
+    # NoteLike + NoteComment for the same reason. PRAGMA foreign_keys=ON
+    # would otherwise reject every group-note tag insert.
+    note_id: Mapped[str] = mapped_column(String, index=True)
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
     room_id: Mapped[str] = mapped_column(ForeignKey("rooms.id"), index=True)
 

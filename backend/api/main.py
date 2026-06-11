@@ -2895,10 +2895,21 @@ def post_note_mention(
         )
         try:
             session.commit()
-        except Exception:
-            # Race: another concurrent request inserted the same row.
-            # The unique constraint fires; treat it as "already notified."
+        except Exception as commit_err:
+            # The only legitimate failure here is the unique constraint
+            # firing because another concurrent request inserted the
+            # same (note, user) row. Anything else (FK violation,
+            # connection error, etc.) is a real bug and we want to
+            # SEE it instead of silently dropping the push.
             session.rollback()
+            msg = str(commit_err).lower()
+            if "unique" in msg or "constraint" in msg and "uq_note_mentions" in msg:
+                continue
+            import logging
+            logging.getLogger("bible_iu.notes").warning(
+                "note_mention commit failed (note=%s user=%s): %s",
+                note_id, target_user.id, commit_err,
+            )
             continue
         # Same delivery path as chat / note-create fanout — respects
         # the recipient's room-mute and quiet-hours preferences.
