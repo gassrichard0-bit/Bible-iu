@@ -132,6 +132,11 @@ interface Props {
    *  belong to other members — the rule is "only the author can
    *  edit," matching the delete affordance gate. */
   readOnly?: boolean;
+  /** Optional rendered canvas image written by the native app's
+   *  tldraw surface. PWA-side this is read-only: we render it above
+   *  the text body when present and leave drawing to the native app.
+   *  Same Yjs Y.Doc carries it, so updates land here automatically. */
+  canvasDataUrl?: string;
 }
 
 export function RichNoteField({
@@ -143,6 +148,7 @@ export function RichNoteField({
   autoFocus,
   roomId,
   readOnly,
+  canvasDataUrl,
 }: Props) {
   const [focused, setFocused] = useState(false);
 
@@ -269,6 +275,19 @@ export function RichNoteField({
 
   return (
     <div className="relative">
+      {canvasDataUrl && (
+        <figure className="mb-2 overflow-hidden rounded-xl border border-neutral-200 bg-paper-soft dark:border-neutral-800 dark:bg-neutral-900">
+          <img
+            src={canvasDataUrl}
+            alt="Note canvas"
+            className="block max-h-72 w-full object-contain"
+            draggable={false}
+          />
+          <figcaption className="border-t border-neutral-200 px-2 py-1 text-[10px] uppercase tracking-wide text-neutral-500 dark:border-neutral-800 dark:text-neutral-400">
+            Canvas &middot; view-only on web &middot; draw in the native app
+          </figcaption>
+        </figure>
+      )}
       <EditorContent editor={editor} />
       <input
         ref={fileInputRef}

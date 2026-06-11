@@ -563,6 +563,7 @@ export function NotesSidebar({
                 compact
                 roomId={roomId}
                 readOnly={readOnly}
+                canvasDataUrl={n.canvas_data_url}
               />
             </div>
             {socialNotesEnabled &&

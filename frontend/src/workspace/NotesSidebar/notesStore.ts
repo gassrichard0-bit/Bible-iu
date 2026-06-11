@@ -27,6 +27,13 @@ export interface NoteRow {
    *  consistency. Legacy rows leave this undefined and fall back
    *  to "You" in the UI. */
   author_handle?: string;
+  /** Optional rendered canvas image, set by the native app's tldraw
+   *  surface when the user draws on the note. Plain data URL
+   *  (`data:image/png;base64,...` or `data:image/svg+xml;...`). The
+   *  PWA renders it read-only above the TipTap text; the drawing UX
+   *  itself lives in the native app where touch / pen are first-class.
+   *  Travels on the same Y.Doc as the body so sync is free. */
+  canvas_data_url?: string;
 }
 
 export interface NotesApi {

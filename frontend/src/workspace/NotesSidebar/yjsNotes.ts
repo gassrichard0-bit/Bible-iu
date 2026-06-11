@@ -56,6 +56,9 @@ function snapshotArray(arr: Y.Array<Y.Map<unknown>>): NoteRow[] {
     const by = m.get("by_agent");
     const author = m.get("author_user_id");
     const authorHandle = m.get("author_handle");
+    // Canvas data URL set by the native app's tldraw surface. The PWA
+    // reads + displays it; only the native app writes it.
+    const canvas = m.get("canvas_data_url");
     out.push({
       id,
       scope,
@@ -65,6 +68,10 @@ function snapshotArray(arr: Y.Array<Y.Map<unknown>>): NoteRow[] {
       author_user_id: typeof author === "string" ? author : undefined,
       author_handle:
         typeof authorHandle === "string" ? authorHandle : undefined,
+      canvas_data_url:
+        typeof canvas === "string" && canvas.startsWith("data:image/")
+          ? canvas
+          : undefined,
     });
   }
   return out;

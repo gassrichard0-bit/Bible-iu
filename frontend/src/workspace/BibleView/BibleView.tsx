@@ -2199,6 +2199,7 @@ function InlineNotePanel({
               ariaLabel={`Edit ${n.scope} note on ${verseId}`}
               compact
               roomId={roomId}
+              canvasDataUrl={n.canvas_data_url}
             />
             {socialNotesEnabled &&
               roomId &&
@@ -2423,6 +2424,7 @@ function ChapterNotePanel({
               ariaLabel={`Edit ${n.scope} note on ${book} ${chapter}`}
               compact
               roomId={roomId}
+              canvasDataUrl={n.canvas_data_url}
             />
             {socialNotesEnabled &&
               roomId &&
