@@ -27,6 +27,7 @@ import type { VerseFocus } from "../Workspace";
 import type { NotesApi } from "../NotesSidebar/notesStore";
 import { NoteSocialBlock } from "../NotesSidebar/NoteSocialBlock";
 import { RichNoteField } from "../NotesSidebar/RichNoteField";
+import { extractMentionHandles } from "../NotesSidebar/useNoteMentions";
 import { canDeleteNote } from "../NotesSidebar/noteOwnership";
 import { bookColor } from "../../lib/testament";
 import { type AnnotationTarget } from "./AnnotationToolbar";
@@ -2262,11 +2263,22 @@ function InlineNotePanel({
           e.preventDefault();
           const trimmed = draft.replace(/<br\s*\/?>/g, "").trim();
           if (!trimmed) return;
-          notes.add({
+          const newId = notes.add({
             scope,
             body: draft,
             verse_anchor: verseId,
           });
+          // Same @-mention fire-on-Add as NotesSidebar.
+          if (roomId && scope === "group" && newId) {
+            const handles = extractMentionHandles(draft);
+            if (handles.length > 0) {
+              setTimeout(() => {
+                api
+                  .noteMention(roomId, newId, handles)
+                  .catch(() => {});
+              }, 500);
+            }
+          }
           setDraft("");
         }}
         className="mt-2 flex items-end gap-2"
@@ -2492,11 +2504,21 @@ function ChapterNotePanel({
           e.preventDefault();
           const trimmed = draft.replace(/<br\s*\/?>/g, "").trim();
           if (!trimmed) return;
-          notes.add({
+          const newId = notes.add({
             scope,
             body: draft,
             verse_anchor: anchor,
           });
+          if (roomId && scope === "group" && newId) {
+            const handles = extractMentionHandles(draft);
+            if (handles.length > 0) {
+              setTimeout(() => {
+                api
+                  .noteMention(roomId, newId, handles)
+                  .catch(() => {});
+              }, 500);
+            }
+          }
           setDraft("");
         }}
         className="mt-2 flex items-end gap-2"

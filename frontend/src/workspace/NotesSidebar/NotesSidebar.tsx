@@ -16,6 +16,8 @@ import type { NotesApi, NoteRow } from "./notesStore";
 import { NoteSocialBlock } from "./NoteSocialBlock";
 import { GLASS_CARD_INLINE } from "../../lib/glass";
 import { RichNoteField } from "./RichNoteField";
+import { extractMentionHandles } from "./useNoteMentions";
+import { api } from "../../lib/api";
 import { useStickToBottom } from "../../lib/useStickToBottom";
 import { readSettings, SETTINGS_CHANGED } from "../../lib/settings";
 import { OSIS_TO_BOOK_NAME } from "../../lib/api";
@@ -592,11 +594,28 @@ export function NotesSidebar({
             e.preventDefault();
             const trimmed = draft.replace(/<br\s*\/?>/g, "").trim();
             if (!trimmed) return;
-            notes.add({
+            const newId = notes.add({
               scope: tab,
               body: draft,
               verse_anchor: focus?.ref,
             });
+            // Fire @-mention pushes immediately on Add. The
+            // useNoteMentions hook on the saved note's RichNoteField
+            // would also fire, but it's debounced 1.5s and gets
+            // cancelled if the user navigates away. This catches
+            // the common "type @, Add, close" flow.
+            if (roomId && tab === "group" && newId) {
+              const handles = extractMentionHandles(draft);
+              if (handles.length > 0) {
+                // Brief delay so yjsNotes' fire-and-forget
+                // noteRegisterGroup POST has a chance to land first.
+                setTimeout(() => {
+                  api
+                    .noteMention(roomId, newId, handles)
+                    .catch(() => {});
+                }, 500);
+              }
+            }
             setDraft("");
           }}
           className="border-t border-neutral-200 p-2 dark:border-neutral-800"
