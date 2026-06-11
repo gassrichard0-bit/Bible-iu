@@ -44,6 +44,10 @@ interface Props {
    *  uses this to update its rooms cache so the header tint and the
    *  AI pill ring refresh immediately. */
   onRoomAccentChanged?: (newAccent: string | null) => void;
+  /** Fires when the admin renames the room. Lets the parent shell
+   *  refresh the rail row title, the top-bar room name, and the
+   *  AdminPanel header without a /rooms refetch. */
+  onRoomNameChanged?: (newName: string) => void;
   /** Authoritative role from the parent (which already knows it from
    *  /rooms). Skips the loading flicker where the in-panel members
    *  fetch hasn't returned yet and admin-only controls (photo upload,
@@ -62,6 +66,7 @@ export function AdminPanel({
   onRoomImageChanged,
   roomAccentColor,
   onRoomAccentChanged,
+  onRoomNameChanged,
   selfRole,
   selfUserId,
 }: Props) {
@@ -82,6 +87,32 @@ export function AdminPanel({
     setAccentOverride(roomAccentColor ?? null);
   }, [roomAccentColor]);
   const resolvedAccent: AccentKey = resolveAccent(accentOverride, roomId);
+
+  // Inline rename. Initialized from the prop and refreshed when the
+  // sheet reopens so an external rename (other admin, refetch) doesn't
+  // get clobbered by a stale draft.
+  const [nameDraft, setNameDraft] = useState<string>(roomName ?? "");
+  const [savingName, setSavingName] = useState(false);
+  useEffect(() => {
+    setNameDraft(roomName ?? "");
+  }, [roomName, open]);
+  const nameDirty =
+    nameDraft.trim().length > 0 && nameDraft.trim() !== (roomName ?? "");
+
+  async function saveName() {
+    const next = nameDraft.trim();
+    if (!next || next === (roomName ?? "")) return;
+    setSavingName(true);
+    setError(null);
+    try {
+      await api.roomNamePatch(roomId, next);
+      onRoomNameChanged?.(next);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setSavingName(false);
+    }
+  }
 
   async function pickAccent(next: AccentKey | null) {
     if (busy) return;
@@ -314,6 +345,48 @@ export function AdminPanel({
             </div>
           </div>
         </Section>
+
+        {roomType === "group" && (
+          <Section
+            title="Group name"
+            subtitle={
+              isAdmin
+                ? "Shown in the rooms rail and at the top of the chat."
+                : "Set by an admin."
+            }
+          >
+            {isAdmin ? (
+              <div className="flex flex-col gap-2">
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={nameDraft}
+                    onChange={(e) => setNameDraft(e.target.value.slice(0, 60))}
+                    placeholder="Group name"
+                    aria-label="Group name"
+                    maxLength={60}
+                    disabled={savingName}
+                    className="min-w-0 flex-1 rounded-full border border-neutral-200 bg-paper px-3 py-2 text-[14px] outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-200/40 disabled:opacity-60 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100 dark:focus:border-amber-700 dark:focus:ring-amber-800/40"
+                  />
+                  <Pill
+                    type="button"
+                    disabled={!nameDirty || savingName}
+                    onClick={() => void saveName()}
+                  >
+                    {savingName ? "Saving…" : "Save"}
+                  </Pill>
+                </div>
+                <p className="text-[11px] text-neutral-500 dark:text-neutral-400">
+                  {nameDraft.length}/60
+                </p>
+              </div>
+            ) : (
+              <p className="text-xs text-neutral-500 dark:text-neutral-400">
+                {roomName ?? "—"}
+              </p>
+            )}
+          </Section>
+        )}
 
         <Section
           title="Accent color"

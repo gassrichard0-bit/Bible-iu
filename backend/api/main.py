@@ -364,6 +364,13 @@ class AccentPatch(BaseModel):
     accent_color: Optional[str]
 
 
+class RoomNamePatch(BaseModel):
+    """Admin rename. Length-bounded the same way NewRoom enforces on
+    create so a renamed room can't end up wider than what the picker
+    would have produced."""
+    name: str
+
+
 # ---------------------------------------------------------------------------
 # Web Push — phone notifications for chat + group notes
 # ---------------------------------------------------------------------------
@@ -1215,6 +1222,39 @@ def mark_room_read(
     member.last_read_at = datetime.now(timezone.utc)
     session.commit()
     return ReadAck(unread_count=_unread_count(session, room_id, user_id))
+
+
+@app.patch(
+    "/rooms/{room_id}/name",
+    response_model=RoomRead,
+    dependencies=[Depends(require_password)],
+)
+def patch_room_name(
+    room_id: str,
+    payload: RoomNamePatch,
+    session: Session = Depends(db),
+    user_id: str = Depends(current_user_id),
+) -> RoomRead:
+    """Admin-only group rename. DMs are auto-named from their members
+    and don't accept this endpoint. Length cap matches NewRoomModal so
+    the rail row layout stays bounded."""
+    room = _require_admin(session, room_id, user_id)
+    if room.type != "group":
+        raise HTTPException(400, "Only group rooms can be renamed.")
+    name = (payload.name or "").strip()
+    if not name:
+        raise HTTPException(400, "Name can't be empty.")
+    if len(name) > 60:
+        raise HTTPException(400, "Name must be 60 characters or fewer.")
+    room.name = name
+    session.commit()
+    session.refresh(room)
+    role = (
+        session.query(RoomMember.role)
+        .filter(RoomMember.room_id == room.id, RoomMember.user_id == user_id)
+        .scalar()
+    )
+    return _room_read(room, role)
 
 
 @app.patch(

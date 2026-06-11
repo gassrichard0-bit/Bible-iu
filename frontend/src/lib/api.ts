@@ -762,6 +762,12 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify({ accent_color }),
     }),
+  /** Admin-only group rename. DMs are auto-named and reject this. */
+  roomNamePatch: (room_id: string, name: string) =>
+    jsonFetch<RoomOut>(`/rooms/${room_id}/name`, {
+      method: "PATCH",
+      body: JSON.stringify({ name }),
+    }),
   roomMarkRead: (room_id: string) =>
     jsonFetch<{ unread_count: number }>(`/rooms/${room_id}/read`, {
       method: "POST",

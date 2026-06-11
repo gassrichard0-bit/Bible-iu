@@ -2171,6 +2171,13 @@ export function MobileShell({
                 ),
               )
             }
+            onRoomNameChanged={(newName) =>
+              setRooms((prev) =>
+                prev.map((r) =>
+                  r.id === active.id ? { ...r, name: newName } : r,
+                ),
+              )
+            }
             selfRole={active.role}
             selfUserId={selfUserId}
           />
