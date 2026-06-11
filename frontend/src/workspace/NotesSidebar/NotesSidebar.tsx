@@ -302,55 +302,6 @@ export function NotesSidebar({
         </div>
       </div>
 
-      {/* Search field — hidden by default. Toggled open by the top-bar
-          magnifier (focusSearchTrigger). Plain-text — strips HTML
-          before matching so styled notes still find their words.
-          Search stays in the browser; the server never sees the
-          contents of personal notes. */}
-      {searchOpen && (
-      <div className="flex items-center gap-2 border-b border-neutral-200 bg-paper-soft px-3 py-2 dark:border-neutral-800 dark:bg-neutral-950">
-        <div className="relative flex-1">
-          <input
-            ref={searchInputRef}
-            type="search"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder={`Search ${tab} notes…`}
-            aria-label={`Search ${tab} notes`}
-            className="w-full rounded-full border border-neutral-200 bg-paper px-3 py-2 pl-8 text-[14px] outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-200/40 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100 dark:focus:border-amber-700 dark:focus:ring-amber-800/40"
-          />
-          <span
-            className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-[11px] text-neutral-400"
-            aria-hidden
-          >
-            ⌕
-          </span>
-          {query && (
-            <button
-              type="button"
-              onClick={() => setQuery("")}
-              className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full px-1 text-[10px] text-neutral-500 hover:bg-neutral-200/60 dark:text-neutral-400 dark:hover:bg-neutral-700/60"
-              aria-label="Clear search"
-              title="Clear"
-            >
-              ✕
-            </button>
-          )}
-        </div>
-        <button
-          type="button"
-          onClick={() => {
-            setQuery("");
-            setSearchOpen(false);
-          }}
-          className="rounded-full px-2 text-[12px] font-semibold text-neutral-600 hover:bg-paper-soft dark:text-neutral-300 dark:hover:bg-neutral-800"
-          aria-label="Close search"
-        >
-          Done
-        </button>
-      </div>
-      )}
-
       {/* View tabs + book/chapter filter chips. Kept compact so the
           note list still owns most of the column. */}
       <div className="border-b border-neutral-200 bg-paper-soft px-2 py-1.5 dark:border-neutral-800 dark:bg-neutral-950">
@@ -454,6 +405,57 @@ export function NotesSidebar({
           )}
         </div>
       </div>
+
+      {/* Search field — hidden by default, toggled open by the top-bar
+          magnifier (focusSearchTrigger). Positioned UNDER the filter
+          chips so the filter context stays visible while you type a
+          query — the filter narrows the set; the query narrows it
+          further. Plain-text — strips HTML before matching so styled
+          notes still find their words. Search stays in the browser;
+          the server never sees the contents of personal notes. */}
+      {searchOpen && (
+      <div className="flex items-center gap-2 border-b border-neutral-200 bg-paper-soft px-3 py-2 dark:border-neutral-800 dark:bg-neutral-950">
+        <div className="relative flex-1">
+          <input
+            ref={searchInputRef}
+            type="search"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder={`Search ${tab} notes…`}
+            aria-label={`Search ${tab} notes`}
+            className="w-full rounded-full border border-neutral-200 bg-paper px-3 py-2 pl-8 text-[14px] outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-200/40 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100 dark:focus:border-amber-700 dark:focus:ring-amber-800/40"
+          />
+          <span
+            className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-[11px] text-neutral-400"
+            aria-hidden
+          >
+            ⌕
+          </span>
+          {query && (
+            <button
+              type="button"
+              onClick={() => setQuery("")}
+              className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full px-1 text-[10px] text-neutral-500 hover:bg-neutral-200/60 dark:text-neutral-400 dark:hover:bg-neutral-700/60"
+              aria-label="Clear search"
+              title="Clear"
+            >
+              ✕
+            </button>
+          )}
+        </div>
+        <button
+          type="button"
+          onClick={() => {
+            setQuery("");
+            setSearchOpen(false);
+          }}
+          className="rounded-full px-2 text-[12px] font-semibold text-neutral-600 hover:bg-paper-soft dark:text-neutral-300 dark:hover:bg-neutral-800"
+          aria-label="Close search"
+        >
+          Done
+        </button>
+      </div>
+      )}
 
       <ul
         ref={listRef}
