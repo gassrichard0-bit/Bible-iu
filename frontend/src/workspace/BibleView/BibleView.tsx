@@ -1100,17 +1100,17 @@ export function BibleView({
           title="Public-domain + freely-licensed English translations. Paid translations (ESV/NIV/NASB) require separate licensing and aren't wired."
         >
           <optgroup label="Modern English">
-            <option value="Berean Standard Bible">BSB (modern, free)</option>
-            <option value="World English Bible">WEB (modern, public domain)</option>
-            <option value="New English Translation">NET (scholarly, free)</option>
+            <option value="Berean Standard Bible">BSB</option>
+            <option value="World English Bible">WEB</option>
+            <option value="New English Translation">NET</option>
           </optgroup>
           <optgroup label="Classic English">
-            <option value="King James Version">KJV (1611)</option>
-            <option value="Geneva Bible (1599)">Geneva (1599)</option>
-            <option value="Douay-Rheims Bible">Douay-Rheims (Catholic)</option>
+            <option value="King James Version">KJV</option>
+            <option value="Geneva Bible (1599)">Geneva</option>
+            <option value="Douay-Rheims Bible">Douay-Rheims</option>
           </optgroup>
           <optgroup label="Literal / Study">
-            <option value="Young's Literal Translation">YLT (literal, 1898)</option>
+            <option value="Young's Literal Translation">YLT</option>
           </optgroup>
         </select>
         {loading && (
