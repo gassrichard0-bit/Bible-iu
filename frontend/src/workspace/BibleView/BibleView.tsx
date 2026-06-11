@@ -2242,6 +2242,7 @@ function InlineNotePanel({
               canvasDataUrl={n.canvas_data_url}
               noteId={n.id}
               noteScope={n.scope}
+              selfUserId={selfUserId}
             />
             {socialNotesEnabled &&
               roomId &&
@@ -2469,6 +2470,7 @@ function ChapterNotePanel({
               canvasDataUrl={n.canvas_data_url}
               noteId={n.id}
               noteScope={n.scope}
+              selfUserId={selfUserId}
             />
             {socialNotesEnabled &&
               roomId &&

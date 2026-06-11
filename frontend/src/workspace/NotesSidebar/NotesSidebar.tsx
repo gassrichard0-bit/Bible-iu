@@ -568,6 +568,7 @@ export function NotesSidebar({
                 canvasDataUrl={n.canvas_data_url}
                 noteId={n.id}
                 noteScope={n.scope}
+                selfUserId={selfUserId}
               />
             </div>
             {socialNotesEnabled &&

@@ -36,6 +36,7 @@ import { ClipIcon } from "../../lib/Icons";
 import Image from "@tiptap/extension-image";
 import { api, getPassword, getSessionToken } from "../../lib/api";
 import { useNoteMentions } from "./useNoteMentions";
+import { MentionPopover, detectMentionTrigger } from "./MentionPopover";
 
 const ALLOWED_TAGS = new Set([
   "B",
@@ -145,6 +146,11 @@ interface Props {
    *  Drafts (no noteId) silently no-op. */
   noteId?: string;
   noteScope?: "personal" | "group";
+  /** Caller's user id — passed to the `@`-mention popover so it
+   *  doesn't offer to tag the author themselves. When absent the
+   *  popover still works but self-mentions land as no-ops at the
+   *  server (which already filters them). */
+  selfUserId?: string;
 }
 
 export function RichNoteField({
@@ -159,11 +165,26 @@ export function RichNoteField({
   canvasDataUrl,
   noteId,
   noteScope,
+  selfUserId,
 }: Props) {
   // Watch the body for @handle mentions and push notify when a new
   // member is tagged. The hook is a no-op for personal-scope notes
   // and for the draft composer (no noteId yet).
   useNoteMentions(noteScope, roomId, noteId, value);
+
+  // `@`-mention autocomplete state. The popover only opens for
+  // group-scope notes — there's no one to tag in a personal note.
+  // `query` is the partial token after the `@` (empty until the user
+  // types a char). `anchor` is the caret's viewport position so the
+  // popover can float next to it.
+  const [mentionAnchor, setMentionAnchor] = useState<
+    { left: number; top: number; bottom: number } | null
+  >(null);
+  const [mentionQuery, setMentionQuery] = useState("");
+  const [mentionReplaceFrom, setMentionReplaceFrom] = useState<number | null>(
+    null,
+  );
+  const mentionEnabled = !!roomId && noteScope === "group" && !readOnly;
   const [focused, setFocused] = useState(false);
 
   const editor = useEditor({
@@ -238,8 +259,73 @@ export function RichNoteField({
     onUpdate: ({ editor: ed }) => {
       const html = sanitizeNoteHtml(ed.getHTML());
       onChange(html);
+      maybeUpdateMentionTrigger(ed);
+    },
+    onSelectionUpdate: ({ editor: ed }) => {
+      // Caret moves (arrow keys, click reposition) might exit a
+      // trigger range without changing the text — re-detect on every
+      // selection.
+      maybeUpdateMentionTrigger(ed);
     },
   });
+
+  // Lifted out of the editor callbacks so we can reuse on both
+  // onUpdate and onSelectionUpdate without duplicating the parsing.
+  function maybeUpdateMentionTrigger(ed: NonNullable<typeof editor>) {
+    if (!mentionEnabled) {
+      if (mentionAnchor !== null) {
+        setMentionAnchor(null);
+        setMentionQuery("");
+        setMentionReplaceFrom(null);
+      }
+      return;
+    }
+    const sel = ed.state.selection;
+    if (!sel.empty) {
+      // No popover during text selection — the user is doing something
+      // else.
+      setMentionAnchor(null);
+      return;
+    }
+    const from = sel.from;
+    // Pull the text node content before the caret. We only need the
+    // current paragraph; anything across blocks closes the trigger.
+    const $from = sel.$from;
+    const blockStart = $from.start();
+    const textBefore = ed.state.doc.textBetween(blockStart, from, "\n", "\n");
+    const hit = detectMentionTrigger(textBefore);
+    if (!hit) {
+      setMentionAnchor(null);
+      setMentionQuery("");
+      setMentionReplaceFrom(null);
+      return;
+    }
+    // Pixel coords of the `@` token start, used to anchor the popover.
+    const coords = ed.view.coordsAtPos(blockStart + hit.replaceStart);
+    setMentionAnchor({
+      left: coords.left,
+      top: coords.top,
+      bottom: coords.bottom,
+    });
+    setMentionQuery(hit.query);
+    setMentionReplaceFrom(blockStart + hit.replaceStart);
+  }
+
+  function insertMentionHandle(handle: string) {
+    if (!editor || mentionReplaceFrom === null) return;
+    const from = mentionReplaceFrom;
+    const to = editor.state.selection.from;
+    // Replace `@partial` with `@handle ` — trailing space so the
+    // next keystroke continues the sentence and closes the trigger.
+    editor
+      .chain()
+      .focus()
+      .insertContentAt({ from, to }, `@${handle} `)
+      .run();
+    setMentionAnchor(null);
+    setMentionQuery("");
+    setMentionReplaceFrom(null);
+  }
 
   // Sync external value changes (e.g. Yjs remote update) into the
   // editor without resetting the cursor while the user types.
@@ -312,6 +398,16 @@ export function RichNoteField({
         </figure>
       )}
       <EditorContent editor={editor} />
+      {mentionEnabled && roomId && mentionAnchor && (
+        <MentionPopover
+          roomId={roomId}
+          anchor={mentionAnchor}
+          query={mentionQuery}
+          selfUserId={selfUserId ?? ""}
+          onPick={insertMentionHandle}
+          onClose={() => setMentionAnchor(null)}
+        />
+      )}
       <input
         ref={fileInputRef}
         type="file"
