@@ -1670,9 +1670,17 @@ function BibleSearchSheet({
     setAiErr(null);
   }, [query]);
 
+  // Guard against double-firing: iOS PWA can emit both a touchend +
+  // synthetic click for the same tap. The ref blocks reentry between
+  // the moment the request is in flight and the moment React's
+  // `aiSearching` state actually reflects that — without this guard a
+  // single sloppy tap can hit the endpoint twice.
+  const aiSearchInFlight = useRef(false);
   async function runAdvancedSearch() {
     const q = query.trim();
     if (q.length < 3) return;
+    if (aiSearchInFlight.current) return;
+    aiSearchInFlight.current = true;
     setAiSearching(true);
     setAiErr(null);
     setAiHits(null);
@@ -1683,6 +1691,7 @@ function BibleSearchSheet({
       setAiErr((e as Error).message);
     } finally {
       setAiSearching(false);
+      aiSearchInFlight.current = false;
     }
   }
 
@@ -1834,9 +1843,17 @@ function BibleSearchSheet({
           <div className="flex flex-col gap-2">
             <button
               type="button"
+              // iOS PWA Buttons that appear conditionally (this one is
+              // gated on query.length >= 3) sometimes need 2-3 taps
+              // before the synthetic click fires reliably. Firing on
+              // pointerup catches the tap as soon as the finger lifts —
+              // the runAdvancedSearch ref-guard prevents double-firing
+              // when both pointerup AND the synthetic click come through.
+              onPointerUp={runAdvancedSearch}
               onClick={runAdvancedSearch}
               disabled={aiSearching}
-              className="inline-flex items-center gap-1.5 self-start rounded-full border border-violet-300 bg-violet-50 px-3 py-1.5 text-[12px] font-semibold text-violet-900 shadow-[0_1px_2px_rgba(0,0,0,0.05),inset_0_1px_0_rgba(255,255,255,0.5)] transition hover:bg-violet-100 active:scale-[0.97] disabled:opacity-60 dark:border-violet-700 dark:bg-violet-900/40 dark:text-violet-100 dark:shadow-[0_1px_2px_rgba(0,0,0,0.40),inset_0_1px_0_rgba(255,255,255,0.06)] dark:hover:bg-violet-900/60"
+              style={{ touchAction: "manipulation" }}
+              className="inline-flex min-h-[36px] items-center gap-1.5 self-start rounded-full border border-violet-300 bg-violet-50 px-3 py-1.5 text-[12px] font-semibold text-violet-900 shadow-[0_1px_2px_rgba(0,0,0,0.05),inset_0_1px_0_rgba(255,255,255,0.5)] transition active:scale-[0.97] disabled:opacity-60 dark:border-violet-700 dark:bg-violet-900/40 dark:text-violet-100 dark:shadow-[0_1px_2px_rgba(0,0,0,0.40),inset_0_1px_0_rgba(255,255,255,0.06)]"
             >
               {aiSearching ? (
                 "Asking the agent…"
