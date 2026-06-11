@@ -1670,11 +1670,13 @@ function BibleSearchSheet({
     setAiErr(null);
   }, [query]);
 
-  // Guard against double-firing: iOS PWA can emit both a touchend +
-  // synthetic click for the same tap. The ref blocks reentry between
-  // the moment the request is in flight and the moment React's
-  // `aiSearching` state actually reflects that — without this guard a
-  // single sloppy tap can hit the endpoint twice.
+  // Press-and-hold to engage. A quick tap on this button under iOS PWA
+  // can be eaten by the bottom-sheet gesture layer or by the synthetic-
+  // click race that fires when a conditionally-mounted element appears
+  // mid-gesture. A deliberate ~200ms hold lands every time, and a too-
+  // quick tap simply doesn't fire — no error, no half-engaged state.
+  const aiHoldTimerRef = useRef<number | null>(null);
+  const [aiHolding, setAiHolding] = useState(false);
   const aiSearchInFlight = useRef(false);
   async function runAdvancedSearch() {
     const q = query.trim();
@@ -1693,6 +1695,23 @@ function BibleSearchSheet({
       setAiSearching(false);
       aiSearchInFlight.current = false;
     }
+  }
+  function startAiHold() {
+    if (aiSearching) return;
+    if (aiHoldTimerRef.current !== null) return;
+    setAiHolding(true);
+    aiHoldTimerRef.current = window.setTimeout(() => {
+      aiHoldTimerRef.current = null;
+      setAiHolding(false);
+      void runAdvancedSearch();
+    }, 220);
+  }
+  function cancelAiHold() {
+    if (aiHoldTimerRef.current !== null) {
+      window.clearTimeout(aiHoldTimerRef.current);
+      aiHoldTimerRef.current = null;
+    }
+    setAiHolding(false);
   }
 
   /** Construct a synthetic BibleSearchHit for a parsed reference so
@@ -1843,17 +1862,21 @@ function BibleSearchSheet({
           <div className="flex flex-col gap-2">
             <button
               type="button"
-              // iOS PWA Buttons that appear conditionally (this one is
-              // gated on query.length >= 3) sometimes need 2-3 taps
-              // before the synthetic click fires reliably. Firing on
-              // pointerup catches the tap as soon as the finger lifts —
-              // the runAdvancedSearch ref-guard prevents double-firing
-              // when both pointerup AND the synthetic click come through.
-              onPointerUp={runAdvancedSearch}
-              onClick={runAdvancedSearch}
+              // Press and hold (~220ms) to engage. Quick taps under iOS
+              // PWA get eaten by the bottom-sheet gesture layer or by
+              // the conditional-mount race; a deliberate hold is
+              // reliable. Released early = no-op, no error.
+              onPointerDown={startAiHold}
+              onPointerUp={cancelAiHold}
+              onPointerLeave={cancelAiHold}
+              onPointerCancel={cancelAiHold}
               disabled={aiSearching}
               style={{ touchAction: "manipulation" }}
-              className="inline-flex min-h-[36px] items-center gap-1.5 self-start rounded-full border border-violet-300 bg-violet-50 px-3 py-1.5 text-[12px] font-semibold text-violet-900 shadow-[0_1px_2px_rgba(0,0,0,0.05),inset_0_1px_0_rgba(255,255,255,0.5)] transition active:scale-[0.97] disabled:opacity-60 dark:border-violet-700 dark:bg-violet-900/40 dark:text-violet-100 dark:shadow-[0_1px_2px_rgba(0,0,0,0.40),inset_0_1px_0_rgba(255,255,255,0.06)]"
+              className={`inline-flex min-h-[36px] items-center gap-1.5 self-start rounded-full border border-violet-300 bg-violet-50 px-3 py-1.5 text-[12px] font-semibold text-violet-900 shadow-[0_1px_2px_rgba(0,0,0,0.05),inset_0_1px_0_rgba(255,255,255,0.5)] transition disabled:opacity-60 dark:border-violet-700 dark:bg-violet-900/40 dark:text-violet-100 dark:shadow-[0_1px_2px_rgba(0,0,0,0.40),inset_0_1px_0_rgba(255,255,255,0.06)] ${
+                aiHolding
+                  ? "scale-[0.96] bg-violet-100 ring-2 ring-violet-400/60 dark:bg-violet-900/60 dark:ring-violet-500/60"
+                  : ""
+              }`}
             >
               {aiSearching ? (
                 "Asking the agent…"
