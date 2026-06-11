@@ -3406,7 +3406,16 @@ function BookmarksPanel({
           </div>
         </div>
       )}
-      <ul className="flex-1 space-y-2.5 overflow-y-auto p-3">
+      <ul
+        className="flex-1 space-y-2.5 overflow-y-auto p-3"
+        style={{
+          // Same as ChatPanel + Bible scroller: leave room at the bottom
+          // for the floating glass tab bar + standalone AI pill so the
+          // last card isn't tucked permanently underneath. 96px covers
+          // the floating UI + safe-area-inset at rest.
+          paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 96px)",
+        }}
+      >
         {bookmarks.length === 0 && (
           <li className="mx-auto mt-4 max-w-xs rounded-2xl border border-neutral-200 bg-paper px-4 py-6 text-center shadow-[0_1px_2px_rgba(0,0,0,0.04),inset_0_1px_0_rgba(255,255,255,0.6)] dark:border-neutral-800 dark:bg-neutral-900 dark:shadow-[0_1px_2px_rgba(0,0,0,0.2),inset_0_1px_0_rgba(255,255,255,0.04)]">
             <span
