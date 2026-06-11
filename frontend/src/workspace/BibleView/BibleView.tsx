@@ -2279,6 +2279,8 @@ function InlineNotePanel({
             ariaLabel={`New ${scope} note on ${verseId}`}
             autoFocus={!!autoFocus}
             roomId={roomId}
+            noteScope={scope}
+            selfUserId={selfUserId}
           />
         </div>
         <button
@@ -2506,6 +2508,8 @@ function ChapterNotePanel({
             placeholder={`Add a ${scope} note on ${book} ${chapter}…`}
             ariaLabel={`New ${scope} note on ${book} ${chapter}`}
             roomId={roomId}
+            noteScope={scope}
+            selfUserId={selfUserId}
           />
         </div>
         <button

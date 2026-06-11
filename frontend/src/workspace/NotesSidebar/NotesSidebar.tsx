@@ -610,6 +610,8 @@ export function NotesSidebar({
               }
               ariaLabel={`New ${tab} note`}
               roomId={roomId}
+              noteScope={tab}
+              selfUserId={selfUserId}
             />
           </div>
           <div className="mt-1 flex items-center justify-end gap-2 text-[10px] text-neutral-500 dark:text-neutral-400">
