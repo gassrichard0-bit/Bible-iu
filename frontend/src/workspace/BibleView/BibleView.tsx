@@ -1165,7 +1165,7 @@ export function BibleView({
         onTouchEnd={onChapterSwipeEnd}
         onScroll={onScrollerScroll}
         onPointerUp={onScrollerDoubleTapDismiss}
-        className="flex-1 overflow-y-auto overflow-x-hidden pl-1 pr-3 py-4"
+        className="flex-1 overflow-y-auto overflow-x-hidden px-3 py-4"
         // Mirror ChatPanel + the notes list: when the floating glass
         // composer + 64px AI pill sit on top of this scroller, lift
         // the last verse above them so reading isn't cut off.
