@@ -8,9 +8,10 @@
  * the speech-bubble. Comments are flat (no replies). The author can
  * delete their own comment.
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api, type NoteReactionKind, type NoteSocialOut } from "../../lib/api";
 import { GLASS_CARD_INLINE } from "../../lib/glass";
+import { MentionPopover, detectMentionTrigger } from "./MentionPopover";
 
 export function NoteSocialBlock({
   roomId,
@@ -25,6 +26,68 @@ export function NoteSocialBlock({
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
+
+  // @-mention autocomplete state for the comment textarea. Mirrors
+  // what RichNoteField does for note bodies, but works against a
+  // plain <textarea> by tracking selectionStart on the underlying
+  // input element.
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const [mentionAnchor, setMentionAnchor] = useState<
+    { left: number; top: number; bottom: number } | null
+  >(null);
+  const [mentionQuery, setMentionQuery] = useState("");
+  const [mentionReplaceFrom, setMentionReplaceFrom] = useState<number | null>(
+    null,
+  );
+
+  function refreshMentionTrigger() {
+    const ta = textareaRef.current;
+    if (!ta) return;
+    const caret = ta.selectionStart ?? draft.length;
+    const textBefore = draft.slice(0, caret);
+    const hit = detectMentionTrigger(textBefore);
+    if (!hit) {
+      setMentionAnchor(null);
+      setMentionQuery("");
+      setMentionReplaceFrom(null);
+      return;
+    }
+    // Anchor the popover above the textarea — the textarea is one
+    // line tall and lives at the bottom of the social block, so
+    // the popover floats up out of the way. MentionPopover flips
+    // automatically when the caret is near the viewport top.
+    const rect = ta.getBoundingClientRect();
+    setMentionAnchor({
+      left: rect.left,
+      top: rect.top,
+      bottom: rect.bottom,
+    });
+    setMentionQuery(hit.query);
+    setMentionReplaceFrom(hit.replaceStart);
+  }
+
+  function pickMention(handle: string) {
+    const ta = textareaRef.current;
+    if (mentionReplaceFrom === null) return;
+    const caret = ta?.selectionStart ?? draft.length;
+    const next =
+      draft.slice(0, mentionReplaceFrom) +
+      `@${handle} ` +
+      draft.slice(caret);
+    setDraft(next);
+    setMentionAnchor(null);
+    setMentionQuery("");
+    setMentionReplaceFrom(null);
+    // Move the caret to just after the inserted handle so typing
+    // continues naturally.
+    setTimeout(() => {
+      const t = textareaRef.current;
+      if (!t) return;
+      const pos = mentionReplaceFrom + handle.length + 2; // "@handle "
+      t.focus();
+      t.setSelectionRange(pos, pos);
+    }, 0);
+  }
 
   const load = useCallback(async () => {
     try {
@@ -158,8 +221,21 @@ export function NoteSocialBlock({
             className={`flex items-stretch gap-1 p-1 ${GLASS_CARD_INLINE}`}
           >
             <textarea
+              ref={textareaRef}
               value={draft}
-              onChange={(e) => setDraft(e.target.value)}
+              onChange={(e) => {
+                setDraft(e.target.value);
+                // Defer to next tick so selectionStart reflects the
+                // post-input caret position.
+                setTimeout(refreshMentionTrigger, 0);
+              }}
+              onKeyUp={() => refreshMentionTrigger()}
+              onClick={() => refreshMentionTrigger()}
+              onBlur={() => {
+                // Let the popover's mousedown commit before tearing
+                // it down.
+                setTimeout(() => setMentionAnchor(null), 120);
+              }}
               placeholder="Comment…"
               aria-label="Add a comment"
               rows={1}
@@ -174,6 +250,16 @@ export function NoteSocialBlock({
             </button>
           </form>
         </div>
+      )}
+      {mentionAnchor && (
+        <MentionPopover
+          roomId={roomId}
+          anchor={mentionAnchor}
+          query={mentionQuery}
+          selfUserId={selfUserId ?? ""}
+          onPick={pickMention}
+          onClose={() => setMentionAnchor(null)}
+        />
       )}
     </div>
   );
