@@ -206,7 +206,7 @@ export function NoteSocialBlock({
               {selfUserId && c.author_user_id === selfUserId && (
                 <button
                   onClick={() => removeComment(c.id)}
-                  className="text-neutral-400 opacity-0 hover:text-red-600 group-hover/comment:opacity-100"
+                  className="text-neutral-400 opacity-60 hover:text-red-600 group-hover/comment:opacity-100 md:opacity-0"
                   aria-label="Delete comment"
                   title="Delete your comment"
                 >

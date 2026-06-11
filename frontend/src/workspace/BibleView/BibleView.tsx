@@ -2225,7 +2225,7 @@ function InlineNotePanel({
                     onClick={() => {
                       if (confirm("Delete this note?")) notes.remove(n.id);
                     }}
-                    className="rounded px-1 text-neutral-400 opacity-0 hover:bg-red-50 hover:text-red-600 group-hover:opacity-100 dark:hover:bg-red-900/40 dark:hover:text-red-300"
+                    className="rounded px-1 text-neutral-400 opacity-60 hover:bg-red-50 hover:text-red-600 group-hover:opacity-100 md:opacity-0 dark:hover:bg-red-900/40 dark:hover:text-red-300"
                     title="Delete note (notes-system.MD §5.9)"
                     aria-label="Delete note"
                   >
@@ -2466,7 +2466,7 @@ function ChapterNotePanel({
                     onClick={() => {
                       if (confirm("Delete this note?")) notes.remove(n.id);
                     }}
-                    className="rounded px-1 text-neutral-400 opacity-0 hover:bg-red-50 hover:text-red-600 group-hover:opacity-100 dark:hover:bg-red-900/40 dark:hover:text-red-300"
+                    className="rounded px-1 text-neutral-400 opacity-60 hover:bg-red-50 hover:text-red-600 group-hover:opacity-100 md:opacity-0 dark:hover:bg-red-900/40 dark:hover:text-red-300"
                     title="Delete note (notes-system.MD §5.9)"
                     aria-label="Delete note"
                   >
