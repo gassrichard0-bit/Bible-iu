@@ -2845,14 +2845,28 @@ def _notify_note_mentions(
     note_id: str,
     author_user_id: str,
     handles: list[str],
+    dedupe: bool = True,
+    push_body: str | None = None,
     log: "__import__('logging').Logger | None" = None,
 ) -> int:
-    """Resolve handles to room members, dedupe per (note_id, user_id)
-    against the NoteMention table, and Web-Push each new tag with the
+    """Resolve handles to room members and Web-Push each tag with the
     same delivery semantics as chat / note-create fanout (room-mute +
     quiet-hours respected). Returns the count of NEW notifications
-    that actually fired. Repeated calls are safe — already-notified
-    pairs are no-ops thanks to the unique constraint."""
+    that actually fired.
+
+    `dedupe=True` (the default, used for note-body tags): inserts a
+    NoteMention row per (note_id, user_id). Repeated POSTs for the
+    same body are no-ops thanks to the unique constraint — the user
+    can type @willy, save, save again, and Willy is pushed once.
+
+    `dedupe=False` (used for note comments): each comment is its own
+    discrete event so the dedupe table is skipped entirely. If the
+    same person is tagged in two separate comments, two pushes fire.
+    Otherwise a comment tag would be eaten by an earlier body tag of
+    the same person, which is the wrong UX.
+
+    `push_body` overrides the notification body text — defaults to
+    "<author> tagged you in a note" which fits both call sites."""
     import logging
     if log is None:
         log = logging.getLogger("bible_iu.notes")
@@ -2868,8 +2882,8 @@ def _notify_note_mentions(
     )
     resolved = [(u, m) for (u, m) in members if u.id != author_user_id]
     log.info(
-        "note_mention: room=%s note=%s author=%s handles=%s resolved=%d",
-        room_id, note_id, author_user_id, handles, len(resolved),
+        "note_mention: room=%s note=%s dedupe=%s author=%s handles=%s resolved=%d",
+        room_id, note_id, dedupe, author_user_id, handles, len(resolved),
     )
     if not resolved:
         return 0
@@ -2879,42 +2893,44 @@ def _notify_note_mentions(
         (author.display_name or author.handle) if author else "Someone"
     )
     room_name = room.name if room else "Bible IU"
+    body_text = push_body or f"{sender_name} tagged you in a note"
     sent = 0
     for (target_user, _member) in resolved:
-        existing = (
-            session.query(NoteMention)
-            .filter(
-                NoteMention.note_id == note_id,
-                NoteMention.user_id == target_user.id,
+        if dedupe:
+            existing = (
+                session.query(NoteMention)
+                .filter(
+                    NoteMention.note_id == note_id,
+                    NoteMention.user_id == target_user.id,
+                )
+                .first()
             )
-            .first()
-        )
-        if existing is not None:
-            log.info(
-                "note_mention: skip (already notified) user=%s handle=%s",
-                target_user.id, target_user.handle,
-            )
-            continue
-        session.add(
-            NoteMention(
-                id=str(uuid.uuid4()),
-                note_id=note_id,
-                user_id=target_user.id,
-                room_id=room_id,
-            )
-        )
-        try:
-            session.commit()
-        except Exception as commit_err:
-            session.rollback()
-            msg = str(commit_err).lower()
-            if "unique" in msg or "uq_note_mentions" in msg:
+            if existing is not None:
+                log.info(
+                    "note_mention: skip (already notified) user=%s handle=%s",
+                    target_user.id, target_user.handle,
+                )
                 continue
-            log.warning(
-                "note_mention commit failed (note=%s user=%s): %s",
-                note_id, target_user.id, commit_err,
+            session.add(
+                NoteMention(
+                    id=str(uuid.uuid4()),
+                    note_id=note_id,
+                    user_id=target_user.id,
+                    room_id=room_id,
+                )
             )
-            continue
+            try:
+                session.commit()
+            except Exception as commit_err:
+                session.rollback()
+                msg = str(commit_err).lower()
+                if "unique" in msg or "uq_note_mentions" in msg:
+                    continue
+                log.warning(
+                    "note_mention commit failed (note=%s user=%s): %s",
+                    note_id, target_user.id, commit_err,
+                )
+                continue
         count = send_room_push_to_user(
             session,
             room_id,
@@ -2924,7 +2940,7 @@ def _notify_note_mentions(
                 "room_id": room_id,
                 "room_name": room_name,
                 "sender": sender_name,
-                "body": f"{sender_name} tagged you in a note",
+                "body": body_text,
                 "url": f"/?room={room_id}",
             },
         )
@@ -3127,18 +3143,28 @@ def add_note_comment(
         )
     )
     session.commit()
-    # Tag any `@handle`s in the comment body. Same dedupe + delivery
-    # path as the note-body mention endpoint so a single recipient is
-    # only pushed once per (note, user) regardless of whether they
-    # were tagged in the body, a comment, or both.
+    # Tag any `@handle`s in the comment body. Each comment is its own
+    # event so dedupe is OFF: a person tagged in two separate comments
+    # gets two pushes. Otherwise a comment tag would be eaten by an
+    # earlier body tag of the same person (the dedupe was scoped
+    # per note, not per source). Push body distinguishes comment vs
+    # body so the recipient knows which to look at.
     handles = _extract_mention_handles(body)
     if handles:
+        author_row = session.get(User, user_id)
+        sender_name = (
+            (author_row.display_name or author_row.handle)
+            if author_row
+            else "Someone"
+        )
         _notify_note_mentions(
             session,
             room_id=room_id,
             note_id=note_id,
             author_user_id=user_id,
             handles=handles,
+            dedupe=False,
+            push_body=f"{sender_name} tagged you in a comment",
         )
     return get_note_social(room_id, note_id, session, user_id)
 
