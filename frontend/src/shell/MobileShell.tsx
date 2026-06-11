@@ -3095,7 +3095,7 @@ function RailRow({
           touchAction: "pan-y",
           WebkitTapHighlightColor: "transparent",
         }}
-        className={`glass-specular flex w-full cursor-pointer items-start gap-3 bg-paper/55 px-3 py-2.5 backdrop-blur-2xl backdrop-saturate-[1.8] active:scale-[0.99] dark:bg-neutral-900/45 ${
+        className={`flex w-full cursor-pointer items-start gap-3 bg-transparent px-3 py-2.5 active:scale-[0.99] ${
           hidden ? "opacity-70" : ""
         }`}
         title={hidden ? "Hidden room · tap to open · swipe left for actions" : "Tap to open · swipe left for actions"}
