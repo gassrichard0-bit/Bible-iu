@@ -36,6 +36,19 @@ import {
   AnnotationToolbar,
   type AnnotationTarget,
 } from "../workspace/BibleView/AnnotationToolbar";
+import { SWATCH_FILL } from "../workspace/BibleView/annotations";
+
+/** One verse grouping the user's annotations for the Marks page
+ *  Highlights view. Built in BookmarksPanel from the annotations[]
+ *  prop. */
+interface HighlightGroup {
+  verseId: string;
+  book: string;
+  chapter: number;
+  verse: number;
+  rows: AnnotationOut[];
+  latestAt: string;
+}
 import type { WorkspaceScope } from "../workspace/Workspace";
 import { bookColor } from "../lib/testament";
 import { useRoomQuota } from "../lib/useRoomQuota";
@@ -713,11 +726,24 @@ export function MobileShell({
   // button on the Marks tab top bar is tapped. BookmarksPanel toggles
   // its search field open/closed on each bump.
   const [marksSearchTrigger, setMarksSearchTrigger] = useState(0);
+  // Marks tab view mode. "bookmarks" = the ribbon cards; "highlights" =
+  // a flat list of every annotated verse pulled from the existing
+  // annotations[] state. Toggled by the Marks-page hamburger menu in
+  // the top-bar (which replaced the Settings hamburger on this tab).
+  const [marksView, setMarksView] = useState<"bookmarks" | "highlights">(
+    "bookmarks",
+  );
+  const [marksMenuOpen, setMarksMenuOpen] = useState(false);
   useEffect(() => {
     if (tab !== "chat") {
       setChatSearchOpen(false);
       setChatSearchQuery("");
     }
+  }, [tab]);
+  // Close the Marks page hamburger menu whenever the user navigates
+  // off the tab so it doesn't reopen with stale state on return.
+  useEffect(() => {
+    if (tab !== "bookmarks") setMarksMenuOpen(false);
   }, [tab]);
   // Per-room daily-question quota. Renders inline next to the scope
   // chip on the Bible tab so the user can see "3 left today" before
@@ -1066,6 +1092,70 @@ export function MobileShell({
                 </button>
               );
             })()
+          ) : tab === "bookmarks" ? (
+            <div className="relative">
+              <button
+                onClick={() => setMarksMenuOpen((o) => !o)}
+                className="grid h-11 w-11 place-items-center rounded-full border border-neutral-200 bg-paper text-neutral-700 shadow-[0_2px_6px_rgba(0,0,0,0.10),inset_0_1px_0_rgba(255,255,255,0.55)] transition-transform active:scale-[0.96] dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-200 dark:shadow-[0_2px_6px_rgba(0,0,0,0.45),inset_0_1px_0_rgba(255,255,255,0.08)]"
+                aria-label="Marks views"
+                aria-expanded={marksMenuOpen}
+                aria-haspopup="menu"
+                title="Switch view"
+              >
+                <MenuSvg className="h-5 w-5" />
+              </button>
+              {marksMenuOpen && (
+                <>
+                  {/* Tap-out scrim closes the popover without dismissing
+                      the underlying tap target. */}
+                  <button
+                    type="button"
+                    aria-hidden
+                    tabIndex={-1}
+                    onClick={() => setMarksMenuOpen(false)}
+                    className="fixed inset-0 z-40 cursor-default bg-transparent"
+                  />
+                  <div
+                    role="menu"
+                    aria-label="Marks views"
+                    className="absolute right-0 top-[calc(100%+8px)] z-50 grid w-[180px] gap-1 rounded-2xl border border-neutral-200 bg-paper p-2 shadow-[0_8px_28px_rgba(0,0,0,0.18),inset_0_1px_0_rgba(255,255,255,0.6)] dark:border-neutral-700 dark:bg-neutral-900 dark:shadow-[0_8px_28px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.10)]"
+                  >
+                    <button
+                      type="button"
+                      role="menuitemradio"
+                      aria-checked={marksView === "bookmarks"}
+                      onClick={() => {
+                        setMarksView("bookmarks");
+                        setMarksMenuOpen(false);
+                      }}
+                      className={`rounded-xl px-3 py-2 text-left text-[13px] transition ${
+                        marksView === "bookmarks"
+                          ? "bg-amber-100 font-semibold text-amber-900 dark:bg-amber-900/40 dark:text-amber-100"
+                          : "text-neutral-700 hover:bg-paper-soft dark:text-neutral-200 dark:hover:bg-neutral-800"
+                      }`}
+                    >
+                      Bookmarks
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitemradio"
+                      aria-checked={marksView === "highlights"}
+                      onClick={() => {
+                        setMarksView("highlights");
+                        setMarksMenuOpen(false);
+                      }}
+                      className={`rounded-xl px-3 py-2 text-left text-[13px] transition ${
+                        marksView === "highlights"
+                          ? "bg-amber-100 font-semibold text-amber-900 dark:bg-amber-900/40 dark:text-amber-100"
+                          : "text-neutral-700 hover:bg-paper-soft dark:text-neutral-200 dark:hover:bg-neutral-800"
+                      }`}
+                    >
+                      Highlights
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
           ) : (
             <button
               onClick={() => {
@@ -1223,7 +1313,9 @@ export function MobileShell({
             )}
             {tab === "bookmarks" && (
               <BookmarksPanel
+                view={marksView}
                 bookmarks={pickLatestPerBook(bookmarks)}
+                annotations={annotations}
                 timezone={settings.timezone}
                 dark={theme === "dark"}
                 focusSearchTrigger={marksSearchTrigger}
@@ -3313,14 +3405,24 @@ function pickLatestPerBook(all: BookmarkOut[]): BookmarkOut[] {
 
 
 function BookmarksPanel({
+  view = "bookmarks",
   bookmarks,
+  annotations,
   onPick,
   onReset,
   timezone,
   dark,
   focusSearchTrigger,
 }: {
+  /** Toggles between the ribbon cards (default) and a flat list of
+   *  every verse the user has annotated. The Marks-page hamburger
+   *  in the top app bar drives this. */
+  view?: "bookmarks" | "highlights";
   bookmarks: BookmarkOut[];
+  /** Every annotation the user has — used to render the highlights
+   *  view. Already loaded in MobileShell for the Bible reader; this
+   *  is just a read-only consumer. */
+  annotations?: AnnotationOut[];
   onPick: (b: BookmarkOut) => void;
   onReset: (book: string) => void;
   timezone?: string;
@@ -3364,14 +3466,58 @@ function BookmarksPanel({
         );
       });
 
+  // Highlights view: collapse the annotation rows by verse_id so the
+  // user sees one card per annotated verse with a small color-dot
+  // summary of which kinds/colors landed on that verse. Sorted by the
+  // newest annotation in each group so recently-marked verses surface
+  // first. Search query (when open) matches book code, full book name,
+  // or the formatted reference.
+  const highlightGroups = useMemo(() => {
+    if (view !== "highlights") return [] as HighlightGroup[];
+    const map = new Map<string, AnnotationOut[]>();
+    for (const a of annotations ?? []) {
+      const list = map.get(a.verse_id);
+      if (list) list.push(a);
+      else map.set(a.verse_id, [a]);
+    }
+    const groups: HighlightGroup[] = [];
+    for (const [verseId, rows] of map.entries()) {
+      const parts = verseId.split(".");
+      if (parts.length !== 3) continue;
+      const book = parts[0];
+      const chapter = Number(parts[1]);
+      const verse = Number(parts[2]);
+      if (!book || !Number.isFinite(chapter) || !Number.isFinite(verse)) continue;
+      const latest = rows
+        .map((r) => r.updated_at || "")
+        .filter(Boolean)
+        .sort()
+        .pop() || "";
+      groups.push({ verseId, book, chapter, verse, rows, latestAt: latest });
+    }
+    groups.sort((a, b) => (a.latestAt < b.latestAt ? 1 : -1));
+    if (!q) return groups;
+    return groups.filter((g) => {
+      const name = (OSIS_TO_BOOK_NAME[g.book] ?? g.book).toLowerCase();
+      const ref = `${OSIS_TO_BOOK_NAME[g.book] ?? g.book} ${g.chapter}:${g.verse}`.toLowerCase();
+      return (
+        g.book.toLowerCase().includes(q) ||
+        name.includes(q) ||
+        ref.includes(q)
+      );
+    });
+  }, [view, annotations, q]);
+
   return (
     <div className="flex h-full flex-col">
       <div className="border-b border-neutral-200 bg-paper-soft px-4 py-3 dark:border-neutral-800 dark:bg-neutral-950">
-        <h2 className="text-sm font-semibold">Last read</h2>
+        <h2 className="text-sm font-semibold">
+          {view === "highlights" ? "Highlights" : "Last read"}
+        </h2>
         <p className="text-[11px] text-neutral-500 dark:text-neutral-400">
-          One bookmark per book — the latest verse you marked. Past
-          marks in the same book stay as flags on the Bible page;
-          double-tap a flag there to walk up the stack or remove it.
+          {view === "highlights"
+            ? "Every verse you've marked — highlights, underlines, boxes, and the rest. Tap a card to jump to that verse."
+            : "One bookmark per book — the latest verse you marked. Past marks in the same book stay as flags on the Bible page; double-tap a flag there to walk up the stack or remove it."}
         </p>
       </div>
       {searchOpen && (
@@ -3382,8 +3528,8 @@ function BookmarksPanel({
               type="search"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search bookmarks…"
-              aria-label="Search bookmarks"
+              placeholder={view === "highlights" ? "Search highlights…" : "Search bookmarks…"}
+              aria-label={view === "highlights" ? "Search highlights" : "Search bookmarks"}
               className="w-full rounded-full border border-neutral-200 bg-paper px-3 py-2 pl-8 text-[14px] text-neutral-800 placeholder:text-neutral-400 outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-200/40 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100 dark:placeholder:text-neutral-500 dark:focus:border-amber-700 dark:focus:ring-amber-800/40"
             />
             <span
@@ -3416,7 +3562,87 @@ function BookmarksPanel({
           paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 96px)",
         }}
       >
-        {bookmarks.length === 0 && (
+        {view === "highlights" && highlightGroups.length === 0 && (
+          <li className="mx-auto mt-4 max-w-xs rounded-2xl border border-neutral-200 bg-paper px-4 py-6 text-center shadow-[0_1px_2px_rgba(0,0,0,0.04),inset_0_1px_0_rgba(255,255,255,0.6)] dark:border-neutral-800 dark:bg-neutral-900 dark:shadow-[0_1px_2px_rgba(0,0,0,0.2),inset_0_1px_0_rgba(255,255,255,0.04)]">
+            <div className="text-[13px] font-semibold text-neutral-700 dark:text-neutral-200">
+              {q ? `No highlights match "${query.trim()}"` : "No highlights yet"}
+            </div>
+            <p className="mt-1 text-[11px] text-neutral-500 dark:text-neutral-400">
+              {q
+                ? "Try a different book or reference."
+                : "Long-press a verse on the Bible page to pick a highlighter, then mark it. Your marks land here."}
+            </p>
+          </li>
+        )}
+        {view === "highlights" && highlightGroups.map((g) => {
+          const tone = bookColor(g.book);
+          const fullName = OSIS_TO_BOOK_NAME[g.book] ?? g.book;
+          const cardStyle: React.CSSProperties = {
+            backgroundImage: dark
+              ? "linear-gradient(to bottom, #3a3a44, #1f1f25)"
+              : "linear-gradient(to bottom, #ffffff, #e9ecf2)",
+            boxShadow: [
+              "0 6px 18px rgba(0,0,0,0.22)",
+              "inset 0 1.5px 0 rgba(255,255,255,0.45)",
+              dark
+                ? "0 0 0 1px rgba(255,255,255,0.08)"
+                : "0 0 0 1px rgba(0,0,0,0.06)",
+            ].join(", "),
+          };
+          return (
+            <li key={g.verseId} className="rounded-2xl" style={cardStyle}>
+              <button
+                onClick={() =>
+                  onPick({
+                    book: g.book,
+                    chapter: g.chapter,
+                    verse: g.verse,
+                    updated_at: g.latestAt,
+                  } as BookmarkOut)
+                }
+                className="flex w-full items-center gap-3 px-3 py-2.5 text-left"
+                aria-label={`Jump to ${fullName} ${g.chapter}:${g.verse}`}
+              >
+                <span
+                  className={`grid h-10 w-10 place-items-center rounded-full ${tone.text} shadow-[0_2px_6px_rgba(0,0,0,0.18),inset_0_1px_0_rgba(255,255,255,0.45)]`}
+                  style={{
+                    background:
+                      "linear-gradient(135deg, rgba(255,255,255,0.85), rgba(0,0,0,0.06))",
+                  }}
+                >
+                  <svg
+                    width="18"
+                    height="18"
+                    viewBox="0 0 24 24"
+                    fill="currentColor"
+                    aria-hidden
+                  >
+                    <path d="M4 4h12l4 6-4 6H4z" />
+                  </svg>
+                </span>
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-[15px] font-semibold text-neutral-900 dark:text-neutral-50">
+                    {fullName} {g.chapter}:{g.verse}
+                  </div>
+                  <div className="mt-0.5 flex flex-wrap items-center gap-1">
+                    {g.rows.slice(0, 8).map((a) => (
+                      <span
+                        key={a.id}
+                        className={`h-2.5 w-2.5 rounded-full ${SWATCH_FILL[a.color] ?? ""}`}
+                        title={`${a.kind} · ${a.color}`}
+                        aria-hidden
+                      />
+                    ))}
+                    <span className="ml-1 text-[11px] text-neutral-500 dark:text-neutral-400">
+                      {g.rows.length} mark{g.rows.length === 1 ? "" : "s"}
+                    </span>
+                  </div>
+                </div>
+              </button>
+            </li>
+          );
+        })}
+        {view === "bookmarks" && bookmarks.length === 0 && (
           <li className="mx-auto mt-4 max-w-xs rounded-2xl border border-neutral-200 bg-paper px-4 py-6 text-center shadow-[0_1px_2px_rgba(0,0,0,0.04),inset_0_1px_0_rgba(255,255,255,0.6)] dark:border-neutral-800 dark:bg-neutral-900 dark:shadow-[0_1px_2px_rgba(0,0,0,0.2),inset_0_1px_0_rgba(255,255,255,0.04)]">
             <span
               className="mx-auto mb-2 grid h-10 w-10 place-items-center rounded-full bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-200"
@@ -3433,12 +3659,12 @@ function BookmarksPanel({
             </p>
           </li>
         )}
-        {bookmarks.length > 0 && visible.length === 0 && (
+        {view === "bookmarks" && bookmarks.length > 0 && visible.length === 0 && (
           <li className="px-1 text-[12px] text-neutral-500 dark:text-neutral-400">
             No bookmarks match “{query.trim()}”.
           </li>
         )}
-        {visible.map((b) => {
+        {view === "bookmarks" && visible.map((b) => {
           const tone = bookColor(b.book);
           const fullBookName = OSIS_TO_BOOK_NAME[b.book] ?? b.book;
           // Same 3D recipe used in chat bubbles + Settings cards:
