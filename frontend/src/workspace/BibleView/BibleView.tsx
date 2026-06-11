@@ -1872,9 +1872,9 @@ function BibleSearchSheet({
               onPointerCancel={cancelAiHold}
               disabled={aiSearching}
               style={{ touchAction: "manipulation" }}
-              className={`inline-flex min-h-[36px] items-center gap-1.5 self-start rounded-full border border-violet-400 bg-violet-100 px-3 py-1.5 text-[12px] font-semibold text-violet-900 shadow-[0_1px_2px_rgba(0,0,0,0.05),inset_0_1px_0_rgba(255,255,255,0.5)] transition disabled:opacity-60 dark:border-violet-600 dark:bg-violet-900/60 dark:text-violet-100 dark:shadow-[0_1px_2px_rgba(0,0,0,0.40),inset_0_1px_0_rgba(255,255,255,0.06)] ${
+              className={`inline-flex min-h-[36px] items-center gap-1.5 self-start rounded-full border border-amber-300 bg-amber-100 px-3 py-1.5 text-[12px] font-semibold text-amber-900 shadow-[0_1px_2px_rgba(0,0,0,0.05),inset_0_1px_0_rgba(255,255,255,0.5)] transition disabled:opacity-60 dark:border-amber-700 dark:bg-amber-900/40 dark:text-amber-100 dark:shadow-[0_1px_2px_rgba(0,0,0,0.40),inset_0_1px_0_rgba(255,255,255,0.06)] ${
                 aiHolding
-                  ? "scale-[0.96] bg-violet-200 ring-2 ring-violet-500/70 dark:bg-violet-800 dark:ring-violet-400/70"
+                  ? "scale-[0.96] bg-amber-200 ring-2 ring-amber-500/70 dark:bg-amber-800 dark:ring-amber-400/70"
                   : ""
               }`}
             >
