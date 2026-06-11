@@ -89,6 +89,14 @@ async function auditOne(vp, token) {
     await page.goto(url, { waitUntil: "networkidle", timeout: 15000 }).catch(() => {});
     // Give React + Vite HMR + queries a beat.
     await page.waitForTimeout(1500);
+    // Scroll the main reading pane to the END so the screenshot
+    // shows the bottom-clearance behavior (which is what gets clipped
+    // by the floating nav, not the top-of-chapter render).
+    await page.evaluate(() => {
+      const el = document.querySelector('[class*="overflow-y-auto"]');
+      if (el) el.scrollTop = el.scrollHeight;
+    }).catch(() => {});
+    await page.waitForTimeout(400);
 
     const m = await page.evaluate(() => ({
       scrollW: document.documentElement.scrollWidth,

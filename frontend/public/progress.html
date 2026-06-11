@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#0b0b0c" />
+<title>Bible IU — session progress</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0b0b0c;
+    --panel: #16161a;
+    --panel-2: #1d1d22;
+    --line: #2a2a30;
+    --ink: #e9e9ee;
+    --ink-dim: #a4a4ad;
+    --ink-soft: #71717a;
+    --accent: #fbbf24;
+    --accent-soft: #f59e0b33;
+    --green: #34d399;
+    --pink: #f472b6;
+    --blue: #60a5fa;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--ink); }
+  body {
+    font: 16px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", system-ui, sans-serif;
+    padding: max(env(safe-area-inset-top), 20px) 16px max(env(safe-area-inset-bottom), 24px);
+    max-width: 760px;
+    margin: 0 auto;
+  }
+  header { padding: 8px 0 18px; border-bottom: 1px solid var(--line); margin-bottom: 18px; }
+  h1 { font-size: 22px; margin: 0 0 4px; letter-spacing: -0.01em; }
+  .meta { color: var(--ink-soft); font-size: 12px; letter-spacing: 0.02em; }
+  h2 {
+    font-size: 16px; margin: 24px 0 10px; letter-spacing: 0.01em;
+    display: flex; align-items: center; gap: 8px;
+  }
+  h2 .tag {
+    font-size: 10px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;
+    padding: 3px 7px; border-radius: 999px; background: var(--accent-soft); color: var(--accent);
+  }
+  .card {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+    padding: 14px 16px; margin: 0 0 12px;
+  }
+  .card h3 { margin: 0 0 6px; font-size: 15px; font-weight: 600; }
+  .card p, .card li { color: var(--ink-dim); font-size: 14px; }
+  .card ul { margin: 6px 0 0; padding-left: 18px; }
+  .card code, .commit code {
+    font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+    background: var(--panel-2); padding: 1px 6px; border-radius: 5px; color: var(--ink);
+  }
+  .commit {
+    display: inline-flex; align-items: center; gap: 6px; margin-top: 8px;
+    color: var(--ink-soft); font-size: 12px;
+  }
+  .dot { width: 6px; height: 6px; border-radius: 999px; background: var(--green); display: inline-block; }
+  .dot.pink { background: var(--pink); }
+  .dot.blue { background: var(--blue); }
+  .dot.amber { background: var(--accent); }
+  .row { display: flex; gap: 10px; align-items: center; }
+  .footer {
+    margin-top: 26px; padding-top: 16px; border-top: 1px solid var(--line);
+    color: var(--ink-soft); font-size: 12px;
+  }
+  .pill {
+    display: inline-block; padding: 2px 8px; border-radius: 999px;
+    background: var(--panel-2); color: var(--ink-dim); font-size: 11px;
+    border: 1px solid var(--line); margin-right: 6px;
+  }
+  .why { color: var(--ink-soft); font-size: 12px; margin-top: 6px; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>Session progress</h1>
+    <div class="meta">2026-06-10 · main · 2 commits pushed</div>
+  </header>
+
+  <h2><span class="dot blue"></span> Native iOS selection <span class="tag">verses</span></h2>
+
+  <div class="card">
+    <h3>Drop custom touch handlers, use iOS grab handles + magnifier</h3>
+    <p>The hand-rolled long-press / drag-to-refine code was fighting Apple's text selector. Now <code>BibleView</code> just listens for <code>selectionchange</code> and feeds the resulting range to the bottom annotation toolbar.</p>
+    <ul>
+      <li>~470 lines of custom handle / word-snap / live-tint code removed</li>
+      <li>Verse text re-enables <code>user-select: text</code> via scoped CSS</li>
+      <li>Toolbar closes → selection collapses</li>
+    </ul>
+    <div class="commit"><span class="dot"></span><code>10b09d4</code></div>
+  </div>
+
+  <div class="card">
+    <h3>Multi-verse tool application</h3>
+    <p>Selections that cross verses now apply the chosen tool to every verse the selection touches.</p>
+    <ul>
+      <li>First verse: from <code>startOffset</code> to end-of-text</li>
+      <li>Middle verses: the whole verse</li>
+      <li>Last verse: from <code>0</code> to <code>endOffset</code></li>
+      <li>Header collapses to <code>Gen 1:1–3</code> when book+chapter match, else <code>Gen 1:31 – Gen 2:3</code></li>
+      <li>Same-color tap toggles all of them off</li>
+    </ul>
+    <div class="commit"><span class="dot"></span><code>10b09d4</code></div>
+  </div>
+
+  <div class="card">
+    <h3>Chapter swipe gate during selection</h3>
+    <p>Dragging an iOS grab handle horizontally looked identical to the page-turn swipe and was stealing the gesture.</p>
+    <p class="why">Now <code>onChapterSwipeEnd</code> bails out when a non-collapsed selection exists.</p>
+    <div class="commit"><span class="dot"></span><code>10b09d4</code></div>
+  </div>
+
+  <h2><span class="dot pink"></span> Chat ghost-message fix <span class="tag">chat</span></h2>
+
+  <div class="card">
+    <h3>Room switch wipes per-room state</h3>
+    <p>Switching rooms briefly rendered the previous room's last bubble while the new fetch was in flight.</p>
+    <p class="why"><code>ChatPanel</code> now clears <code>messages</code>, <code>statuses</code>, and <code>memberCount</code> the instant <code>roomId</code> changes.</p>
+    <div class="commit"><span class="dot"></span><code>10b09d4</code></div>
+  </div>
+
+  <div class="card">
+    <h3>Raw-CoT scratchpad strip (v1 → v2)</h3>
+    <p>Some chat rows briefly carry the deepseek pre-parse output — <code>note_to_append</code>, <code>S&lt;N&gt; says</code>, <code>Answer: "..."</code> — before an update replaces the body.</p>
+    <ul>
+      <li><strong>v1</strong> required a strict end-anchored <code>Answer: "..."</code> shape — too picky, ghosts slipped through</li>
+      <li><strong>v2</strong> tags as ghost on any of: <code>note_to_append</code>, <code>S&lt;N&gt; says</code>, <code>For note_to_append</code>, or 40+ char preamble before <code>Answer: "</code></li>
+      <li>Ghost rows with no extractable polished answer are <em>hidden entirely</em>, not just stripped</li>
+      <li>Fallback extractor: everything after the last <code>Answer:</code> when no quoted segment is found</li>
+    </ul>
+    <div class="commit"><span class="dot pink"></span><code>dd069e4</code></div>
+  </div>
+
+  <div class="card">
+    <h3>Service worker bump</h3>
+    <p>Cache key <code>bible-iu-shell-v41</code> → <code>v42</code> so the PWA picks up the new strip on next launch.</p>
+    <div class="commit"><span class="dot pink"></span><code>dd069e4</code></div>
+  </div>
+
+  <h2><span class="dot amber"></span> Known follow-ups</h2>
+  <div class="card">
+    <ul>
+      <li>The raw-CoT strip is patching the symptom. Find the backend writer that puts deepseek pre-parse text into a chat row and stop it at the source.</li>
+      <li>If you still see a ghost shape that slips through, grab the body text from Safari's network tab — I'll widen the matcher to whatever pattern got past.</li>
+      <li>Task #213 — SMTP smoke test, still parked on the real Gmail App Password.</li>
+    </ul>
+  </div>
+
+  <div class="footer">
+    <span class="pill">main</span>
+    <span class="pill">10b09d4</span>
+    <span class="pill">dd069e4</span>
+  </div>
+</body>
+</html>
