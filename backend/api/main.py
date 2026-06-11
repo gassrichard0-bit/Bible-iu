@@ -81,7 +81,7 @@ from .auth import require_password
 from .auth_users import require_user, router as auth_router, resolve_user
 from .push import fanout_to_room, send_push_to_user, vapid_public_key
 from .observability import configure_logging, configure_sentry
-from .rate_limit import rate_limit, tts_rate_limit
+from .rate_limit import rate_limit, search_rate_limit, tts_rate_limit
 from . import chat_hub, reading_plan_scheduler, reading_plans, yjs_sync
 from .schemas import (
     AgentNoteAppended,
@@ -3241,7 +3241,7 @@ class ChatSearchHit(BaseModel):
 @app.get(
     "/chat/search",
     response_model=list[ChatSearchHit],
-    dependencies=[Depends(require_password), Depends(rate_limit)],
+    dependencies=[Depends(require_password), Depends(search_rate_limit)],
 )
 def chat_search(
     q: str,
@@ -3388,7 +3388,7 @@ def notes_list_all(
 @app.get(
     "/notes/search",
     response_model=list[NoteSearchHit],
-    dependencies=[Depends(require_password), Depends(rate_limit)],
+    dependencies=[Depends(require_password), Depends(search_rate_limit)],
 )
 def notes_search(
     q: str,
@@ -3512,7 +3512,7 @@ class BibleSearchHit(BaseModel):
 @app.get(
     "/bible/search",
     response_model=list[BibleSearchHit],
-    dependencies=[Depends(require_password), Depends(rate_limit)],
+    dependencies=[Depends(require_password), Depends(search_rate_limit)],
 )
 def bible_search(
     q: str,
@@ -3681,7 +3681,7 @@ class AdvancedSearchRequest(BaseModel):
 @app.post(
     "/bible/advanced_search",
     response_model=list[AdvancedSearchHit],
-    dependencies=[Depends(require_password), Depends(rate_limit)],
+    dependencies=[Depends(require_password), Depends(search_rate_limit)],
 )
 def bible_advanced_search(
     payload: AdvancedSearchRequest,

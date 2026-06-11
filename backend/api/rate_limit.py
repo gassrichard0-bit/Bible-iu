@@ -33,9 +33,18 @@ _BURST = float(os.environ.get("BIBLE_IU_RATE_BURST", "3"))   # short burst
 # 120/min / burst 30 is fine for read-aloud sessions.
 _TTS_RATE = float(os.environ.get("BIBLE_IU_TTS_RATE_PER_MIN", "120"))
 _TTS_BURST = float(os.environ.get("BIBLE_IU_TTS_RATE_BURST", "30"))
+# Bible search bucket. Same rationale as TTS: users naturally try a
+# handful of search variations to refine a query (esp. the AI fragment
+# search where the first guess often needs to be reworded). 6/min was
+# instantly exhausted on the second or third refinement and the user
+# saw 429s. Both /bible/search (FTS5) and /bible/advanced_search
+# (DeepSeek-assisted) share this bucket.
+_SEARCH_RATE = float(os.environ.get("BIBLE_IU_SEARCH_RATE_PER_MIN", "60"))
+_SEARCH_BURST = float(os.environ.get("BIBLE_IU_SEARCH_RATE_BURST", "15"))
 
 _buckets: dict[str, _Bucket] = {}
 _tts_buckets: dict[str, _Bucket] = {}
+_search_buckets: dict[str, _Bucket] = {}
 _lock = threading.Lock()
 
 
@@ -99,4 +108,24 @@ def tts_rate_limit(request: Request) -> None:
         raise HTTPException(
             status_code=429,
             detail=f"Voice reader throttled (limit ~{int(_TTS_RATE)}/min).",
+        )
+
+
+def search_rate_limit(request: Request) -> None:
+    """Search bucket for /bible/search and /bible/advanced_search.
+    Search is a quality-of-life endpoint — users naturally try a few
+    variations to refine a query, especially with the AI fragment
+    search. Tight 6/min bucket was bouncing the user off after the
+    third attempt; 60/min / burst 15 covers normal session use."""
+    token = request.headers.get("x-session-token", "").strip()
+    key = f"user:{token}" if token else f"ip:{_client_ip(request)}"
+    if not _take(
+        key,
+        buckets=_search_buckets,
+        rate_per_min=_SEARCH_RATE,
+        burst=_SEARCH_BURST,
+    ):
+        raise HTTPException(
+            status_code=429,
+            detail=f"Search throttled (limit ~{int(_SEARCH_RATE)}/min).",
         )
