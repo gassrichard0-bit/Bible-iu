@@ -80,7 +80,12 @@ from ..data.models import (
 from ..data.repos import UserNoteRepository
 from .auth import require_password
 from .auth_users import require_user, router as auth_router, resolve_user
-from .push import fanout_to_room, send_push_to_user, vapid_public_key
+from .push import (
+    fanout_to_room,
+    send_push_to_user,
+    send_room_push_to_user,
+    vapid_public_key,
+)
 from .observability import configure_logging, configure_sentry
 from .rate_limit import rate_limit, search_rate_limit, tts_rate_limit
 from . import chat_hub, reading_plan_scheduler, reading_plans, yjs_sync
@@ -2895,8 +2900,11 @@ def post_note_mention(
             # The unique constraint fires; treat it as "already notified."
             session.rollback()
             continue
-        send_push_to_user(
+        # Same delivery path as chat / note-create fanout — respects
+        # the recipient's room-mute and quiet-hours preferences.
+        count = send_room_push_to_user(
             session,
+            room_id,
             target_user.id,
             {
                 "kind": "note_mention",
@@ -2907,7 +2915,8 @@ def post_note_mention(
                 "url": f"/?room={room_id}",
             },
         )
-        sent += 1
+        if count > 0:
+            sent += 1
     return {"sent": sent}
 
 

@@ -197,6 +197,31 @@ def _is_quiet_hours_for(user) -> bool:
         return False
 
 
+def send_room_push_to_user(
+    session: Session,
+    room_id: str,
+    user_id: str,
+    payload: dict[str, Any],
+) -> int:
+    """Push `payload` to a single member of `room_id`, applying the
+    same mute + quiet-hours filters that `fanout_to_room` uses for
+    bulk fanout. Used by the @mention endpoint so tag notifications
+    respect the recipient's room-mute and quiet-hours preferences the
+    same way chat / note-create pushes do. Returns the count of
+    successful sends (0 if the user is muted, in quiet hours, or
+    has no subscriptions on file)."""
+    from ..data.models import User  # local — cycles out
+
+    recipient = session.get(User, user_id)
+    if recipient is None:
+        return 0
+    if _is_room_muted_for(recipient, room_id):
+        return 0
+    if _is_quiet_hours_for(recipient):
+        return 0
+    return send_push_to_user(session, user_id, payload)
+
+
 def fanout_to_room(
     session: Session,
     room_id: str,
