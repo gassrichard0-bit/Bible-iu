@@ -10,6 +10,7 @@
  * decides when to open, what to filter by, and what to do on select.
  */
 import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import type { RoomMemberOut } from "../../lib/api";
 import { api } from "../../lib/api";
 
@@ -127,28 +128,29 @@ export function MentionPopover({
       };
 
   if (matches.length === 0) {
-    return (
+    return createPortal(
       <div
         role="listbox"
         aria-label="Mention members"
         style={style}
-        className="z-50 rounded-2xl border border-neutral-200 bg-paper p-2 shadow-[0_8px_28px_rgba(0,0,0,0.18),inset_0_1px_0_rgba(255,255,255,0.6)] dark:border-neutral-700 dark:bg-neutral-900 dark:shadow-[0_8px_28px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.10)]"
+        className="z-[9999] rounded-2xl border border-neutral-200 bg-paper p-2 shadow-[0_8px_28px_rgba(0,0,0,0.18),inset_0_1px_0_rgba(255,255,255,0.6)] dark:border-neutral-700 dark:bg-neutral-900 dark:shadow-[0_8px_28px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.10)]"
       >
         <div className="px-2 py-1.5 text-[12px] text-neutral-500 dark:text-neutral-400">
           {q
             ? `No member matches "${q}"`
             : "No one else in this room yet"}
         </div>
-      </div>
+      </div>,
+      document.body,
     );
   }
 
-  return (
+  return createPortal(
     <div
       role="listbox"
       aria-label="Mention members"
       style={style}
-      className="z-50 grid gap-1 rounded-2xl border border-neutral-200 bg-paper p-1.5 shadow-[0_8px_28px_rgba(0,0,0,0.18),inset_0_1px_0_rgba(255,255,255,0.6)] dark:border-neutral-700 dark:bg-neutral-900 dark:shadow-[0_8px_28px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.10)]"
+      className="z-[9999] grid gap-1 rounded-2xl border border-neutral-200 bg-paper p-1.5 shadow-[0_8px_28px_rgba(0,0,0,0.18),inset_0_1px_0_rgba(255,255,255,0.6)] dark:border-neutral-700 dark:bg-neutral-900 dark:shadow-[0_8px_28px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.10)]"
     >
       {matches.map((m, i) => (
         <button
@@ -183,7 +185,8 @@ export function MentionPopover({
           </span>
         </button>
       ))}
-    </div>
+    </div>,
+    document.body,
   );
 }
 
