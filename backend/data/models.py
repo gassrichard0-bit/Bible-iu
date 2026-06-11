@@ -219,6 +219,22 @@ class NoteLike(Base, TimestampMixin):
     kind: Mapped[str] = mapped_column(String, default="heart", index=True)
 
 
+class NoteMention(Base, TimestampMixin):
+    """One row per (note, mentioned-user) the first time someone is
+    tagged in a note body with `@handle`. The unique constraint dedupes
+    so the frontend can fire on every save — repeated POSTs for the
+    same (note, user) are a no-op. `room_id` is duplicated for the
+    membership check on every read/write."""
+    __tablename__ = "note_mentions"
+    __table_args__ = (
+        UniqueConstraint("note_id", "user_id", name="uq_note_mentions_note_user"),
+    )
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    note_id: Mapped[str] = mapped_column(ForeignKey("notes.id"), index=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    room_id: Mapped[str] = mapped_column(ForeignKey("rooms.id"), index=True)
+
+
 class NoteComment(Base, TimestampMixin):
     """Flat comments on a group note. Threading isn't supported by
     design — the spec leans toward humility, not Reddit-style debate

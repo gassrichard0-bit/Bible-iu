@@ -2240,6 +2240,8 @@ function InlineNotePanel({
               compact
               roomId={roomId}
               canvasDataUrl={n.canvas_data_url}
+              noteId={n.id}
+              noteScope={n.scope}
             />
             {socialNotesEnabled &&
               roomId &&
@@ -2465,6 +2467,8 @@ function ChapterNotePanel({
               compact
               roomId={roomId}
               canvasDataUrl={n.canvas_data_url}
+              noteId={n.id}
+              noteScope={n.scope}
             />
             {socialNotesEnabled &&
               roomId &&

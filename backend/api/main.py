@@ -63,6 +63,7 @@ from ..data.models import (
     Note,
     NoteComment,
     NoteLike,
+    NoteMention,
     PushSubscription,
     ReadingPlanEnrollment,
     ReadingPlanProgress,
@@ -2811,6 +2812,103 @@ def _require_group_note(
         # to a probing attacker.
         raise HTTPException(404, "note not found in this room")
     return row
+
+
+class NoteMentionBody(BaseModel):
+    """Handles the frontend extracted from the note body (e.g. @willy).
+    Capped at 10 to bound the resolution + push cost per request; the
+    backend silently drops anything past that. Personal notes never
+    notify (rule-guide §12.1), so the endpoint refuses non-group note
+    ids via _require_group_note."""
+    handles: list[str]
+
+
+@app.post(
+    "/rooms/{room_id}/notes/{note_id}/mention",
+    dependencies=[Depends(require_password)],
+)
+def post_note_mention(
+    room_id: str,
+    note_id: str,
+    payload: NoteMentionBody,
+    session: Session = Depends(db),
+    user_id: str = Depends(current_user_id),
+) -> dict:
+    """Resolve each handle to a room member, then insert one
+    NoteMention row per (note, user) the FIRST time they're tagged.
+    Repeated POSTs are no-ops thanks to the unique constraint. Each
+    new mention fires a Web Push notification so the tagged member
+    can jump back into the room and find the note.
+
+    Empty list / no resolved users / all-already-notified → returns
+    {"sent": 0} silently. Only group notes are accepted (personal
+    notes never reach others by design)."""
+    _require_member(session, room_id, user_id)
+    _require_group_note(session, note_id, room_id)
+    raw = (payload.handles or [])[:10]
+    handles = sorted({h.strip().lower() for h in raw if h and h.strip()})
+    if not handles:
+        return {"sent": 0}
+    # Resolve handles → user_ids that are actually room members.
+    members = (
+        session.query(User, RoomMember)
+        .join(RoomMember, RoomMember.user_id == User.id)
+        .filter(RoomMember.room_id == room_id)
+        .filter(func.lower(User.handle).in_(handles))
+        .all()
+    )
+    resolved = [(u, m) for (u, m) in members if u.id != user_id]
+    if not resolved:
+        return {"sent": 0}
+    author = session.get(User, user_id)
+    room = session.get(Room, room_id)
+    sender_name = (
+        (author.display_name or author.handle) if author else "Someone"
+    )
+    room_name = room.name if room else "Bible IU"
+    sent = 0
+    for (target_user, _member) in resolved:
+        # Insert dedupe row; bail this iteration if the user has already
+        # been notified for this note.
+        existing = (
+            session.query(NoteMention)
+            .filter(
+                NoteMention.note_id == note_id,
+                NoteMention.user_id == target_user.id,
+            )
+            .first()
+        )
+        if existing is not None:
+            continue
+        session.add(
+            NoteMention(
+                id=str(uuid.uuid4()),
+                note_id=note_id,
+                user_id=target_user.id,
+                room_id=room_id,
+            )
+        )
+        try:
+            session.commit()
+        except Exception:
+            # Race: another concurrent request inserted the same row.
+            # The unique constraint fires; treat it as "already notified."
+            session.rollback()
+            continue
+        send_push_to_user(
+            session,
+            target_user.id,
+            {
+                "kind": "note_mention",
+                "room_id": room_id,
+                "room_name": room_name,
+                "sender": sender_name,
+                "body": f"{sender_name} tagged you in a note",
+                "url": f"/?room={room_id}",
+            },
+        )
+        sent += 1
+    return {"sent": sent}
 
 
 @app.get(

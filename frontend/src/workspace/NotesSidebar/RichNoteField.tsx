@@ -35,6 +35,7 @@ import Placeholder from "@tiptap/extension-placeholder";
 import { ClipIcon } from "../../lib/Icons";
 import Image from "@tiptap/extension-image";
 import { api, getPassword, getSessionToken } from "../../lib/api";
+import { useNoteMentions } from "./useNoteMentions";
 
 const ALLOWED_TAGS = new Set([
   "B",
@@ -137,6 +138,13 @@ interface Props {
    *  the text body when present and leave drawing to the native app.
    *  Same Yjs Y.Doc carries it, so updates land here automatically. */
   canvasDataUrl?: string;
+  /** When set together with `noteScope === "group"`, the field
+   *  watches the body for `@handle` mentions and POSTs them to the
+   *  backend so the tagged room member gets a Web Push. The backend
+   *  dedupes per (note, user) so this is safe to call on every edit.
+   *  Drafts (no noteId) silently no-op. */
+  noteId?: string;
+  noteScope?: "personal" | "group";
 }
 
 export function RichNoteField({
@@ -149,7 +157,13 @@ export function RichNoteField({
   roomId,
   readOnly,
   canvasDataUrl,
+  noteId,
+  noteScope,
 }: Props) {
+  // Watch the body for @handle mentions and push notify when a new
+  // member is tagged. The hook is a no-op for personal-scope notes
+  // and for the draft composer (no noteId yet).
+  useNoteMentions(noteScope, roomId, noteId, value);
   const [focused, setFocused] = useState(false);
 
   const editor = useEditor({

@@ -768,6 +768,18 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify({ name }),
     }),
+  /** Tell the server which `@handle`s appear in a group note's body.
+   *  Backend resolves to room members, dedupes per (note, user) via
+   *  the unique constraint on note_mentions, and Web-Pushes each NEW
+   *  mention. Safe to call on every save — repeats are no-ops. */
+  noteMention: (room_id: string, note_id: string, handles: string[]) =>
+    jsonFetch<{ sent: number }>(
+      `/rooms/${room_id}/notes/${note_id}/mention`,
+      {
+        method: "POST",
+        body: JSON.stringify({ handles }),
+      },
+    ),
   roomMarkRead: (room_id: string) =>
     jsonFetch<{ unread_count: number }>(`/rooms/${room_id}/read`, {
       method: "POST",
