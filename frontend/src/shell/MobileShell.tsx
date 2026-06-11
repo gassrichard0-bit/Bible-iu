@@ -2113,6 +2113,27 @@ export function MobileShell({
                   pinnedRoomIds: nextPinned,
                 });
               }}
+              onLeaveOrDelete={async (id) => {
+                const room = rooms.find((r) => r.id === id);
+                if (!room) return;
+                const isAdmin = room.role === "admin" && room.type === "group";
+                const label = isAdmin ? "Delete" : "Leave";
+                const msg = isAdmin
+                  ? `Delete "${room.name}"? Members lose access immediately and the chat history is wiped. This can't be undone.`
+                  : `Leave "${room.name}"? You'll need a fresh invite to come back.`;
+                if (!confirm(msg)) return;
+                try {
+                  if (isAdmin) {
+                    await api.deleteRoom(id);
+                  } else {
+                    await api.leaveRoom(id);
+                  }
+                  setRooms((prev) => prev.filter((r) => r.id !== id));
+                  if (activeId === id) setActiveId("");
+                } catch (e) {
+                  alert(`Couldn't ${label.toLowerCase()} room: ${(e as Error).message}`);
+                }
+              }}
               onNewRoom={() => setNewRoomOpen(true)}
             />
           </aside>
@@ -2689,6 +2710,7 @@ function RoomsRailBody({
   onPick,
   onTogglePin,
   onToggleHide,
+  onLeaveOrDelete,
   onNewRoom,
 }: {
   rooms: RoomItem[];
@@ -2700,6 +2722,9 @@ function RoomsRailBody({
   onPick: (id: string) => void;
   onTogglePin: (id: string) => void;
   onToggleHide: (id: string) => void;
+  /** Swipe-to-reveal destructive action. For admins of a group room
+   *  this deletes the room; for everyone else it leaves the room. */
+  onLeaveOrDelete: (id: string) => void;
   onNewRoom: () => void;
 }) {
   const mutedSet = new Set(mutedRoomIds);
@@ -2826,6 +2851,7 @@ function RoomsRailBody({
               onPick={onPick}
               onTogglePin={onTogglePin}
               onToggleHide={onToggleHide}
+              onLeaveOrDelete={onLeaveOrDelete}
             />
           ))}
         </RailSection>
@@ -2842,6 +2868,7 @@ function RoomsRailBody({
               onPick={onPick}
               onTogglePin={onTogglePin}
               onToggleHide={onToggleHide}
+              onLeaveOrDelete={onLeaveOrDelete}
             />
           ))}
         </RailSection>
@@ -2858,6 +2885,7 @@ function RoomsRailBody({
               onPick={onPick}
               onTogglePin={onTogglePin}
               onToggleHide={onToggleHide}
+              onLeaveOrDelete={onLeaveOrDelete}
             />
           ))}
         </RailSection>
@@ -2886,6 +2914,7 @@ function RoomsRailBody({
               onPick={onPick}
               onTogglePin={onTogglePin}
               onToggleHide={onToggleHide}
+              onLeaveOrDelete={onLeaveOrDelete}
             />
           ))}
         </RailSection>
@@ -2914,12 +2943,12 @@ function RailSection({
   );
 }
 
-// Reveal width when the row is swiped open — two 64px action wells
-// (pin + hide). Matches iOS Messages' swipe-actions feel.
-const RAIL_SWIPE_REVEAL = 128;
+// Reveal width when the row is swiped open — three 64px action wells
+// (pin + hide + leave/delete). Matches iOS Messages' swipe-actions feel.
+const RAIL_SWIPE_REVEAL = 192;
 // Drag threshold past which release snaps the row to the open state
 // (otherwise it snaps back closed).
-const RAIL_SWIPE_OPEN_THRESHOLD = 56;
+const RAIL_SWIPE_OPEN_THRESHOLD = 84;
 
 function RailRow({
   room,
@@ -2931,6 +2960,7 @@ function RailRow({
   onPick,
   onTogglePin,
   onToggleHide,
+  onLeaveOrDelete,
 }: {
   room: RoomItem;
   active: boolean;
@@ -2941,6 +2971,7 @@ function RailRow({
   onPick: (id: string) => void;
   onTogglePin: (id: string) => void;
   onToggleHide: (id: string) => void;
+  onLeaveOrDelete: (id: string) => void;
 }) {
   const preview = (() => {
     const body = (room.lastMessageBody ?? "").trim();
@@ -3078,6 +3109,30 @@ function RailRow({
           {hidden ? <EyeIcon /> : <EyeOffIcon />}
           <span>{hidden ? "Unhide" : "Hide"}</span>
         </button>
+        {(() => {
+          // Admin of a group room sees Delete; everyone else (members,
+          // and either side of a DM) sees Leave. The hosting onLeaveOrDelete
+          // handler dispatches to api.deleteRoom or api.leaveRoom and
+          // updates local state.
+          const isAdmin = room.role === "admin" && room.type === "group";
+          const label = isAdmin ? "Delete" : "Leave";
+          return (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                setOpen(false);
+                setOffset(0);
+                onLeaveOrDelete(room.id);
+              }}
+              aria-label={`${label} room`}
+              className="flex h-full w-16 flex-col items-center justify-center gap-0.5 bg-red-500 text-[10px] font-semibold text-white transition hover:bg-red-600"
+            >
+              {isAdmin ? <TrashIcon /> : <ExitIcon />}
+              <span>{label}</span>
+            </button>
+          );
+        })()}
       </div>
       {/* Foreground row content — slides over the action wells. The
           gradient lives on the wrapper; this layer is transparent so
@@ -3235,6 +3290,48 @@ function EyeOffIcon() {
       <path d="M10.6 6.1A9.6 9.6 0 0 1 12 6c6.5 0 10 7 10 7a17 17 0 0 1-3.1 4.3" />
       <path d="M6.5 7.6A17 17 0 0 0 2 12s3.5 7 10 7c1.4 0 2.7-.2 3.9-.7" />
       <path d="M9.9 9.9a3 3 0 0 0 4.2 4.2" />
+    </svg>
+  );
+}
+
+function TrashIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="14"
+      height="14"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <path d="M4 7h16" />
+      <path d="M10 11v6" />
+      <path d="M14 11v6" />
+      <path d="M6 7l1 13a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-13" />
+      <path d="M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2" />
+    </svg>
+  );
+}
+
+function ExitIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="14"
+      height="14"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3" />
+      <path d="M10 17l-5-5 5-5" />
+      <path d="M5 12h12" />
     </svg>
   );
 }
