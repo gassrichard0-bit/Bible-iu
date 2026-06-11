@@ -3032,7 +3032,7 @@ function RailRow({
       // inset top highlight + crisp outline ring). `mx-3 mb-2` gives
       // the cards breathing room so the shadow can read. `overflow
       // -hidden` keeps the swipe wells inside the rounded edge.
-      className={`relative mx-3 mb-2 overflow-hidden rounded-2xl bg-gradient-to-b from-white to-[#e9ecf2] shadow-[0_6px_18px_rgba(0,0,0,0.22),inset_0_1.5px_0_rgba(255,255,255,0.45),0_0_0_1px_rgba(0,0,0,0.06)] dark:from-[#3a3a44] dark:to-[#1f1f25] dark:shadow-[0_6px_18px_rgba(0,0,0,0.22),inset_0_1.5px_0_rgba(255,255,255,0.45),0_0_0_1px_rgba(255,255,255,0.08)] ${
+      className={`relative mx-3 mb-2 overflow-hidden rounded-2xl shadow-[0_6px_18px_rgba(0,0,0,0.22),0_0_0_1px_rgba(0,0,0,0.06)] dark:shadow-[0_6px_18px_rgba(0,0,0,0.22),0_0_0_1px_rgba(255,255,255,0.08)] ${
         active ? "ring-2 ring-amber-300/70 dark:ring-amber-500/40" : ""
       }`}
     >
@@ -3095,7 +3095,7 @@ function RailRow({
           touchAction: "pan-y",
           WebkitTapHighlightColor: "transparent",
         }}
-        className={`flex w-full cursor-pointer items-start gap-3 bg-transparent px-3 py-2.5 active:scale-[0.99] ${
+        className={`relative z-10 flex w-full cursor-pointer items-start gap-3 bg-gradient-to-b from-white to-[#e9ecf2] px-3 py-2.5 shadow-[inset_0_1.5px_0_rgba(255,255,255,0.45)] active:scale-[0.99] dark:from-[#3a3a44] dark:to-[#1f1f25] ${
           hidden ? "opacity-70" : ""
         }`}
         title={hidden ? "Hidden room · tap to open · swipe left for actions" : "Tap to open · swipe left for actions"}
