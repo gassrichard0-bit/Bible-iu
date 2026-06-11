@@ -34,7 +34,7 @@ import Underline from "@tiptap/extension-underline";
 import Placeholder from "@tiptap/extension-placeholder";
 import { ClipIcon } from "../../lib/Icons";
 import Image from "@tiptap/extension-image";
-import { api } from "../../lib/api";
+import { api, getPassword, getSessionToken } from "../../lib/api";
 
 const ALLOWED_TAGS = new Set([
   "B",
@@ -261,9 +261,18 @@ export function RichNoteField({
     setUploading(true);
     try {
       const out = await api.noteUploadImage(roomId, file);
-      // Vite proxies /api → backend; the serve_url starts with
-      // `/rooms/...` so we prefix it under `/api` for the browser.
-      const src = `/api${out.serve_url}`;
+      // Browser <img> loaders can't send custom headers, so the
+      // backend's note-image route accepts the same ?password=&session=
+      // query auth that chat images, room avatars, and profile use.
+      // Without this the <img> request 401s and the note shows a
+      // broken image. Same shape as chatImageWithAuth in MobileShell.
+      const base = `/api${out.serve_url}`;
+      const pw = getPassword();
+      const tok = getSessionToken();
+      const qs: string[] = [];
+      if (pw) qs.push(`password=${encodeURIComponent(pw)}`);
+      if (tok) qs.push(`session=${encodeURIComponent(tok)}`);
+      const src = qs.length ? `${base}?${qs.join("&")}` : base;
       editor.chain().focus().setImage({ src, alt: file.name }).run();
     } catch (e) {
       // eslint-disable-next-line no-console
