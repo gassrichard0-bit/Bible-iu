@@ -4,14 +4,18 @@
  * (h-[64px], rounded-[28px], same border/surface/shadow recipe) so
  * the strip reads as the same panel re-rendering its contents.
  *
- * Layout: [✕] [verse-label] · horizontally scrollable tool row · [⌫ Erase]
- * Tool row = highlight × 5 colors · underline × 5 · double × 5 ·
- * wavy × 5 · box × 5 · bold × 5 (with small kind-label chips between
- * groups so the user can find a kind at a glance).
+ * Layout: [✕] [verse-label] · [kind picker ▾] · 5 color swatches · [⌫]
+ *
+ * Per user request 2026-06-11: switched from a horizontally scrolling
+ * 6-kind × 5-color strip to a kind-picker + per-kind swatch row. Tap
+ * the kind pill to open a small menu listing every kind; tap a kind to
+ * make it active. Only the active kind's 5 colors are visible at any
+ * time — way less scrolling, no second-tap to find Wavy or Box.
  *
  * Triggered + dismissed by the shell; this component is purely the
  * presentation of the active target. Pass `target = null` to hide.
  */
+import { useEffect, useRef, useState } from "react";
 import type {
   AnnotationColor,
   AnnotationKind,
@@ -72,9 +76,9 @@ interface ToolSection {
 }
 
 const SECTIONS: ToolSection[] = [
-  { kind: "highlight", label: "High" },
-  { kind: "underline", label: "Und" },
-  { kind: "double_underline", label: "Dbl" },
+  { kind: "highlight", label: "Highlight" },
+  { kind: "underline", label: "Underline" },
+  { kind: "double_underline", label: "Double" },
   { kind: "wavy", label: "Wavy" },
   { kind: "box", label: "Box" },
   { kind: "bold", label: "Bold" },
@@ -90,6 +94,27 @@ export function AnnotationToolbar({
   onClose,
   onShare,
 }: Props) {
+  // Hooks must run unconditionally — early-return on null target moved
+  // below the hooks so React doesn't complain about hook count changes
+  // when the toolbar closes.
+  const [activeKind, setActiveKind] = useState<AnnotationKind>("highlight");
+  const [kindMenuOpen, setKindMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+
+  // Close the kind menu on outside tap. Pointerdown rather than click
+  // so the menu dismisses before any background tap re-opens the
+  // selector or fires another rule.
+  useEffect(() => {
+    if (!kindMenuOpen) return;
+    function onDown(e: PointerEvent) {
+      if (!menuRef.current) return;
+      if (menuRef.current.contains(e.target as Node)) return;
+      setKindMenuOpen(false);
+    }
+    document.addEventListener("pointerdown", onDown);
+    return () => document.removeEventListener("pointerdown", onDown);
+  }, [kindMenuOpen]);
+
   if (!target) return null;
 
   const current = (annotations || []).filter(
@@ -97,6 +122,8 @@ export function AnnotationToolbar({
   );
   const activeColorFor = (kind: AnnotationKind) =>
     current.find((a) => a.kind === kind)?.color;
+  const activeSection =
+    SECTIONS.find((s) => s.kind === activeKind) ?? SECTIONS[0];
 
   return (
     <div
@@ -124,93 +151,133 @@ export function AnnotationToolbar({
         {target.label ?? target.verseId}
       </span>
       <div
-        // `min-w-0` is the load-bearing class: without it, a flex
-        // item won't shrink below its content's natural width, so
-        // the tool row would push the panel wider than the tab bar
-        // instead of scrolling inside it.
-        className="flex h-full min-w-0 flex-1 items-center gap-2 overflow-x-auto overscroll-contain pr-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
-        style={{
-          WebkitMaskImage:
-            "linear-gradient(90deg, transparent 0, #000 12px, #000 calc(100% - 12px), transparent 100%)",
-          maskImage:
-            "linear-gradient(90deg, transparent 0, #000 12px, #000 calc(100% - 12px), transparent 100%)",
-        }}
+        ref={menuRef}
+        className="relative flex h-full min-w-0 flex-1 items-center gap-2 overflow-visible pr-1"
       >
-        {SECTIONS.map((s, i) => (
-          <ToolGroup
-            key={s.kind}
-            label={s.label}
-            divider={i > 0}
-            section={s}
-            activeColor={activeColorFor(s.kind)}
-            onTap={(color) => {
-              // Multi-verse selection — apply (or toggle-off) the
-              // chosen tool on every span the user dragged across.
-              if (target.spans && target.spans.length > 0) {
-                const allMatched =
-                  annotations &&
-                  target.spans.every((sp) =>
-                    annotations.some(
-                      (a) =>
-                        a.verse_id === sp.verseId &&
-                        a.kind === s.kind &&
-                        a.color === color &&
-                        a.start_offset === sp.selStart &&
-                        a.end_offset === sp.selEnd,
-                    ),
-                  );
-                if (allMatched && onClearById) {
-                  for (const sp of target.spans) {
-                    const matched = annotations!.find(
-                      (a) =>
-                        a.verse_id === sp.verseId &&
-                        a.kind === s.kind &&
-                        a.color === color &&
-                        a.start_offset === sp.selStart &&
-                        a.end_offset === sp.selEnd,
+        {/* Kind picker — the "hamburger" entry point. Tap it to open
+            a small menu listing every kind; tap a kind to make it
+            active. The swatch row to the right then shows only that
+            kind's 5 colors. */}
+        <button
+          type="button"
+          onClick={() => setKindMenuOpen((o) => !o)}
+          aria-expanded={kindMenuOpen}
+          aria-haspopup="menu"
+          className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-full border border-neutral-300 bg-paper px-2.5 text-[12px] font-semibold text-neutral-800 shadow-[0_1px_2px_rgba(0,0,0,0.05),inset_0_1px_0_rgba(255,255,255,0.55)] transition active:scale-[0.97] dark:border-neutral-600 dark:bg-neutral-800 dark:text-neutral-100 dark:shadow-[0_1px_2px_rgba(0,0,0,0.40),inset_0_1px_0_rgba(255,255,255,0.06)]"
+          title="Pick annotation tool"
+        >
+          <HamburgerIcon />
+          <span>{activeSection.label}</span>
+          <span aria-hidden className="text-[9px] opacity-60">
+            {kindMenuOpen ? "▴" : "▾"}
+          </span>
+        </button>
+
+        {/* Active kind's 5 color swatches — the row that does the work. */}
+        <div className="flex h-full min-w-0 flex-1 items-center gap-1.5 overflow-x-auto overscroll-contain [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+          {ANNOTATION_COLORS.map((c) => (
+            <Swatch
+              key={`${activeSection.kind}-${c}`}
+              color={c}
+              kind={activeSection.kind}
+              active={activeColorFor(activeSection.kind) === c}
+              onTap={() => {
+                const kind = activeSection.kind;
+                // Multi-verse selection — apply (or toggle-off) the
+                // chosen tool on every span the user dragged across.
+                if (target.spans && target.spans.length > 0) {
+                  const allMatched =
+                    annotations &&
+                    target.spans.every((sp) =>
+                      annotations.some(
+                        (a) =>
+                          a.verse_id === sp.verseId &&
+                          a.kind === kind &&
+                          a.color === c &&
+                          a.start_offset === sp.selStart &&
+                          a.end_offset === sp.selEnd,
+                      ),
                     );
-                    if (matched) onClearById(matched.id);
+                  if (allMatched && onClearById) {
+                    for (const sp of target.spans) {
+                      const matched = annotations!.find(
+                        (a) =>
+                          a.verse_id === sp.verseId &&
+                          a.kind === kind &&
+                          a.color === c &&
+                          a.start_offset === sp.selStart &&
+                          a.end_offset === sp.selEnd,
+                      );
+                      if (matched) onClearById(matched.id);
+                    }
+                  } else {
+                    for (const sp of target.spans) {
+                      onApply(sp.verseId, kind, c, {
+                        start: sp.selStart,
+                        end: sp.selEnd,
+                      });
+                    }
                   }
-                } else {
-                  for (const sp of target.spans) {
-                    onApply(sp.verseId, s.kind, color, {
-                      start: sp.selStart,
-                      end: sp.selEnd,
-                    });
+                  return;
+                }
+                const range =
+                  target.selStart != null && target.selEnd != null
+                    ? { start: target.selStart, end: target.selEnd }
+                    : null;
+                if (range) {
+                  const matched = annotations?.find(
+                    (a) =>
+                      a.verse_id === target.verseId &&
+                      a.kind === kind &&
+                      a.color === c &&
+                      a.start_offset === range.start &&
+                      a.end_offset === range.end,
+                  );
+                  if (matched && onClearById) {
+                    onClearById(matched.id);
+                  } else {
+                    onApply(target.verseId, kind, c, range);
                   }
-                }
-                return;
-              }
-              const range =
-                target.selStart != null && target.selEnd != null
-                  ? { start: target.selStart, end: target.selEnd }
-                  : null;
-              if (range) {
-                // Sub-verse path: if the user already has THIS exact
-                // (kind, color, range) marked, the tap reads as a
-                // toggle-off — same color = "undo." Different color
-                // at the same range replaces it via apply.
-                const matched = annotations?.find(
-                  (a) =>
-                    a.verse_id === target.verseId &&
-                    a.kind === s.kind &&
-                    a.color === color &&
-                    a.start_offset === range.start &&
-                    a.end_offset === range.end,
-                );
-                if (matched && onClearById) {
-                  onClearById(matched.id);
+                } else if (activeColorFor(kind) === c) {
+                  onClearKind(target.verseId, kind);
                 } else {
-                  onApply(target.verseId, s.kind, color, range);
+                  onApply(target.verseId, kind, c, null);
                 }
-              } else if (activeColorFor(s.kind) === color) {
-                onClearKind(target.verseId, s.kind);
-              } else {
-                onApply(target.verseId, s.kind, color, null);
-              }
-            }}
-          />
-        ))}
+              }}
+            />
+          ))}
+        </div>
+
+        {/* Kind menu — pops up from the picker pill. Each row has a
+            mini preview of what that kind looks like. Tap to switch. */}
+        {kindMenuOpen && (
+          <div
+            role="menu"
+            aria-label="Annotation kind"
+            className="absolute bottom-[calc(100%+8px)] left-0 z-50 grid w-[180px] gap-1 rounded-2xl border border-neutral-200 bg-paper p-2 shadow-[0_8px_28px_rgba(0,0,0,0.18),inset_0_1px_0_rgba(255,255,255,0.6)] dark:border-neutral-700 dark:bg-neutral-900 dark:shadow-[0_8px_28px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.10)]"
+          >
+            {SECTIONS.map((s) => (
+              <button
+                key={s.kind}
+                type="button"
+                role="menuitemradio"
+                aria-checked={s.kind === activeKind}
+                onClick={() => {
+                  setActiveKind(s.kind);
+                  setKindMenuOpen(false);
+                }}
+                className={`flex items-center gap-2 rounded-xl px-2 py-1.5 text-left text-[13px] transition ${
+                  s.kind === activeKind
+                    ? "bg-amber-100 font-semibold text-amber-900 dark:bg-amber-900/40 dark:text-amber-100"
+                    : "text-neutral-700 hover:bg-paper-soft dark:text-neutral-200 dark:hover:bg-neutral-800"
+                }`}
+              >
+                <KindPreviewSwatch kind={s.kind} />
+                <span className="flex-1">{s.label}</span>
+              </button>
+            ))}
+          </div>
+        )}
       </div>
       <button
         onClick={() => {
@@ -237,37 +304,79 @@ export function AnnotationToolbar({
   );
 }
 
-function ToolGroup({
-  label,
-  divider,
-  section,
-  activeColor,
-  onTap,
-}: {
-  label: string;
-  divider: boolean;
-  section: ToolSection;
-  activeColor: AnnotationColor | undefined;
-  onTap: (color: AnnotationColor) => void;
-}) {
-  return (
-    <div className="flex h-full shrink-0 items-center gap-1.5">
-      {divider && (
-        <div className="mx-0.5 h-7 w-px shrink-0 bg-neutral-300/70 dark:bg-neutral-700/70" />
-      )}
-      <span className="shrink-0 text-[9px] font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
-        {label}
+/** Tiny preview of what a kind looks like, shown next to its label in
+ *  the kind-picker menu. Just uses the yellow color for all kinds so
+ *  the preview reads as "the shape of this mark," not "the color." */
+function KindPreviewSwatch({ kind }: { kind: AnnotationKind }) {
+  const c: AnnotationColor = "yellow";
+  if (kind === "highlight") {
+    return <span className={`h-5 w-5 rounded-full ${SWATCH_FILL[c]}`} />;
+  }
+  if (kind === "underline") {
+    return (
+      <span className="grid h-5 w-5 place-items-end">
+        <span
+          className={`underline decoration-2 underline-offset-2 ${DECORATION_COLOR[c]}`}
+        >
+          U
+        </span>
       </span>
-      {ANNOTATION_COLORS.map((c) => (
-        <Swatch
-          key={`${section.kind}-${c}`}
-          color={c}
-          kind={section.kind}
-          active={activeColor === c}
-          onTap={() => onTap(c)}
-        />
-      ))}
-    </div>
+    );
+  }
+  if (kind === "double_underline") {
+    return (
+      <span className="grid h-5 w-5 place-items-end">
+        <span
+          className={`underline decoration-double decoration-2 underline-offset-2 ${DECORATION_COLOR[c]}`}
+        >
+          U
+        </span>
+      </span>
+    );
+  }
+  if (kind === "wavy") {
+    return (
+      <span className="grid h-5 w-5 place-items-end">
+        <span
+          className={`underline decoration-wavy decoration-2 underline-offset-2 ${DECORATION_COLOR[c]}`}
+        >
+          U
+        </span>
+      </span>
+    );
+  }
+  if (kind === "box") {
+    return (
+      <span
+        className={`h-5 w-5 rounded-md border-2 bg-white dark:bg-neutral-800 ${BOX_BORDER[c]}`}
+      />
+    );
+  }
+  // bold
+  return (
+    <span className="grid h-5 w-5 place-items-center">
+      <span className={`font-bold ${BOLD_TEXT[c]}`}>B</span>
+    </span>
+  );
+}
+
+function HamburgerIcon() {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <line x1="4" y1="7" x2="20" y2="7" />
+      <line x1="4" y1="12" x2="20" y2="12" />
+      <line x1="4" y1="17" x2="20" y2="17" />
+    </svg>
   );
 }
 
