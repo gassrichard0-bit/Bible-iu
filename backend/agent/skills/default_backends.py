@@ -401,6 +401,7 @@ class SqlRetriever:
                         text=f"[group note · {anchor_tag}{attribution}] {body}",
                         source_kind="group_note",
                         verse_refs=anchors,
+                        room_id=room_id,
                     )
                 )
 

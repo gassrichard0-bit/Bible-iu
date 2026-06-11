@@ -17,6 +17,12 @@ export interface ClaimOut {
   contradicts_scripture: boolean;
 }
 
+export interface AgentNoteAppended {
+  id: string;
+  body: string;
+  verse_anchor?: string | null;
+}
+
 export interface ReasoningResponse {
   decision: Decision;
   reasoning: string;
@@ -25,6 +31,7 @@ export interface ReasoningResponse {
   dropped: ClaimOut[];
   revision_hints: string[];
   refusal_reason: string | null;
+  note_appended?: AgentNoteAppended | null;
 }
 
 const PW_KEY = "bible-iu:password";

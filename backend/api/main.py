@@ -4598,6 +4598,14 @@ async def reason_ws(ws: WebSocket) -> None:
                 citation_translation=req.citation_translation,
             )
 
+            # Same gate the HTTP /reason endpoint applies: the user-facing
+            # toggle can ASK to bypass the citation engine, but whether the
+            # request honors it is the admin's call.
+            effective_bypass = (
+                req.bypass_citation_engine
+                and ag_settings.bypass_citation_engine_allowed
+            )
+
             queue: asyncio.Queue = asyncio.Queue()
 
             def on_stage(name: str, count=None) -> None:
@@ -4635,7 +4643,7 @@ async def reason_ws(ws: WebSocket) -> None:
                                     )
                                     for h in req.history
                                 ],
-                                bypass_citation_engine=req.bypass_citation_engine,
+                                bypass_citation_engine=effective_bypass,
                                 scope_kind=req.scope_kind,
                             ),
                             events,

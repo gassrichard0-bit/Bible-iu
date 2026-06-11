@@ -38,6 +38,11 @@ class RetrievedChunk:
     tradition: Optional[str] = None
     reliability: Optional[str] = None
     license: Optional[str] = None
+    # Populated for room-scoped sources (group notes, agent notes appended
+    # in a room) so `_r13_isolation` (rule-guide.MD §13.1) can detect a
+    # cross-room leak. Universal sources (scripture, lexicon, commentary,
+    # web) leave this as None.
+    room_id: Optional[str] = None
 
 
 @dataclass
