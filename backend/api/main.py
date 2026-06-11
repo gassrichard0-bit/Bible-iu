@@ -2819,6 +2819,125 @@ def _require_group_note(
     return row
 
 
+_MENTION_RE = __import__("re").compile(
+    r"(?:^|\s)@([a-zA-Z0-9_]{1,32})",
+)
+
+
+def _extract_mention_handles(text: str) -> list[str]:
+    """Pull `@handle` substrings out of a free-text body. Leading
+    whitespace or start-of-string before the `@` is required so
+    email addresses (foo@bar) don't match. Case-folded so the
+    resolver downstream can match against User.handle without per-
+    handle lower() work."""
+    if not text:
+        return []
+    seen: set[str] = set()
+    for m in _MENTION_RE.finditer(text):
+        seen.add(m.group(1).lower())
+    return sorted(seen)
+
+
+def _notify_note_mentions(
+    session: Session,
+    *,
+    room_id: str,
+    note_id: str,
+    author_user_id: str,
+    handles: list[str],
+    log: "__import__('logging').Logger | None" = None,
+) -> int:
+    """Resolve handles to room members, dedupe per (note_id, user_id)
+    against the NoteMention table, and Web-Push each new tag with the
+    same delivery semantics as chat / note-create fanout (room-mute +
+    quiet-hours respected). Returns the count of NEW notifications
+    that actually fired. Repeated calls are safe — already-notified
+    pairs are no-ops thanks to the unique constraint."""
+    import logging
+    if log is None:
+        log = logging.getLogger("bible_iu.notes")
+    if not handles:
+        return 0
+    handles = [h for h in handles if h]
+    members = (
+        session.query(User, RoomMember)
+        .join(RoomMember, RoomMember.user_id == User.id)
+        .filter(RoomMember.room_id == room_id)
+        .filter(func.lower(User.handle).in_(handles))
+        .all()
+    )
+    resolved = [(u, m) for (u, m) in members if u.id != author_user_id]
+    log.info(
+        "note_mention: room=%s note=%s author=%s handles=%s resolved=%d",
+        room_id, note_id, author_user_id, handles, len(resolved),
+    )
+    if not resolved:
+        return 0
+    author = session.get(User, author_user_id)
+    room = session.get(Room, room_id)
+    sender_name = (
+        (author.display_name or author.handle) if author else "Someone"
+    )
+    room_name = room.name if room else "Bible IU"
+    sent = 0
+    for (target_user, _member) in resolved:
+        existing = (
+            session.query(NoteMention)
+            .filter(
+                NoteMention.note_id == note_id,
+                NoteMention.user_id == target_user.id,
+            )
+            .first()
+        )
+        if existing is not None:
+            log.info(
+                "note_mention: skip (already notified) user=%s handle=%s",
+                target_user.id, target_user.handle,
+            )
+            continue
+        session.add(
+            NoteMention(
+                id=str(uuid.uuid4()),
+                note_id=note_id,
+                user_id=target_user.id,
+                room_id=room_id,
+            )
+        )
+        try:
+            session.commit()
+        except Exception as commit_err:
+            session.rollback()
+            msg = str(commit_err).lower()
+            if "unique" in msg or "uq_note_mentions" in msg:
+                continue
+            log.warning(
+                "note_mention commit failed (note=%s user=%s): %s",
+                note_id, target_user.id, commit_err,
+            )
+            continue
+        count = send_room_push_to_user(
+            session,
+            room_id,
+            target_user.id,
+            {
+                "kind": "note_mention",
+                "room_id": room_id,
+                "room_name": room_name,
+                "sender": sender_name,
+                "body": f"{sender_name} tagged you in a note",
+                "url": f"/?room={room_id}",
+            },
+        )
+        log.info(
+            "note_mention: pushed to user=%s handle=%s count=%d",
+            target_user.id, target_user.handle, count,
+        )
+        if count > 0:
+            sent += 1
+    log.info("note_mention: total sent=%d", sent)
+    return sent
+
+
 class NoteMentionBody(BaseModel):
     """Handles the frontend extracted from the note body (e.g. @willy).
     Capped at 10 to bound the resolution + push cost per request; the
@@ -2845,89 +2964,22 @@ def post_note_mention(
     new mention fires a Web Push notification so the tagged member
     can jump back into the room and find the note.
 
-    Empty list / no resolved users / all-already-notified → returns
-    {"sent": 0} silently. Only group notes are accepted (personal
-    notes never reach others by design)."""
+    Authorization: caller must be a member of the room (targets must
+    also be room members). We deliberately do NOT require the note
+    to be registered as a group note here — yjsNotes' /register_group
+    POST is fire-and-forget and can race the mention POST that fires
+    after a 1.5s debounce. The membership check is the real
+    authorization."""
     _require_member(session, room_id, user_id)
-    _require_group_note(session, note_id, room_id)
     raw = (payload.handles or [])[:10]
     handles = sorted({h.strip().lower() for h in raw if h and h.strip()})
-    if not handles:
-        return {"sent": 0}
-    # Resolve handles → user_ids that are actually room members.
-    members = (
-        session.query(User, RoomMember)
-        .join(RoomMember, RoomMember.user_id == User.id)
-        .filter(RoomMember.room_id == room_id)
-        .filter(func.lower(User.handle).in_(handles))
-        .all()
+    sent = _notify_note_mentions(
+        session,
+        room_id=room_id,
+        note_id=note_id,
+        author_user_id=user_id,
+        handles=handles,
     )
-    resolved = [(u, m) for (u, m) in members if u.id != user_id]
-    if not resolved:
-        return {"sent": 0}
-    author = session.get(User, user_id)
-    room = session.get(Room, room_id)
-    sender_name = (
-        (author.display_name or author.handle) if author else "Someone"
-    )
-    room_name = room.name if room else "Bible IU"
-    sent = 0
-    for (target_user, _member) in resolved:
-        # Insert dedupe row; bail this iteration if the user has already
-        # been notified for this note.
-        existing = (
-            session.query(NoteMention)
-            .filter(
-                NoteMention.note_id == note_id,
-                NoteMention.user_id == target_user.id,
-            )
-            .first()
-        )
-        if existing is not None:
-            continue
-        session.add(
-            NoteMention(
-                id=str(uuid.uuid4()),
-                note_id=note_id,
-                user_id=target_user.id,
-                room_id=room_id,
-            )
-        )
-        try:
-            session.commit()
-        except Exception as commit_err:
-            # The only legitimate failure here is the unique constraint
-            # firing because another concurrent request inserted the
-            # same (note, user) row. Anything else (FK violation,
-            # connection error, etc.) is a real bug and we want to
-            # SEE it instead of silently dropping the push.
-            session.rollback()
-            msg = str(commit_err).lower()
-            if "unique" in msg or "constraint" in msg and "uq_note_mentions" in msg:
-                continue
-            import logging
-            logging.getLogger("bible_iu.notes").warning(
-                "note_mention commit failed (note=%s user=%s): %s",
-                note_id, target_user.id, commit_err,
-            )
-            continue
-        # Same delivery path as chat / note-create fanout — respects
-        # the recipient's room-mute and quiet-hours preferences.
-        count = send_room_push_to_user(
-            session,
-            room_id,
-            target_user.id,
-            {
-                "kind": "note_mention",
-                "room_id": room_id,
-                "room_name": room_name,
-                "sender": sender_name,
-                "body": f"{sender_name} tagged you in a note",
-                "url": f"/?room={room_id}",
-            },
-        )
-        if count > 0:
-            sent += 1
     return {"sent": sent}
 
 
@@ -3064,16 +3116,30 @@ def add_note_comment(
 ) -> NoteSocialOut:
     _require_member(session, room_id, user_id)
     _require_group_note(session, note_id, room_id)
+    body = payload.body.strip()
     session.add(
         NoteComment(
             id=str(uuid.uuid4()),
             note_id=note_id,
             author_user_id=user_id,
             room_id=room_id,
-            body=payload.body.strip(),
+            body=body,
         )
     )
     session.commit()
+    # Tag any `@handle`s in the comment body. Same dedupe + delivery
+    # path as the note-body mention endpoint so a single recipient is
+    # only pushed once per (note, user) regardless of whether they
+    # were tagged in the body, a comment, or both.
+    handles = _extract_mention_handles(body)
+    if handles:
+        _notify_note_mentions(
+            session,
+            room_id=room_id,
+            note_id=note_id,
+            author_user_id=user_id,
+            handles=handles,
+        )
     return get_note_social(room_id, note_id, session, user_id)
 
 
