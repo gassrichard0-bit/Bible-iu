@@ -1049,9 +1049,11 @@ export function BibleView({
       el.scrollTop + el.clientHeight >= el.scrollHeight - 1;
     if (atBottom && dy < -30) g.overscrolled = true;
   };
-  // Scroll handler — when the user moves AWAY from the bottom, surface
-  // the panel + pill again and reset the bounce counter so the user
-  // can re-arm the hide later.
+  // Scroll handler — only resets the bounce-pair timer so the user
+  // can re-arm a fresh double-bounce later. Per user request, scrolling
+  // away from the bottom does NOT bring the panel back: once hidden
+  // by a double-bounce, the panel stays hidden until ANOTHER double-
+  // bounce at the bottom toggles it back on.
   const onScrollerScroll = () => {
     const el = scrollerElRef.current;
     if (!el) return;
@@ -1059,7 +1061,6 @@ export function BibleView({
       el.scrollTop + el.clientHeight >= el.scrollHeight - 1;
     if (!atBottom) {
       lastBounceAtRef.current = 0;
-      window.dispatchEvent(new CustomEvent("bible:panel-show"));
     }
   };
 

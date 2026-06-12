@@ -3,7 +3,11 @@
   <head>
     <meta charset="UTF-8" />
     <!--
-      viewport-fit=cover  → fill the entire screen incl. notch / island.
+      viewport-fit=contain → iOS keeps the visible viewport WITHIN the
+        safe area: Dynamic Island / notch at top and home-indicator zone
+        at bottom are reserved by iOS, content stays in the clean rect.
+        env(safe-area-inset-*) values then evaluate to 0, so we don't
+        need defensive paddings.
       interactive-widget=resizes-content → Android keyboard pushes the
         viewport (matches iOS), so visualViewport + dvh stay in sync.
       No maximum-scale / user-scalable=no — those break pinch zoom and
@@ -12,7 +16,7 @@
     -->
     <meta
       name="viewport"
-      content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content"
+      content="width=device-width, initial-scale=1, viewport-fit=contain, interactive-widget=resizes-content"
     />
     <meta name="color-scheme" content="light dark" />
     <meta name="theme-color" content="#171717" />

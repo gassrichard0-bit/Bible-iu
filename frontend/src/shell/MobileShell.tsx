@@ -178,9 +178,11 @@ export function MobileShell({
   // Backwards-compat alias: a lot of layout decisions hinge on
   // "is the agent visible" on the Bible tab. Keep the name local.
   const aiVisible = composerOpen;
-  // Focus mode hides the breadcrumb + Bible toolbar so scripture takes
-  // more vertical space. Toggled by the ▲/▼ pill above the Bible.
-  const [focusMode, setFocusMode] = useState(false);
+  // Focus mode hides the breadcrumb + Bible toolbar (book / chapter /
+  // translation dropdowns) so scripture takes more vertical space.
+  // Defaults to ON so the app opens with the cleanest reading view;
+  // tap the ▲/▼ pill above the Bible to bring the toolbar back.
+  const [focusMode, setFocusMode] = useState(true);
   // User's "last read" bookmark per book. Capped at 66 (one per Bible
   // book) by the backend's UNIQUE(user_id, book) constraint. Loaded
   // once at mount; updated locally for instant feedback.
@@ -1391,7 +1393,7 @@ export function MobileShell({
             className="pointer-events-none fixed right-3 z-40 flex flex-col items-end gap-2 pt-2"
             style={{
               bottom: keyboardInset,
-              paddingBottom: "env(safe-area-inset-bottom)",
+              paddingBottom: "calc(env(safe-area-inset-bottom) + 40px)",
               opacity: panelHidden ? 0 : 1,
               transform: panelHidden ? "translateY(20px)" : "translateY(0)",
               transition: "opacity 260ms ease-out, transform 260ms ease-out",
@@ -1614,7 +1616,7 @@ export function MobileShell({
           // Match the standalone AI pill — both wrappers sit lifted
           // by env(safe-area-inset-bottom) so the main tab bar and
           // the AI pill share the same floating baseline.
-          paddingBottom: "env(safe-area-inset-bottom)",
+          paddingBottom: "calc(env(safe-area-inset-bottom) + 40px)",
           opacity: panelHidden ? 0 : 1,
           transform: panelHidden ? "translateY(20px)" : "translateY(0)",
           transition: "opacity 260ms ease-out, transform 260ms ease-out",
