@@ -3672,11 +3672,10 @@ function BookmarksPanel({
       <ul
         className="flex-1 space-y-2.5 overflow-y-auto p-3"
         style={{
-          // Same as ChatPanel + Bible scroller: leave room at the bottom
-          // for the floating glass tab bar + standalone AI pill so the
-          // last card isn't tucked permanently underneath. 96px covers
-          // the floating UI + safe-area-inset at rest.
-          paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 86px)",
+          // Match the Bible chapter-end tail (130px) so the last
+          // mark card scrolls well above the floating panel + AI
+          // pill instead of slipping behind them.
+          paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 130px)",
         }}
       >
         {view === "highlights" && highlightGroups.length === 0 && (

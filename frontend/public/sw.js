@@ -9,7 +9,7 @@
  * Cache key is bumped on every release to evict the old shell. When
  * we add a real build pipeline we'll inject the bundle hash here.
  */
-const CACHE = "bible-iu-shell-v137";
+const CACHE = "bible-iu-shell-v142";
 const PRECACHE = ["/", "/manifest.webmanifest"];
 
 // True when this SW is running under Vite's dev server. We register

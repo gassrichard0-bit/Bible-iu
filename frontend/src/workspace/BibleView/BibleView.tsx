@@ -156,7 +156,7 @@ function TranslationPicker({
     <select
       value={value}
       onChange={(e) => onChange(e.target.value)}
-      className="shrink-0 rounded-full border border-neutral-200 bg-paper px-2.5 py-1.5 font-medium shadow-[0_1px_2px_rgba(0,0,0,0.05),inset_0_1px_0_rgba(255,255,255,0.5)] outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-200/40 dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100 dark:shadow-[0_1px_2px_rgba(0,0,0,0.4),inset_0_1px_0_rgba(255,255,255,0.05)] dark:focus:border-amber-700 dark:focus:ring-amber-800/40"
+      className="shrink-0 w-[88px] truncate rounded-full border border-neutral-200 bg-paper px-2.5 py-1.5 font-medium shadow-[0_1px_2px_rgba(0,0,0,0.05),inset_0_1px_0_rgba(255,255,255,0.5)] outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-200/40 dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100 dark:shadow-[0_1px_2px_rgba(0,0,0,0.4),inset_0_1px_0_rgba(255,255,255,0.05)] dark:focus:border-amber-700 dark:focus:ring-amber-800/40"
       title="Public-domain + freely-licensed translations served by the backend. Licensed remotes (NLT/CSB/ESV) appear here once their API key is configured."
     >
       {/* iOS Safari has had several long-running bugs around
@@ -1216,7 +1216,7 @@ export function BibleView({
         onTouchEnd={onChapterSwipeEnd}
         onScroll={onScrollerScroll}
         onPointerUp={onScrollerDoubleTapDismiss}
-        className="flex-1 overflow-y-auto overflow-x-hidden px-3 pb-4 pt-1"
+        className="flex-1 overflow-y-auto overflow-x-hidden px-3 pb-4 pt-6"
         // Mirror ChatPanel + the notes list: when the floating glass
         // composer + 64px AI pill sit on top of this scroller, lift
         // the last verse above them so reading isn't cut off.
