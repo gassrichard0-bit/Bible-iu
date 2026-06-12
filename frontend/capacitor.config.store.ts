@@ -1,15 +1,12 @@
-// TestFlight / Dev config — loads from live URL so testers always get latest
-// Switch to capacitor.config.store.ts for App Store bundled submission.
+// App Store release config — bundled build, no external URL dependency
+// Switch in when submitting to App Store:
+//   cp capacitor.config.store.ts capacitor.config.ts && npm run build && npx cap sync ios
 import { CapacitorConfig } from "@capacitor/cli";
 
 const config: CapacitorConfig = {
   appId: "com.gassrichard.bibleiu",
   appName: "Bible IU",
   webDir: "dist",
-  server: {
-    url: "https://bible.access-term.com",
-    cleartext: false,
-  },
   ios: {
     contentInset: "always",
     preferredContentMode: "mobile",
