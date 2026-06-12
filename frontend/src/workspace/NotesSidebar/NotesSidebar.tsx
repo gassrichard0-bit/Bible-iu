@@ -526,10 +526,12 @@ export function NotesSidebar({
               <div className="flex items-center gap-1">
                 <span>{n.scope}</span>
                 {canDeleteNote(n, selfUserId) && (
-                  editMode && n.scope === "personal" ? (
-                    // Edit-mode delete: prominent red pill, no hover
-                    // hide. Personal-scope only — top-bar Edit is
-                    // explicitly NOT a moderation tool for group notes.
+                  editMode ? (
+                    // Edit-mode delete: prominent red pill on any note
+                    // the viewer authored. canDeleteNote already
+                    // restricts group notes to their author, so this
+                    // never becomes a moderation tool — it just makes
+                    // the author's "X" affordance findable.
                     <button
                       onClick={() => {
                         if (confirm("Delete this note?")) notes.remove(n.id);
