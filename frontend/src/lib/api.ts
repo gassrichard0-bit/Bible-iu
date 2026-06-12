@@ -112,6 +112,13 @@ export interface BibleBookOut {
   chapters: number;
 }
 
+export interface TranslationOption {
+  name: string;
+  attribution: string;
+  source: "local" | "api_bible" | "esv" | string;
+  enabled: boolean;
+}
+
 export interface BibleVerseOut {
   verse_id: string;
   book: string;
@@ -207,6 +214,7 @@ export interface VerseTokenOut {
   lemma: string;
   strongs: string | null;
   morphology: string | null;
+  lexicon_entry: string | null;
 }
 
 export interface BibleChapterMulti {
@@ -501,6 +509,12 @@ export const api = {
       body: JSON.stringify({ room_id, verse_ref, question }),
     }),
   bibleBooks: () => jsonFetch<BibleBookOut[]>("/bible/books"),
+  /** Live translation registry — used by the BibleView / Settings /
+   *  Profile pickers so newly-seeded translations show up without a
+   *  frontend rebuild. Disabled rows are returned too so the picker
+   *  can grey them out (e.g. licensed remotes waiting on key). */
+  bibleTranslations: () =>
+    jsonFetch<TranslationOption[]>("/bible/translations"),
   bibleChapter: (book: string, chapter: number, translation?: string) =>
     jsonFetch<BibleChapterOut>(
       `/bible/${book}/${chapter}` +
@@ -514,7 +528,10 @@ export const api = {
     translations: string[],
   ) =>
     jsonFetch<BibleChapterMulti>(
-      `/bible/${book}/${chapter}/multi?translations=${encodeURIComponent(translations.join(","))}`,
+      // Join with `|` not `,` so translation names containing commas
+      // (e.g. "Some Bible (Region, Variant)") aren't truncated by the
+      // backend's split. Pipes don't appear in any registered name.
+      `/bible/${book}/${chapter}/multi?translations=${encodeURIComponent(translations.join("|"))}`,
     ),
   /** Hebrew/Greek per-word study data for one verse. Returns an
    *  empty array if the verse has no token rows. */

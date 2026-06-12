@@ -1611,6 +1611,9 @@ export function MobileShell({
         className="pointer-events-none fixed inset-x-0 z-40 flex justify-start pl-[20px] pr-[96px] pt-2"
         style={{
           bottom: keyboardInset,
+          // Match the standalone AI pill — both wrappers sit lifted
+          // by env(safe-area-inset-bottom) so the main tab bar and
+          // the AI pill share the same floating baseline.
           paddingBottom: "env(safe-area-inset-bottom)",
           opacity: panelHidden ? 0 : 1,
           transform: panelHidden ? "translateY(20px)" : "translateY(0)",

@@ -185,6 +185,22 @@ class BibleVerseTranslation(BaseModel):
     license: str
 
 
+class TranslationAttribution(BaseModel):
+    """Per-translation copyright + attribution metadata that the
+    frontend renders as the mandatory footer line for licensed
+    versions. Public-domain translations carry their public-domain
+    notice in the same field — the UI doesn't have to special-case."""
+    name: str
+    attribution: str
+    # "local" for public-domain bundled translations; "api_bible" or
+    # "esv" for licensed remote fetches. Useful for the picker to
+    # badge remote vs local.
+    source: str
+    # False when the translation is registered but the license/key
+    # isn't in place yet. Picker should grey it out.
+    enabled: bool
+
+
 class BibleVerseMulti(BaseModel):
     verse_id: str
     book: str
@@ -198,6 +214,10 @@ class BibleChapterMulti(BaseModel):
     chapter: int
     translations: list[str]
     verses: list[BibleVerseMulti]
+    # One entry per translation name above. Includes the publisher's
+    # required copyright string; the frontend renders it as a footer
+    # under the chapter for licensed versions.
+    attributions: list[TranslationAttribution] = []
 
 
 class CrossRefOut(BaseModel):

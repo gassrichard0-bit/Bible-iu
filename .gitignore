@@ -23,6 +23,14 @@ backend/data/yjs/
 backend/data/uploads/
 
 # ----------------------------------------------------------------------------
+# Licensed Bible translations (NKJV, NIV, …) extracted via
+# `extract_translation_to_folder.py`. Publishers prohibit
+# redistribution, so the JSON dumps stay on disk only — never in git
+# even on a private remote. Back up via Time Machine / manual copy.
+# ----------------------------------------------------------------------------
+backend/data/bibles/
+
+# ----------------------------------------------------------------------------
 # Python
 # ----------------------------------------------------------------------------
 __pycache__/

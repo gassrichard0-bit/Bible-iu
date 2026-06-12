@@ -30,6 +30,7 @@ import { RichNoteField } from "../NotesSidebar/RichNoteField";
 import { extractMentionHandles } from "../NotesSidebar/useNoteMentions";
 import { canDeleteNote } from "../NotesSidebar/noteOwnership";
 import { confirmDelete } from "../../lib/confirmDialog";
+import { useTranslations } from "../../lib/useTranslations";
 import { bookColor } from "../../lib/testament";
 import { type AnnotationTarget } from "./AnnotationToolbar";
 import {
@@ -132,6 +133,54 @@ interface Props {
    *  ScopePill so it matches the per-room theme picked in Settings,
    *  same as the Notes-tab top-bar scope toggle. */
   accentKey?: AccentKey;
+}
+
+/** Dropdown of every translation the backend has enabled. Pulled live
+ *  from /bible/translations so a newly-seeded translation appears the
+ *  next time someone opens the Bible page — no frontend rebuild
+ *  needed. Disabled rows (licensed remotes waiting on an API key)
+ *  render greyed out. */
+function TranslationPicker({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (next: string) => void;
+}) {
+  const translations = useTranslations();
+  // Keep the active value selectable even if the registry hasn't
+  // loaded yet — otherwise React drops the controlled-input value to
+  // empty during the first paint.
+  const haveActive = translations.some((t) => t.name === value);
+  return (
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      className="shrink-0 rounded-full border border-neutral-200 bg-paper px-2.5 py-1.5 font-medium shadow-[0_1px_2px_rgba(0,0,0,0.05),inset_0_1px_0_rgba(255,255,255,0.5)] outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-200/40 dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100 dark:shadow-[0_1px_2px_rgba(0,0,0,0.4),inset_0_1px_0_rgba(255,255,255,0.05)] dark:focus:border-amber-700 dark:focus:ring-amber-800/40"
+      title="Public-domain + freely-licensed translations served by the backend. Licensed remotes (NLT/CSB/ESV) appear here once their API key is configured."
+    >
+      {/* iOS Safari has had several long-running bugs around
+       *  <optgroup> + disabled <option> combinations that swallow
+       *  onChange in installed PWAs. Render a flat list so the
+       *  selection always fires. Disabled (licensed-but-not-keyed)
+       *  rows still appear, but greyed and at the bottom. */}
+      {!haveActive && <option value={value}>{value}</option>}
+      {translations
+        .filter((t) => t.enabled)
+        .map((t) => (
+          <option key={t.name} value={t.name}>
+            {t.name}
+          </option>
+        ))}
+      {translations
+        .filter((t) => !t.enabled)
+        .map((t) => (
+          <option key={t.name} value={t.name} disabled>
+            {t.name} (licensed)
+          </option>
+        ))}
+    </select>
+  );
 }
 
 export function BibleView({
@@ -321,8 +370,15 @@ export function BibleView({
   // multiple expansions can coexist; the user might want to compare
   // Greek across two verses. Tokens are fetched lazily on first
   // open.
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const [tokensOpen, _setTokensOpen] = useState<Set<string>>(() => new Set());
+  const [tokensOpen, setTokensOpen] = useState<Set<string>>(() => new Set());
+  const toggleTokens = (verseId: string) => {
+    setTokensOpen((prev) => {
+      const next = new Set(prev);
+      if (next.has(verseId)) next.delete(verseId);
+      else next.add(verseId);
+      return next;
+    });
+  };
   const [searchOpen, setSearchOpen] = useState(false);
 
   // --- Voice reader state -----------------------------------------------
@@ -1044,11 +1100,18 @@ export function BibleView({
       }
       .bible-no-select input,
       .bible-no-select textarea,
+      .bible-no-select select,
+      .bible-no-select select *,
+      .bible-no-select button,
       .bible-no-select [contenteditable="true"],
       .bible-no-select [contenteditable=""] {
-        -webkit-user-select: text !important;
-        user-select: text !important;
+        -webkit-user-select: auto !important;
+        user-select: auto !important;
         -webkit-touch-callout: default !important;
+        /* iOS Safari needs touch-action: manipulation on form
+           controls inside a user-select:none subtree, otherwise
+           the native picker wheel won't open on tap. */
+        touch-action: manipulation;
       }
       /* Re-enable native iOS / desktop selection on verse text so
          the user can drag-select with the OS-supplied magnifier +
@@ -1095,26 +1158,11 @@ export function BibleView({
             <option key={n}>{n}</option>
           ))}
         </select>
-        <select
+        <TranslationPicker
           value={translation}
-          onChange={(e) => onPickTranslation(e.target.value)}
-          className="shrink-0 rounded-full border border-neutral-200 bg-paper px-2.5 py-1.5 font-medium shadow-[0_1px_2px_rgba(0,0,0,0.05),inset_0_1px_0_rgba(255,255,255,0.5)] outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-200/40 dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100 dark:shadow-[0_1px_2px_rgba(0,0,0,0.4),inset_0_1px_0_rgba(255,255,255,0.05)] dark:focus:border-amber-700 dark:focus:ring-amber-800/40"
-          title="Public-domain + freely-licensed English translations. Paid translations (ESV/NIV/NASB) require separate licensing and aren't wired."
-        >
-          <optgroup label="Modern English">
-            <option value="Berean Standard Bible">BSB</option>
-            <option value="World English Bible">WEB</option>
-            <option value="New English Translation">NET</option>
-          </optgroup>
-          <optgroup label="Classic English">
-            <option value="King James Version">KJV</option>
-            <option value="Geneva Bible (1599)">Geneva</option>
-            <option value="Douay-Rheims Bible">Douay-Rheims</option>
-          </optgroup>
-          <optgroup label="Literal / Study">
-            <option value="Young's Literal Translation">YLT</option>
-          </optgroup>
-        </select>
+          onChange={onPickTranslation}
+        />
+
         {loading && (
           <span className="text-neutral-400 dark:text-neutral-500">
             loading…
@@ -1249,9 +1297,16 @@ export function BibleView({
           </p>
         )}
         {!error && verses.length === 0 && !loading && (
-          <p className="text-sm text-neutral-500 dark:text-neutral-400">
-            No verses returned.
-          </p>
+          <div className="mx-auto mt-6 max-w-md rounded-2xl border border-amber-200 bg-amber-50/70 px-4 py-3 text-center text-[13px] text-amber-900 shadow-sm dark:border-amber-800/60 dark:bg-amber-900/30 dark:text-amber-100">
+            <div className="font-medium">
+              No text in this translation for {bookName} {chapter}.
+            </div>
+            <div className="mt-1 text-[12px] opacity-90">
+              {translation} doesn't cover this chapter (it may be
+              NT-only, OT-only, or partial canon). Try a different
+              translation from the dropdown.
+            </div>
+          </div>
         )}
         {verses.length > 0 && (() => {
           // Pick the ACTIVE bookmark in this book = the one at the
@@ -1365,12 +1420,30 @@ export function BibleView({
                     >
                       {v.verse}
                     </button>
-                    {/* Per-verse original-language toggle hidden by
-                     *  user request. Hebrew/Greek study is still
-                     *  reachable via the global "show original" toggle
-                     *  in the breadcrumb. The state hook + render
-                     *  branch below stay wired so re-enabling later is
-                     *  one un-comment. */}
+                    {/* Per-verse Strong's / original-language toggle.
+                     *  Tap to open the Hebrew/Greek token chips with
+                     *  Strong's numbers below this verse. Tap again to
+                     *  close. Independent of the global "show original"
+                     *  toggle — that one shows the full original line
+                     *  alongside every verse; this one is per-verse
+                     *  on-demand and surfaces Strong's lookups. */}
+                    <button
+                      onClick={() => toggleTokens(v.verse_id)}
+                      className={`inline-flex h-5 min-w-[1.4rem] touch-manipulation items-center justify-center rounded text-[10px] font-semibold transition ${
+                        tokensOpen.has(v.verse_id)
+                          ? "bg-amber-500 text-white"
+                          : "text-neutral-400 hover:bg-amber-100 hover:text-amber-700 dark:text-neutral-500 dark:hover:bg-amber-900/40 dark:hover:text-amber-200"
+                      }`}
+                      title={
+                        tokensOpen.has(v.verse_id)
+                          ? "Hide Strong's / original language"
+                          : `Strong's & original Hebrew/Greek for ${v.verse_id}`
+                      }
+                      aria-label={`Toggle Strong's for verse ${v.verse}`}
+                    >
+                      <span className="font-serif">א</span>
+                      <span className="ml-0.5 font-serif">α</span>
+                    </button>
                     {onSetBookmark && (
                       <button
                         onClick={() =>
@@ -2073,18 +2146,29 @@ function TokenStudyBlock({
                 key={i}
                 type="button"
                 onClick={() => setActiveIdx(open ? null : i)}
-                className={`rounded-full px-2 py-1 text-[14px] transition ${
+                className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[14px] transition ${
                   open
                     ? "bg-amber-500 text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.25)]"
                     : "border border-amber-200 bg-amber-50/70 text-neutral-900 hover:bg-amber-100 dark:border-amber-800/60 dark:bg-amber-900/30 dark:text-neutral-100 dark:hover:bg-amber-900/50"
                 }`}
                 title={
                   t.strongs
-                    ? `${t.lemma} · ${t.strongs}${t.morphology ? " · " + t.morphology : ""}`
+                    ? `${t.lemma} · ${t.strongs}${t.lexicon_entry ? " — " + t.lexicon_entry : ""}${t.morphology ? " · " + t.morphology : ""}`
                     : t.lemma
                 }
               >
-                {t.surface_form}
+                <span>{t.surface_form}</span>
+                {t.strongs && (
+                  <span
+                    className={`font-mono text-[10px] ${
+                      open
+                        ? "text-white/85"
+                        : "text-amber-700 dark:text-amber-300"
+                    }`}
+                  >
+                    {t.strongs}
+                  </span>
+                )}
               </button>
             );
           })}
@@ -2092,7 +2176,7 @@ function TokenStudyBlock({
       )}
       {tokens && activeIdx != null && tokens[activeIdx] && (
         <div
-          className={`mt-2 rounded-2xl p-2 text-[12px] ${GLASS_CARD_INLINE}`}
+          className={`mt-2 rounded-2xl p-3 text-[12px] ${GLASS_CARD_INLINE}`}
         >
           <div className="text-[16px] text-neutral-900 dark:text-neutral-50">
             <span className="font-semibold">{tokens[activeIdx].surface_form}</span>
@@ -2100,13 +2184,13 @@ function TokenStudyBlock({
               (lemma: {tokens[activeIdx].lemma})
             </span>
           </div>
-          <div className="mt-1 flex flex-wrap gap-2">
+          <div className="mt-2 flex flex-wrap gap-2">
             {tokens[activeIdx].strongs && (
               <a
                 href={`https://www.blueletterbible.org/lexicon/${tokens[activeIdx].strongs!.toLowerCase()}/kjv/tr/0-1/`}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="rounded-full bg-amber-200 px-2 py-0.5 font-mono text-[11px] font-semibold text-amber-900 hover:bg-amber-300 dark:bg-amber-700/60 dark:text-amber-100 dark:hover:bg-amber-700"
+                className="rounded-full bg-amber-200 px-2.5 py-0.5 font-mono text-[11px] font-semibold text-amber-900 hover:bg-amber-300 dark:bg-amber-700/60 dark:text-amber-100 dark:hover:bg-amber-700"
                 title="Open Blue Letter Bible lexicon entry in a new tab"
               >
                 {tokens[activeIdx].strongs}
@@ -2118,6 +2202,14 @@ function TokenStudyBlock({
               </span>
             )}
           </div>
+          {tokens[activeIdx].lexicon_entry && (
+            <div className="mt-2 leading-snug text-neutral-800 dark:text-neutral-200">
+              <span className="text-[10px] font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
+                KJV def:
+              </span>{" "}
+              {tokens[activeIdx].lexicon_entry}
+            </div>
+          )}
         </div>
       )}
     </div>

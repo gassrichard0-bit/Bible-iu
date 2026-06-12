@@ -101,6 +101,7 @@ from .schemas import (
     BibleVerseMulti,
     BibleVerseTranslation,
     CrossRefOut,
+    TranslationAttribution,
     ChatMessageCreate,
     ChatMessageRead,
     HealthResponse,
@@ -3427,6 +3428,29 @@ _BOOK_ORDER: list[str] = list(_BOOK_NAMES.keys())
 
 
 @app.get(
+    "/bible/translations",
+    response_model=list[TranslationAttribution],
+    dependencies=[Depends(require_password)],
+)
+def list_translations() -> list[TranslationAttribution]:
+    """Every translation the backend knows about — public-domain
+    bundled ones plus licensed remotes (api.bible / ESV). The frontend
+    picker uses this to render the dropdown; disabled rows are shown
+    greyed out so the user can see them coming."""
+    from ..bible_loaders.registry import all_specs
+
+    return [
+        TranslationAttribution(
+            name=s.name,
+            attribution=s.attribution,
+            source=s.source,
+            enabled=s.enabled,
+        )
+        for s in all_specs()
+    ]
+
+
+@app.get(
     "/bible/books",
     response_model=list[BibleBook],
     dependencies=[Depends(require_password)],
@@ -3558,9 +3582,40 @@ def get_chapter_multi(
     code = book.upper()
     if code not in _BOOK_NAMES:
         raise HTTPException(404, f"Unknown book: {book}")
-    wanted = [t.strip() for t in translations.split(",") if t.strip()]
+    # Split on `|` only — translation names may contain commas
+    # (e.g. "和合本 (Chinese Union, Traditional)") so the legacy comma
+    # delimiter would chop them. Old SW-cached bundles using `,` get
+    # the whole comma-joined string treated as one name, which won't
+    # match the registry and earns a clean 402 — refreshing the PWA
+    # picks up the new bundle.
+    wanted = [t.strip() for t in translations.split("|") if t.strip()]
     if not wanted:
         raise HTTPException(400, "translations query param required")
+
+    # Any requested translation we don't already have rows for goes
+    # through the loader pipeline (api.bible / ESV / etc.). Local
+    # public-domain translations skip the network — the loader just
+    # confirms the seed has them. See backend/bible_loaders/.
+    from ..bible_loaders.loader import (
+        load_chapter,
+        TranslationNotEnabled,
+        TranslationMissingKey,
+        TranslationFetchError,
+    )
+    from ..bible_loaders.registry import get as _registry_get
+    for name in wanted:
+        try:
+            load_chapter(session, name, code, chapter)
+        except TranslationNotEnabled as e:
+            # 402 = "license / enable flag missing." Surfaces a clear
+            # message to the client (the translation picker should
+            # be filtering on /bible/translations anyway, so this is
+            # a backstop).
+            raise HTTPException(402, str(e))
+        except TranslationMissingKey as e:
+            raise HTTPException(503, str(e))
+        except TranslationFetchError as e:
+            raise HTTPException(502, str(e))
 
     stmt = (
         select(Translation, Verse)
@@ -3593,16 +3648,65 @@ def get_chapter_multi(
             )
         )
 
+    # Empty result is OK — happens when the user picks a partial-canon
+    # translation (Greek TR / Tyndale = NT-only, JPS / Hebrew WLC /
+    # LXX = OT-only) and views a chapter outside its scope. Verify
+    # the chapter EXISTS in the canon before returning empty; a
+    # genuine bad-input (book has 50 chapters, user asked for 51)
+    # still earns the 404.
     if not by_verse:
-        raise HTTPException(404, f"No verses for {code} {chapter}")
+        canon_exists = session.execute(
+            select(Verse).where(Verse.book == code, Verse.chapter == chapter).limit(1)
+        ).scalar_one_or_none()
+        if canon_exists is None:
+            raise HTTPException(404, f"No verses for {code} {chapter}")
+        # Canonical chapter exists, just no rows for THIS translation.
+        # Return an empty list — the frontend renders an "no text
+        # for this translation here" placeholder.
+        return BibleChapterMulti(
+            book=code,
+            chapter=chapter,
+            translations=wanted,
+            verses=[],
+            attributions=[
+                TranslationAttribution(
+                    name=spec.name,
+                    attribution=spec.attribution,
+                    source=spec.source,
+                    enabled=spec.enabled,
+                )
+                for name in wanted
+                for spec in [_registry_get(name)]
+                if spec is not None
+            ],
+        )
 
     # Order translations within each verse by the order the caller asked.
     rank = {name: i for i, name in enumerate(wanted)}
     verses = sorted(by_verse.values(), key=lambda x: x.verse)
     for v in verses:
         v.translations.sort(key=lambda x: rank.get(x.name, 999))
+
+    # Per-translation attribution — pulled from the registry so the
+    # frontend can render the publisher's required copyright footer.
+    attribs = []
+    for name in wanted:
+        spec = _registry_get(name)
+        if spec is not None:
+            attribs.append(
+                TranslationAttribution(
+                    name=spec.name,
+                    attribution=spec.attribution,
+                    source=spec.source,
+                    enabled=spec.enabled,
+                )
+            )
     return BibleChapterMulti(
-        book=code, chapter=chapter, translations=wanted, verses=verses
+        book=code,
+        chapter=chapter,
+        translations=wanted,
+        verses=verses,
+        attributions=attribs,
     )
 
 
@@ -4386,6 +4490,10 @@ class VerseTokenOut(BaseModel):
     lemma: str
     strongs: Optional[str] = None
     morphology: Optional[str] = None
+    # Short English gloss (KJV definition from openscriptures), shown
+    # inline in the chip + lexicon card so the user doesn't have to
+    # bounce out to Blue Letter Bible for a quick read.
+    lexicon_entry: Optional[str] = None
 
 
 @app.get(
@@ -4418,6 +4526,7 @@ def get_verse_tokens(
             lemma=r.lemma,
             strongs=r.strongs,
             morphology=r.morphology,
+            lexicon_entry=r.lexicon_entry,
         )
         for r in rows
     ]

@@ -23,6 +23,7 @@ import {
 } from "../lib/api";
 import { ProfileSection } from "./Profile";
 import { BottomSheet } from "./BottomSheet";
+import { useTranslations } from "../lib/useTranslations";
 import { GLASS_CARD_INLINE } from "../lib/glass";
 import { ActionButton, Pill } from "./SettingsButtons";
 import {
@@ -118,6 +119,9 @@ export function SettingsModal({
   const adminRooms = (rooms || []).filter(
     (r) => r.role === "admin" && r.type === "group",
   );
+  // Live translation registry — populates the "Default translation"
+  // dropdown so newly-seeded translations show up automatically.
+  const translations = useTranslations();
   // Authoritative: trust the role baked into `activeRoom` when present
   // (the caller knows it without needing the /rooms list to settle).
   // Otherwise fall back to scanning the rooms array.
@@ -448,9 +452,7 @@ export function SettingsModal({
               <div className="flex-1">
                 <div>Default translation</div>
                 <div className="text-[11px] text-neutral-500 dark:text-neutral-400">
-                  The Bible reader opens with this translation. Until
-                  more public-domain texts ship, the only options are
-                  KJV and WEB.
+                  The Bible reader opens with this translation.
                 </div>
               </div>
               <select
@@ -464,19 +466,18 @@ export function SettingsModal({
                 aria-label="Default translation"
                 className="ml-3 max-w-[50%] rounded-xl border border-neutral-200 bg-paper px-2.5 py-2 text-[12px] outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-200/40 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100 dark:focus:border-amber-700 dark:focus:ring-amber-800/40"
               >
-                <optgroup label="Modern English">
-                  <option value="Berean Standard Bible">BSB (modern, free)</option>
-                  <option value="World English Bible">WEB (modern, public domain)</option>
-                  <option value="New English Translation">NET (scholarly, free)</option>
-                </optgroup>
-                <optgroup label="Classic English">
-                  <option value="King James Version">KJV (1611)</option>
-                  <option value="Geneva Bible (1599)">Geneva (1599)</option>
-                  <option value="Douay-Rheims Bible">Douay-Rheims (Catholic)</option>
-                </optgroup>
-                <optgroup label="Literal / Study">
-                  <option value="Young's Literal Translation">YLT (literal, 1898)</option>
-                </optgroup>
+                {!translations.some((t) => t.name === settings.defaultTranslation) && (
+                  <option value={settings.defaultTranslation}>
+                    {settings.defaultTranslation}
+                  </option>
+                )}
+                {translations
+                  .filter((t) => t.enabled)
+                  .map((t) => (
+                    <option key={t.name} value={t.name}>
+                      {t.name}
+                    </option>
+                  ))}
               </select>
             </Row>
             <Row>
