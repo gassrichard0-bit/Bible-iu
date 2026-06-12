@@ -1216,7 +1216,7 @@ export function BibleView({
         onTouchEnd={onChapterSwipeEnd}
         onScroll={onScrollerScroll}
         onPointerUp={onScrollerDoubleTapDismiss}
-        className="flex-1 overflow-y-auto overflow-x-hidden px-3 py-4"
+        className="flex-1 overflow-y-auto overflow-x-hidden px-3 pb-4 pt-1"
         // Mirror ChatPanel + the notes list: when the floating glass
         // composer + 64px AI pill sit on top of this scroller, lift
         // the last verse above them so reading isn't cut off.
@@ -1235,13 +1235,11 @@ export function BibleView({
           userSelect: "none",
           ...(bottomInset
             ? {
-                // Keep the Apple-Liquid-Glass design: text scrolls
-                // behind the floating nav. Only the END of the chapter
-                // gets an empty tail so the last verses can scroll all
-                // the way above the nav when the reader reaches them.
-                // 100px ≈ just enough to clear the nav at chapter end
-                // without leaving a dead band of empty space.
-                paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 100px)",
+                // Chapter-end tail. Bigger value = the last verse of
+                // a chapter scrolls higher above the floating panel
+                // when the reader reaches it. 160px clears the bar
+                // (≈ panel lift 40 + bar height 72 + breathing room).
+                paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 130px)",
               }
             : {}),
         }}
