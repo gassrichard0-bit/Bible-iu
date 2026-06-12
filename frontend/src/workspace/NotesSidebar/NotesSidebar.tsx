@@ -470,7 +470,7 @@ export function NotesSidebar({
         style={
           hideComposer
             ? {
-                paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 86px)",
+                paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 130px)",
               }
             : undefined
         }

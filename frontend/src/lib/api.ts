@@ -117,6 +117,9 @@ export interface TranslationOption {
   attribution: string;
   source: "local" | "api_bible" | "esv" | string;
   enabled: boolean;
+  /** Short label shown in the compact picker pill (KJV / NIV / RST).
+   *  Frontend falls back to `name` when null. */
+  display_label?: string | null;
 }
 
 export interface BibleVerseOut {

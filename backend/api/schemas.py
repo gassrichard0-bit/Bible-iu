@@ -199,6 +199,9 @@ class TranslationAttribution(BaseModel):
     # False when the translation is registered but the license/key
     # isn't in place yet. Picker should grey it out.
     enabled: bool
+    # Short label shown in the compact picker pill (e.g. "KJV", "NIV",
+    # "RST"). Falls back to `name` on the frontend when null.
+    display_label: Optional[str] = None
 
 
 class BibleVerseMulti(BaseModel):

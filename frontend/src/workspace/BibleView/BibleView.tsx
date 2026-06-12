@@ -156,14 +156,15 @@ function TranslationPicker({
     <select
       value={value}
       onChange={(e) => onChange(e.target.value)}
-      className="shrink-0 w-[88px] truncate rounded-full border border-neutral-200 bg-paper px-2.5 py-1.5 font-medium shadow-[0_1px_2px_rgba(0,0,0,0.05),inset_0_1px_0_rgba(255,255,255,0.5)] outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-200/40 dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100 dark:shadow-[0_1px_2px_rgba(0,0,0,0.4),inset_0_1px_0_rgba(255,255,255,0.05)] dark:focus:border-amber-700 dark:focus:ring-amber-800/40"
+      className="shrink-0 w-[150px] truncate rounded-full border border-neutral-200 bg-paper px-2.5 py-1.5 text-center font-medium shadow-[0_1px_2px_rgba(0,0,0,0.05),inset_0_1px_0_rgba(255,255,255,0.5)] outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-200/40 dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100 dark:shadow-[0_1px_2px_rgba(0,0,0,0.4),inset_0_1px_0_rgba(255,255,255,0.05)] dark:focus:border-amber-700 dark:focus:ring-amber-800/40"
       title="Public-domain + freely-licensed translations served by the backend. Licensed remotes (NLT/CSB/ESV) appear here once their API key is configured."
     >
-      {/* iOS Safari has had several long-running bugs around
-       *  <optgroup> + disabled <option> combinations that swallow
-       *  onChange in installed PWAs. Render a flat list so the
-       *  selection always fires. Disabled (licensed-but-not-keyed)
-       *  rows still appear, but greyed and at the bottom. */}
+      {/* Option text = full translation name so the dropdown popup
+       *  reads clearly ("King James Version", "New International
+       *  Version"). The closed pill shows the same text — sizes
+       *  naturally like the book pill. iOS Safari has long-running
+       *  bugs around <optgroup> + disabled options; we render a
+       *  flat list to keep onChange firing. */}
       {!haveActive && <option value={value}>{value}</option>}
       {translations
         .filter((t) => t.enabled)
@@ -176,7 +177,7 @@ function TranslationPicker({
         .filter((t) => !t.enabled)
         .map((t) => (
           <option key={t.name} value={t.name} disabled>
-            {t.name} (licensed)
+            {t.name + " (licensed)"}
           </option>
         ))}
     </select>
@@ -1131,14 +1132,14 @@ export function BibleView({
       onContextMenu={(e) => e.preventDefault()}
     >
       {!hideToolbar && (
-      <div className="flex flex-nowrap items-center gap-2 overflow-x-auto border-b border-neutral-200 px-3 py-2 text-xs [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden dark:border-neutral-800">
+      <div className="flex flex-nowrap items-center justify-between gap-2 border-b border-neutral-200 px-3 py-2 text-xs dark:border-neutral-800">
         <select
           value={book}
           onChange={(e) => {
             onPickBook(e.target.value);
             onPickChapter(1);
           }}
-          className="shrink-0 rounded-full border border-neutral-200 bg-paper px-2.5 py-1.5 font-medium shadow-[0_1px_2px_rgba(0,0,0,0.05),inset_0_1px_0_rgba(255,255,255,0.5)] outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-200/40 dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100 dark:shadow-[0_1px_2px_rgba(0,0,0,0.4),inset_0_1px_0_rgba(255,255,255,0.05)] dark:focus:border-amber-700 dark:focus:ring-amber-800/40"
+          className="shrink-0 w-[150px] truncate rounded-full border border-neutral-200 bg-paper px-2.5 py-1.5 text-center font-medium shadow-[0_1px_2px_rgba(0,0,0,0.05),inset_0_1px_0_rgba(255,255,255,0.5)] outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-200/40 dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100 dark:shadow-[0_1px_2px_rgba(0,0,0,0.4),inset_0_1px_0_rgba(255,255,255,0.05)] dark:focus:border-amber-700 dark:focus:ring-amber-800/40"
         >
           {books.length === 0 ? (
             <option value={book}>{book}</option>
@@ -1153,7 +1154,7 @@ export function BibleView({
         <select
           value={chapter}
           onChange={(e) => onPickChapter(Number(e.target.value))}
-          className="shrink-0 rounded-full border border-neutral-200 bg-paper px-2.5 py-1.5 font-medium shadow-[0_1px_2px_rgba(0,0,0,0.05),inset_0_1px_0_rgba(255,255,255,0.5)] outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-200/40 dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100 dark:shadow-[0_1px_2px_rgba(0,0,0,0.4),inset_0_1px_0_rgba(255,255,255,0.05)] dark:focus:border-amber-700 dark:focus:ring-amber-800/40"
+          className="shrink-0 rounded-full border border-neutral-200 bg-paper px-2.5 py-1.5 text-center font-medium shadow-[0_1px_2px_rgba(0,0,0,0.05),inset_0_1px_0_rgba(255,255,255,0.5)] outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-200/40 dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100 dark:shadow-[0_1px_2px_rgba(0,0,0,0.4),inset_0_1px_0_rgba(255,255,255,0.05)] dark:focus:border-amber-700 dark:focus:ring-amber-800/40"
         >
           {Array.from({ length: chapterCount }, (_, i) => i + 1).map((n) => (
             <option key={n}>{n}</option>

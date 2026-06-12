@@ -4209,7 +4209,7 @@ function ChatPanel({
           // useKeyboardInset already lifts the composer onto the
           // keyboard, and the visualViewport shrink takes care of
           // the scroller height. Keep the base padding only.
-          paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 86px)",
+          paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 130px)",
         }}
       >
         {visibleMessages.length === 0 ? (

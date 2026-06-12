@@ -3445,6 +3445,7 @@ def list_translations() -> list[TranslationAttribution]:
             attribution=s.attribution,
             source=s.source,
             enabled=s.enabled,
+            display_label=s.display_label,
         )
         for s in all_specs()
     ]
