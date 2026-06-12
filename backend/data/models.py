@@ -402,6 +402,54 @@ class ChatMessage(Base, TimestampMixin):
     )
 
 
+class ArchivedChatMessage(Base):
+    """Tombstoned chat message — created when a user taps Delete.
+
+    The original `chat_messages` row + its reactions + its image-file
+    binding are gone by the time this row exists; recovery is by
+    direct SQL access on the host Mac. No FK back to anything since
+    the source is removed. The attachment file at
+    `data/uploads/chat/{message_id}.webp` is intentionally LEFT on
+    disk so Richard can re-attach it manually if needed.
+    """
+    __tablename__ = "archived_chat_messages"
+    archive_id: Mapped[str] = mapped_column(String, primary_key=True)
+    message_id: Mapped[str] = mapped_column(String, index=True)
+    room_id: Mapped[str] = mapped_column(String, index=True)
+    author_user_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    author_handle: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    author_display_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    author_is_agent: Mapped[bool] = mapped_column(Boolean, default=False)
+    body: Mapped[str] = mapped_column(Text)
+    language: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    attachment_image_token: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    reply_to_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    pinned_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    original_created_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    deleted_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+    deleted_by_user_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+
+
+class ArchivedNote(Base):
+    """Tombstoned note — created when a user taps Delete on a personal
+    or group note. Body is captured BEFORE the Y.Doc delete so the
+    text is preserved even though the source CRDT entry is gone.
+    Recovery is by direct SQL on the host Mac.
+    """
+    __tablename__ = "archived_notes"
+    archive_id: Mapped[str] = mapped_column(String, primary_key=True)
+    note_id: Mapped[str] = mapped_column(String, index=True)
+    room_id: Mapped[str] = mapped_column(String, index=True)
+    scope: Mapped[str] = mapped_column(String)  # "group" | "personal"
+    author_user_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    author_handle: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    by_agent: Mapped[bool] = mapped_column(Boolean, default=False)
+    body: Mapped[str] = mapped_column(Text, default="")
+    verse_anchor: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    deleted_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+    deleted_by_user_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+
+
 class ChatReaction(Base, TimestampMixin):
     """A single emoji reaction on a chat message.
 

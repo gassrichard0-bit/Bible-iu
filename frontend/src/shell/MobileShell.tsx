@@ -54,6 +54,7 @@ import { bookColor } from "../lib/testament";
 import { useRoomQuota } from "../lib/useRoomQuota";
 import { useStickToBottom } from "../lib/useStickToBottom";
 import { useKeyboardInset } from "../lib/useKeyboardInset";
+import { confirmDelete } from "../lib/confirmDialog";
 import { ACCENT_PALETTE, resolveAccent } from "../lib/accentColors";
 import {
   PinIcon as PinSvg,
@@ -1390,7 +1391,7 @@ export function MobileShell({
             className="pointer-events-none fixed right-3 z-40 flex flex-col items-end gap-2 pt-2"
             style={{
               bottom: keyboardInset,
-              paddingBottom: "calc(env(safe-area-inset-bottom) + 10px)",
+              paddingBottom: "env(safe-area-inset-bottom)",
               opacity: panelHidden ? 0 : 1,
               transform: panelHidden ? "translateY(20px)" : "translateY(0)",
               transition: "opacity 260ms ease-out, transform 260ms ease-out",
@@ -1566,7 +1567,7 @@ export function MobileShell({
         <div
           className="pointer-events-none fixed inset-x-0 z-40 flex justify-center"
           style={{
-            bottom: "calc(env(safe-area-inset-bottom, 0px) + 86px)",
+            bottom: "calc(env(safe-area-inset-bottom, 0px) + 76px)",
           }}
         >
           <button
@@ -1610,7 +1611,7 @@ export function MobileShell({
         className="pointer-events-none fixed inset-x-0 z-40 flex justify-start pl-[20px] pr-[96px] pt-2"
         style={{
           bottom: keyboardInset,
-          paddingBottom: "calc(env(safe-area-inset-bottom) + 10px)",
+          paddingBottom: "env(safe-area-inset-bottom)",
           opacity: panelHidden ? 0 : 1,
           transform: panelHidden ? "translateY(20px)" : "translateY(0)",
           transition: "opacity 260ms ease-out, transform 260ms ease-out",
@@ -2422,7 +2423,7 @@ export function MobileShell({
               : "border-neutral-300 bg-paper/95 text-neutral-900 dark:border-neutral-700 dark:bg-neutral-900/95 dark:text-neutral-100"
           }`}
           style={{
-            bottom: "calc(env(safe-area-inset-bottom, 0px) + 90px)",
+            bottom: "calc(env(safe-area-inset-bottom, 0px) + 80px)",
           }}
         >
           <span className="flex-1 text-[13px]">{toast.text}</span>
@@ -3542,16 +3543,12 @@ function BookmarksPanel({
   const [query, setQuery] = useState("");
   useEffect(() => {
     if (focusSearchTrigger === undefined || focusSearchTrigger === 0) return;
-    setSearchOpen((open) => {
-      const next = !open;
-      if (next) {
-        setTimeout(() => {
-          searchInputRef.current?.focus();
-          searchInputRef.current?.select();
-        }, 30);
-      }
-      return next;
-    });
+    // Toggle visibility only — never call .focus()/.select() on the
+    // input. Matches Notes + Chat: the user taps the field themselves
+    // to avoid the iOS keyboard auto-popping and the field showing a
+    // pre-selected "ready to type" state they didn't ask for.
+    // (see [[feedback-search-keyboard-no-autopop]])
+    setSearchOpen((open) => !open);
   }, [focusSearchTrigger]);
 
   // Plain-text filter over book code, full name, and the
@@ -3625,8 +3622,8 @@ function BookmarksPanel({
         </p>
       </div>
       {searchOpen && (
-        <div className="border-b border-neutral-200 bg-paper-soft px-3 py-1.5 dark:border-neutral-800 dark:bg-neutral-950">
-          <div className="relative">
+        <div className="flex items-center gap-2 border-b border-neutral-200 bg-paper-soft px-3 py-1.5 dark:border-neutral-800 dark:bg-neutral-950">
+          <div className="relative flex-1">
             <input
               ref={searchInputRef}
               type="search"
@@ -3654,6 +3651,17 @@ function BookmarksPanel({
               </button>
             )}
           </div>
+          <button
+            type="button"
+            onClick={() => {
+              setQuery("");
+              setSearchOpen(false);
+            }}
+            className="rounded-full px-2 text-[12px] font-semibold text-neutral-600 hover:bg-paper-soft dark:text-neutral-300 dark:hover:bg-neutral-800"
+            aria-label="Close search"
+          >
+            Done
+          </button>
         </div>
       )}
       <ul
@@ -3663,7 +3671,7 @@ function BookmarksPanel({
           // for the floating glass tab bar + standalone AI pill so the
           // last card isn't tucked permanently underneath. 96px covers
           // the floating UI + safe-area-inset at rest.
-          paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 96px)",
+          paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 86px)",
         }}
       >
         {view === "highlights" && highlightGroups.length === 0 && (
@@ -4197,7 +4205,7 @@ function ChatPanel({
           // useKeyboardInset already lifts the composer onto the
           // keyboard, and the visualViewport shrink takes care of
           // the scroller height. Keep the base padding only.
-          paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 96px)",
+          paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 86px)",
         }}
       >
         {visibleMessages.length === 0 ? (
@@ -4228,10 +4236,12 @@ function ChatPanel({
                   void api.chatReact(roomId, m.id, emoji).catch(() => {});
                 }}
                 showDelete={!!editMode && isMine}
-                onDelete={() => {
-                  if (confirm("Delete this message?")) {
-                    void onDeleteMessage?.(m.id);
-                  }
+                onDelete={async () => {
+                  const ok = await confirmDelete({
+                    title: "Delete Message?",
+                    message: "This message will be removed for everyone in the group. This cannot be undone.",
+                  });
+                  if (ok) void onDeleteMessage?.(m.id);
                 }}
               />
             );

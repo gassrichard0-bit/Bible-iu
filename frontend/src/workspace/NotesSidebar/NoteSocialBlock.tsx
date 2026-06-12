@@ -11,6 +11,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, type NoteReactionKind, type NoteSocialOut } from "../../lib/api";
 import { GLASS_CARD_INLINE } from "../../lib/glass";
+import { confirmDelete } from "../../lib/confirmDialog";
 import { MentionPopover, detectMentionTrigger } from "./MentionPopover";
 
 export function NoteSocialBlock({
@@ -130,7 +131,11 @@ export function NoteSocialBlock({
 
   async function removeComment(commentId: string) {
     if (busy) return;
-    if (!confirm("Delete this comment?")) return;
+    const ok = await confirmDelete({
+      title: "Delete Comment?",
+      message: "This comment will be removed for everyone in the group.",
+    });
+    if (!ok) return;
     setBusy(true);
     try {
       setState(await api.noteCommentDelete(roomId, noteId, commentId));

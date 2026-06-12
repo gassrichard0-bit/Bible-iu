@@ -27,6 +27,7 @@ import {
   saveSeenSet,
 } from "./noteReadTracker";
 import { canDeleteNote } from "./noteOwnership";
+import { confirmDelete } from "../../lib/confirmDialog";
 
 interface Props {
   focus: VerseFocus | null;
@@ -469,7 +470,7 @@ export function NotesSidebar({
         style={
           hideComposer
             ? {
-                paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 96px)",
+                paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 86px)",
               }
             : undefined
         }
@@ -525,35 +526,21 @@ export function NotesSidebar({
               </span>
               <div className="flex items-center gap-1">
                 <span>{n.scope}</span>
-                {canDeleteNote(n, selfUserId) && (
-                  editMode ? (
-                    // Edit-mode delete: prominent red pill on any note
-                    // the viewer authored. canDeleteNote already
-                    // restricts group notes to their author, so this
-                    // never becomes a moderation tool — it just makes
-                    // the author's "X" affordance findable.
-                    <button
-                      onClick={() => {
-                        if (confirm("Delete this note?")) notes.remove(n.id);
-                      }}
-                      className="rounded-full bg-red-500 px-2 py-0.5 text-[10px] font-semibold text-white shadow-[0_1px_2px_rgba(0,0,0,0.15)] hover:bg-red-600 dark:bg-red-600 dark:hover:bg-red-500"
-                      title="Delete note"
-                      aria-label="Delete note"
-                    >
-                      Delete
-                    </button>
-                  ) : (
-                    <button
-                      onClick={() => {
-                        if (confirm("Delete this note?")) notes.remove(n.id);
-                      }}
-                      className="rounded px-1 text-neutral-400 opacity-50 hover:bg-red-50 hover:text-red-600 group-hover:opacity-100 md:opacity-0 dark:hover:bg-red-900/40 dark:hover:text-red-300"
-                      title="Delete note (notes-system.MD §5.9)"
-                      aria-label="Delete note"
-                    >
-                      ×
-                    </button>
-                  )
+                {editMode && canDeleteNote(n, selfUserId) && (
+                  <button
+                    onClick={async () => {
+                      const ok = await confirmDelete({
+                        title: "Delete Note?",
+                        message: "This note will be removed for everyone in the group. This cannot be undone.",
+                      });
+                      if (ok) notes.remove(n.id);
+                    }}
+                    className="rounded-full bg-red-500 px-2 py-0.5 text-[10px] font-semibold text-white shadow-[0_1px_2px_rgba(0,0,0,0.15)] hover:bg-red-600 dark:bg-red-600 dark:hover:bg-red-500"
+                    title="Delete note"
+                    aria-label="Delete note"
+                  >
+                    Delete
+                  </button>
                 )}
               </div>
             </div>

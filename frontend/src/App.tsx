@@ -7,6 +7,7 @@ import { ResetPasswordSheet } from "./shell/ResetPasswordSheet";
 import { SocialShell } from "./shell/SocialShell";
 import { useIsDesktop } from "./lib/useMediaQuery";
 import { applyTheme, readTheme, type Theme } from "./lib/theme";
+import { ConfirmDialogHost } from "./lib/confirmDialog";
 import {
   api,
   clearSessionToken,
@@ -312,6 +313,7 @@ export function App() {
         onPendingRoomConsumed={() => setJoinedRoomId(null)}
       />
       <UpdateAvailableBanner />
+      <ConfirmDialogHost />
       {resetToken && (
         <ResetPasswordSheet
           token={resetToken}
@@ -351,7 +353,7 @@ function UpdateAvailableBanner() {
       role="status"
       className="fixed left-1/2 z-[60] flex w-[calc(100%-2rem)] max-w-sm -translate-x-1/2 items-center gap-2 rounded-2xl border border-amber-300 bg-amber-50/95 px-3 py-2 shadow-[0_8px_24px_rgba(0,0,0,0.18)] backdrop-blur-md dark:border-amber-700 dark:bg-amber-900/85"
       style={{
-        bottom: "calc(env(safe-area-inset-bottom, 0px) + 90px)",
+        bottom: "calc(env(safe-area-inset-bottom, 0px) + 80px)",
       }}
     >
       <span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-amber-200 text-amber-900 dark:bg-amber-700/70 dark:text-amber-100">

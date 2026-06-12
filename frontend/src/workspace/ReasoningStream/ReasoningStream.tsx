@@ -346,11 +346,6 @@ function ClaimList({
               <span className="text-[10px] uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
                 {c.kind.replace("_", " ")}
               </span>
-              {c.contradicts_scripture && (
-                <span className="text-[10px] text-red-700 dark:text-red-300">
-                  contradicts scripture
-                </span>
-              )}
             </div>
             <div className="mt-0.5">
               <RichText text={c.text} onJump={onJumpToCitation} />

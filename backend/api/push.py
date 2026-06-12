@@ -197,6 +197,47 @@ def _is_quiet_hours_for(user) -> bool:
         return False
 
 
+def _dm_other_display_name(
+    session: Session, room_id: str, viewer_user_id: str
+) -> Optional[str]:
+    """For a `type="direct"` room, return the OTHER member's display
+    name from `viewer_user_id`'s perspective. Returns None if the room
+    isn't a DM or the other member can't be resolved — in which case
+    callers fall back to the payload's stored room_name."""
+    from ..data.models import Room, RoomMember, User  # local — cycles out
+
+    room = session.get(Room, room_id)
+    if room is None or room.type != "direct":
+        return None
+    row = (
+        session.query(User)
+        .join(RoomMember, RoomMember.user_id == User.id)
+        .filter(
+            RoomMember.room_id == room_id,
+            RoomMember.user_id != viewer_user_id,
+        )
+        .first()
+    )
+    if row is None:
+        return None
+    return row.display_name or row.handle
+
+
+def _per_recipient_payload(
+    session: Session,
+    room_id: str,
+    recipient_user_id: str,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Rewrite `room_name` in the payload to the OTHER DM member's
+    name from THIS recipient's perspective. Pass-through for group
+    rooms. Returns a new dict so the caller's payload is untouched."""
+    other = _dm_other_display_name(session, room_id, recipient_user_id)
+    if other is None:
+        return payload
+    return {**payload, "room_name": other}
+
+
 def send_room_push_to_user(
     session: Session,
     room_id: str,
@@ -219,7 +260,11 @@ def send_room_push_to_user(
         return 0
     if _is_quiet_hours_for(recipient):
         return 0
-    return send_push_to_user(session, user_id, payload)
+    return send_push_to_user(
+        session,
+        user_id,
+        _per_recipient_payload(session, room_id, user_id, payload),
+    )
 
 
 def fanout_to_room(
@@ -252,5 +297,9 @@ def fanout_to_room(
                 continue
             if _is_quiet_hours_for(recipient):
                 continue
-        total += send_push_to_user(session, m.user_id, payload)
+        total += send_push_to_user(
+            session,
+            m.user_id,
+            _per_recipient_payload(session, room_id, m.user_id, payload),
+        )
     return total

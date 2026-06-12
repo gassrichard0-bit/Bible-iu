@@ -57,6 +57,8 @@ from ..agent.skills import (
 from ..agent.skills.web_search import make_searcher
 from ..data import get_session, init_db
 from ..data.models import (
+    ArchivedChatMessage,
+    ArchivedNote,
     ChatMessage,
     ChatReaction,
     CrossReference,
@@ -300,14 +302,25 @@ def _room_read(
     last_message_body: Optional[str] = None,
     last_message_at: Optional[datetime] = None,
     last_message_author_handle: Optional[str] = None,
+    name_override: Optional[str] = None,
+    image_url_override: Optional[str] = None,
 ) -> RoomRead:
+    # Direct rooms have no inherent name — the stored `room.name` is
+    # baked at creation time and reflects whoever was the original
+    # *target*, so every viewer would see the same person. For DMs the
+    # caller passes `name_override` / `image_url_override` resolved to
+    # the OTHER member from the viewer's perspective.
     return RoomRead(
         id=room.id,
         type=room.type,
-        name=room.name,
+        name=name_override if name_override is not None else room.name,
         scripture_context=dict(room.scripture_context or {}),
         role=role,
-        image_url=_room_image_url(room),
+        image_url=(
+            image_url_override
+            if image_url_override is not None
+            else _room_image_url(room)
+        ),
         accent_color=getattr(room, "accent_color", None),
         unread_count=unread_count,
         last_message_body=last_message_body,
@@ -316,6 +329,39 @@ def _room_read(
         ),
         last_message_author_handle=last_message_author_handle,
     )
+
+
+def _dm_other_info(
+    session: Session,
+    room_ids: list[str],
+    viewer_user_id: str,
+) -> dict[str, tuple[Optional[str], Optional[str]]]:
+    """For each direct room in `room_ids`, return (display_name, avatar_url)
+    of the OTHER member from `viewer_user_id`'s perspective. Batched in
+    one round-trip so `list_rooms` doesn't N+1. Missing rooms map to
+    (None, None) and callers fall back to the stored room name."""
+    if not room_ids:
+        return {}
+    rows = (
+        session.query(RoomMember.room_id, User)
+        .join(User, User.id == RoomMember.user_id)
+        .filter(
+            RoomMember.room_id.in_(room_ids),
+            RoomMember.user_id != viewer_user_id,
+        )
+        .all()
+    )
+    out: dict[str, tuple[Optional[str], Optional[str]]] = {}
+    for room_id, user in rows:
+        # If a DM somehow has more than two members (shouldn't, but
+        # defensively): keep the first non-viewer seen.
+        if room_id in out:
+            continue
+        out[room_id] = (
+            user.display_name or user.handle,
+            _resolved_user_avatar_url(user),
+        )
+    return out
 
 
 def _unread_count(session: Session, room_id: str, user_id: str) -> int:
@@ -471,7 +517,21 @@ def create_room(
             )
         )
     session.commit()
-    return _room_read(room, my_role)
+    # DM created via the generic /rooms endpoint: resolve the OTHER
+    # member's display name + avatar for THIS caller so the response
+    # doesn't bake in whichever target was first.
+    name_override: Optional[str] = None
+    image_override: Optional[str] = None
+    if room.type == "direct":
+        other = _dm_other_info(session, [room.id], user_id).get(room.id)
+        if other is not None:
+            name_override, image_override = other
+    return _room_read(
+        room,
+        my_role,
+        name_override=name_override,
+        image_url_override=image_override,
+    )
 
 
 class ContactView(BaseModel):
@@ -588,10 +648,17 @@ def open_direct_message(
                 )
             }
             if members == {user_id, target_user_id}:
+                # Viewer is `user_id`; the OTHER member is the target.
                 return _room_read(
-                    room, "member", _unread_count(session, room.id, user_id)
+                    room,
+                    "member",
+                    _unread_count(session, room.id, user_id),
+                    name_override=target.display_name or target.handle,
+                    image_url_override=_resolved_user_avatar_url(target),
                 )
-    # No existing room — create a fresh direct room.
+    # No existing room — create a fresh direct room. `room.name` is a
+    # fallback only; the viewer-aware override is what the rooms list
+    # actually renders for both participants.
     room = Room(
         id=str(uuid.uuid4()),
         type="direct",
@@ -615,7 +682,13 @@ def open_direct_message(
         )
     )
     session.commit()
-    return _room_read(room, "member", 0)
+    return _room_read(
+        room,
+        "member",
+        0,
+        name_override=target.display_name or target.handle,
+        image_url_override=_resolved_user_avatar_url(target),
+    )
 
 
 @app.get(
@@ -674,6 +747,12 @@ def list_rooms(
         # iteration hands us — the body/timestamp will still be
         # accurate; only the author tie-breaks.
         latest_by_room.setdefault(msg.room_id, (msg, author))
+    # Batched resolver for DM display name + avatar from THIS viewer's
+    # perspective — without it, every member of a DM would see the
+    # person the room was created TO, not the person they're talking
+    # WITH.
+    dm_room_ids = [r.id for r, _ in rows if r.type == "direct"]
+    dm_other = _dm_other_info(session, dm_room_ids, user_id)
     out: list[RoomRead] = []
     for r, role in rows:
         last_msg, last_author = latest_by_room.get(r.id, (None, None))
@@ -685,6 +764,12 @@ def list_rooms(
                 body = "📷 Photo"
         else:
             body = None
+        name_override: Optional[str] = None
+        image_override: Optional[str] = None
+        if r.type == "direct":
+            other = dm_other.get(r.id)
+            if other is not None:
+                name_override, image_override = other
         out.append(
             _room_read(
                 r,
@@ -695,6 +780,8 @@ def list_rooms(
                 last_message_author_handle=(
                     last_author.handle if last_author else None
                 ),
+                name_override=name_override,
+                image_url_override=image_override,
             )
         )
     return out
@@ -1930,7 +2017,39 @@ def delete_chat_message(
         raise HTTPException(404, "message not found")
     if msg.author_user_id != user_id:
         raise HTTPException(403, "not your message")
+    # Archive the row before tearing down anything. The archive
+    # captures author identity (handle + display name) so a recovery
+    # later doesn't require joining against `users` rows that may
+    # themselves be gone. Attachment file at
+    # `data/uploads/chat/{id}.webp` is intentionally LEFT in place so
+    # the image can be recovered too.
+    archive_author_handle: Optional[str] = None
+    archive_author_display: Optional[str] = None
+    if msg.author_user_id is not None:
+        author_row = session.get(User, msg.author_user_id)
+        if author_row is not None:
+            archive_author_handle = author_row.handle
+            archive_author_display = author_row.display_name
+    session.add(
+        ArchivedChatMessage(
+            archive_id=str(uuid.uuid4()),
+            message_id=msg.id,
+            room_id=msg.room_id,
+            author_user_id=msg.author_user_id,
+            author_handle=archive_author_handle,
+            author_display_name=archive_author_display,
+            author_is_agent=bool(msg.author_is_agent),
+            body=msg.body,
+            language=msg.language,
+            attachment_image_token=msg.attachment_image_token,
+            reply_to_id=msg.reply_to_id,
+            pinned_at=msg.pinned_at,
+            original_created_at=msg.created_at,
+            deleted_by_user_id=user_id,
+        )
+    )
     # Drop reactions first so the FK on chat_reactions doesn't trip.
+    # Reactions aren't archived — they're throwaway metadata.
     session.query(ChatReaction).filter(
         ChatReaction.message_id == message_id
     ).delete(synchronize_session=False)
@@ -1940,12 +2059,9 @@ def delete_chat_message(
     session.query(ChatMessage).filter(
         ChatMessage.reply_to_id == message_id
     ).update({ChatMessage.reply_to_id: None}, synchronize_session=False)
-    # Best-effort attachment cleanup — missing file is fine.
-    if msg.attachment_image_token:
-        try:
-            _chat_image_path(message_id).unlink(missing_ok=True)
-        except OSError:
-            pass
+    # NOTE: attachment file at `_chat_image_path(message_id)` is kept
+    # on disk. The archive row records the token so it can be paired
+    # back to the file if Richard recovers.
     session.delete(msg)
     session.commit()
     # Tell every connected tab to drop this id from its local list.
@@ -2644,6 +2760,58 @@ def list_notes(
     ]
 
 
+# ----------------------------- note archive --------------------------------
+# Personal notes live in a per-user Y.Doc that the server never reads
+# from REST handlers — there's no shared row to read body text out of.
+# The client knows the body, so for personal notes the client POSTs
+# the captured body here BEFORE doing the local Y.Array delete. Same
+# for the group-note 404 fallback: when the server's YDoc can't see
+# the note (rare, but possible if the YDoc state diverged from the
+# client's), the client sends the body here so the archive doesn't
+# silently miss the recovery row.
+class NoteArchiveIn(BaseModel):
+    note_id: str
+    scope: str  # "group" | "personal"
+    body: str = ""
+    verse_anchor: Optional[str] = None
+    by_agent: bool = False
+    author_handle: Optional[str] = None
+
+
+@app.post(
+    "/rooms/{room_id}/notes/archive",
+    dependencies=[Depends(require_password)],
+)
+def archive_note_body(
+    room_id: str,
+    payload: NoteArchiveIn,
+    user_id: str = Depends(current_user_id),
+    session: Session = Depends(db),
+) -> dict[str, str]:
+    _require_member(session, room_id, user_id)
+    if payload.scope not in ("group", "personal"):
+        raise HTTPException(400, "scope must be 'group' or 'personal'")
+    session.add(
+        ArchivedNote(
+            archive_id=str(uuid.uuid4()),
+            note_id=payload.note_id,
+            room_id=room_id,
+            scope=payload.scope,
+            # For personal notes the only author is the caller. For
+            # group notes the caller is the one tapping delete; the
+            # client-side gate restricts that to the original author.
+            author_user_id=user_id,
+            author_handle=payload.author_handle,
+            by_agent=bool(payload.by_agent),
+            body=payload.body or "",
+            verse_anchor=payload.verse_anchor,
+            deleted_by_user_id=user_id,
+        )
+    )
+    session.commit()
+    return {"ok": "archived"}
+
+
 # ----------------------------- group-note delete ---------------------------
 # Author-only delete enforced server-side. Personal notes don't need
 # this — the personal Y.Doc is per-user, so no one else can connect
@@ -2708,21 +2876,46 @@ async def delete_group_note(
             )
         if target_author != user_id:
             raise HTTPException(403, "only the author may delete this note")
-    # Read the body BEFORE the delete so we can wipe any image
-    # files it embedded. Y.Text → str via str(); empty when missing.
-    body_tokens: set[str] = set()
+    # Read the body BEFORE the delete — we need it for the archive
+    # row AND to know which image files the body embedded. We KEEP
+    # those image files on disk so Richard can recover them with the
+    # archived note body. (Previously we wiped them; that contradicts
+    # the archive contract.)
+    body_text = ""
     try:
         body_text = str(notes_arr[target_index]["body"])
-        body_tokens = _note_image_tokens_in_body(body_text)
     except Exception:  # noqa: BLE001
-        body_tokens = set()
+        body_text = ""
+    archive_author_handle: Optional[str] = None
+    try:
+        archive_author_handle = notes_arr[target_index]["author_handle"]
+    except KeyError:
+        archive_author_handle = None
+    archive_verse_anchor: Optional[str] = None
+    try:
+        archive_verse_anchor = notes_arr[target_index]["verse_anchor"]
+    except KeyError:
+        archive_verse_anchor = None
+    session.add(
+        ArchivedNote(
+            archive_id=str(uuid.uuid4()),
+            note_id=note_id,
+            room_id=room_id,
+            scope="group",
+            author_user_id=target_author,
+            author_handle=archive_author_handle,
+            by_agent=bool(target_by_agent),
+            body=body_text,
+            verse_anchor=archive_verse_anchor,
+            deleted_by_user_id=user_id,
+        )
+    )
+    session.commit()
     # Authorized. Apply the delete inside a transaction so the
     # yjs sync layer ships one clean update to every connected
     # client.
     with doc.transaction():
         del notes_arr[target_index]
-    if body_tokens:
-        _delete_image_files(body_tokens)
     return {"ok": "deleted"}
 
 

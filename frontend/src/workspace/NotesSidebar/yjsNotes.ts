@@ -346,33 +346,107 @@ function buildHandle(
     },
     remove: (id) => {
       // Personal first: those live in a per-user Y.Doc that nobody
-      // else can connect to, so we can drop the row locally and let
-      // Yjs sync push the change up. No server check needed.
+      // else can connect to. Capture the body + metadata and POST it
+      // to the archive table BEFORE the local delete so Richard can
+      // recover it later from SQLite. The Yjs delete propagates via
+      // the per-user WS sync.
       if (personal) {
         const found = findInDoc(personal, id);
         if (found) {
+          const m = found.arr.get(found.index) as Y.Map<unknown>;
+          const bodyVal = m.get("body");
+          const bodyStr =
+            bodyVal instanceof Y.Text
+              ? bodyVal.toString()
+              : typeof bodyVal === "string"
+                ? bodyVal
+                : "";
+          const verseAnchor = (m.get("verse_anchor") as string) || null;
+          const byAgent = Boolean(m.get("by_agent"));
+          const authorHandle = (m.get("author_handle") as string) || null;
+          void serverApi
+            .noteArchive(roomId, {
+              note_id: id,
+              scope: "personal",
+              body: bodyStr,
+              verse_anchor: verseAnchor,
+              by_agent: byAgent,
+              author_handle: authorHandle,
+            })
+            .catch(() => {
+              // Archive is best-effort — proceed with delete even if
+              // it fails so the user's intent (row gone from view)
+              // is always honored.
+            });
           personal.doc.transact(() => {
             found.arr.delete(found.index, 1);
           });
           return;
         }
       }
-      // Group note: defer to the server. The endpoint validates that
-      // we're the author, then applies the delete on the server's
-      // Y.Doc — the sync layer broadcasts the removal back to us via
-      // the WS, so we don't touch the local doc here. If the user
-      // wasn't the author, the API throws a 403 which we surface so
-      // the row STAYS visible (the UI gate should already prevent us
-      // from getting here, but better-safe than letting a stale view
-      // silently drop the row).
+      // Group note. Try the server endpoint first (which does the
+      // author check + applies the delete to the shared doc). If the
+      // server returns 404 because its YDoc lost the row, fall back
+      // to a local Y.Array delete — the Yjs WS sync will push the
+      // removal up to the server's persisted store. We do NOT fall
+      // through on 403 (real author mismatch) so unauthorized deletes
+      // stay refused.
       const found = findInDoc(group, id);
       if (!found) return;
+      const arr = found.arr;
+      const idx = found.index;
+      // Snapshot for the 404 fallback archive — if the server's YDoc
+      // can't see this note, the server can't archive it either, so
+      // we send the body we have.
+      const fallbackMap = arr.get(idx) as Y.Map<unknown>;
+      const fbBody = fallbackMap?.get("body");
+      const fbBodyStr =
+        fbBody instanceof Y.Text
+          ? fbBody.toString()
+          : typeof fbBody === "string"
+            ? fbBody
+            : "";
+      const fbVerseAnchor = (fallbackMap?.get("verse_anchor") as string) || null;
+      const fbByAgent = Boolean(fallbackMap?.get("by_agent"));
+      const fbAuthorHandle = (fallbackMap?.get("author_handle") as string) || null;
       void serverApi
         .noteDeleteGroup(roomId, id)
         .catch((e) => {
-          // Best-effort surface; bubble up for callers who want it.
-          // eslint-disable-next-line no-console
-          console.warn("[notes] group delete refused:", (e as Error).message);
+          const msg = (e as Error).message || "";
+          // The api helper surfaces HTTP status in the error message
+          // ("HTTP 404 ...", "HTTP 403 ..."). 404 is the YDoc-miss
+          // case — archive client-side payload then apply delete
+          // locally. 403 is an actual auth refusal — leave the row
+          // visible and warn.
+          if (/\b404\b/.test(msg)) {
+            void serverApi
+              .noteArchive(roomId, {
+                note_id: id,
+                scope: "group",
+                body: fbBodyStr,
+                verse_anchor: fbVerseAnchor,
+                by_agent: fbByAgent,
+                author_handle: fbAuthorHandle,
+              })
+              .catch(() => {
+                // best-effort
+              });
+            try {
+              group.doc.transact(() => {
+                if (arr.get(idx) && (arr.get(idx) as Y.Map<unknown>).get("id") === id) {
+                  arr.delete(idx, 1);
+                } else {
+                  // index shifted — re-find before deleting
+                  const f2 = findInDoc(group, id);
+                  if (f2) f2.arr.delete(f2.index, 1);
+                }
+              });
+            } catch {
+              // ignore
+            }
+            return;
+          }
+          alert(`Couldn't delete: ${msg || "unknown error"}`);
         });
     },
     forVerse: () => [],

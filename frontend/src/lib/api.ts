@@ -720,6 +720,29 @@ export const api = {
     jsonFetch<{ ok: string }>(`/rooms/${room_id}/notes/${note_id}`, {
       method: "DELETE",
     }),
+  /** Tombstone a note body to the server's archive table (recovery
+   *  is by direct SQL on the host Mac). Personal notes never hit
+   *  DELETE — they're per-user Y.Doc only — so the client captures
+   *  the body and POSTs it here before applying the local delete.
+   *  Also called as a fallback when the group-note DELETE returns
+   *  404 (YDoc state divergence) so the archive doesn't miss the
+   *  recovery row. */
+  noteArchive: (
+    room_id: string,
+    payload: {
+      note_id: string;
+      scope: "group" | "personal";
+      body?: string;
+      verse_anchor?: string | null;
+      by_agent?: boolean;
+      author_handle?: string | null;
+    },
+  ) =>
+    jsonFetch<{ ok: string }>(`/rooms/${room_id}/notes/archive`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
   roomMembers: (room_id: string) =>
     jsonFetch<RoomMemberOut[]>(`/rooms/${room_id}/members`),
   roomMemberPatch: (room_id: string, user_id: string, role: "admin" | "member") =>

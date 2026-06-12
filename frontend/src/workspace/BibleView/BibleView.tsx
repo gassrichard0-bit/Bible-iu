@@ -29,6 +29,7 @@ import { NoteSocialBlock } from "../NotesSidebar/NoteSocialBlock";
 import { RichNoteField } from "../NotesSidebar/RichNoteField";
 import { extractMentionHandles } from "../NotesSidebar/useNoteMentions";
 import { canDeleteNote } from "../NotesSidebar/noteOwnership";
+import { confirmDelete } from "../../lib/confirmDialog";
 import { bookColor } from "../../lib/testament";
 import { type AnnotationTarget } from "./AnnotationToolbar";
 import {
@@ -2222,8 +2223,12 @@ function InlineNotePanel({
                 <span>{n.scope}</span>
                 {canDeleteNote(n, selfUserId) && (
                   <button
-                    onClick={() => {
-                      if (confirm("Delete this note?")) notes.remove(n.id);
+                    onClick={async () => {
+                      const ok = await confirmDelete({
+                        title: "Delete Note?",
+                        message: "This note will be removed for everyone in the group. This cannot be undone.",
+                      });
+                      if (ok) notes.remove(n.id);
                     }}
                     className="rounded px-1 text-neutral-400 opacity-60 hover:bg-red-50 hover:text-red-600 group-hover:opacity-100 md:opacity-0 dark:hover:bg-red-900/40 dark:hover:text-red-300"
                     title="Delete note (notes-system.MD §5.9)"
@@ -2463,8 +2468,12 @@ function ChapterNotePanel({
                 <span>{n.scope}</span>
                 {canDeleteNote(n, selfUserId) && (
                   <button
-                    onClick={() => {
-                      if (confirm("Delete this note?")) notes.remove(n.id);
+                    onClick={async () => {
+                      const ok = await confirmDelete({
+                        title: "Delete Note?",
+                        message: "This note will be removed for everyone in the group. This cannot be undone.",
+                      });
+                      if (ok) notes.remove(n.id);
                     }}
                     className="rounded px-1 text-neutral-400 opacity-60 hover:bg-red-50 hover:text-red-600 group-hover:opacity-100 md:opacity-0 dark:hover:bg-red-900/40 dark:hover:text-red-300"
                     title="Delete note (notes-system.MD §5.9)"
