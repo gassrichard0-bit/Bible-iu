@@ -19,10 +19,9 @@ let cachedAt = 0;
 let inFlight: Promise<TranslationOption[]> | null = null;
 
 // Short TTL — covers a single visit to the Bible page but stale-checks
-// when the user returns later or when the registry changes (e.g. you
-// just enabled NLT/CSB). 60s is short enough that flipping a backend
-// flag shows up within a minute, long enough to dedupe several picker
-// mounts in one session.
+// when the user returns later or when the registry changes. 60s is
+// short enough that flipping a backend flag shows up within a minute,
+// long enough to dedupe several picker mounts in one session.
 const TTL_MS = 60_000;
 
 async function load(force = false): Promise<TranslationOption[]> {

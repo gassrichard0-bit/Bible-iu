@@ -9,7 +9,7 @@
  * Cache key is bumped on every release to evict the old shell. When
  * we add a real build pipeline we'll inject the bundle hash here.
  */
-const CACHE = "bible-iu-shell-v156";
+const CACHE = "bible-iu-shell-v158";
 const PRECACHE = ["/", "/manifest.webmanifest"];
 
 // True when this SW is running under Vite's dev server. We register
@@ -87,26 +87,54 @@ self.addEventListener("fetch", (event) => {
   );
 });
 
-// Offline Bible reader: cache the per-chapter scripture API calls
-// (the multi-translation endpoint the reader actually hits) under a
-// separate cache so they don't churn with the SPA shell. Strategy is
-// network-first — when online the user gets fresh data, when offline
-// we fall back to whatever the last successful fetch left behind.
-// This sits BEFORE the `return` in the API-bypass list above; the
-// route-matching is duplicated here so the bypass list keeps its
-// "API never cached" guarantee for non-Bible endpoints.
-const BIBLE_CACHE = "bible-iu-scripture-v1";
+// Offline-readable Bible + reference endpoints. Caches:
+//   - /api/bible/{book}/{chapter}/multi  — chapter content (the one
+//     the reader actually hits, multi-translation payload)
+//   - /api/bible/{book}/{chapter}/strongs — original-language tokens
+//     (so the א α toggle keeps working offline)
+//   - /api/bible/books                    — book + chapter list
+//   - /api/bible/translations             — translation registry
+//   - /api/auth/me                        — viewer identity so the UI
+//     knows who's signed in when the network is gone
+//
+// Strategy is network-first (fresh wins when online) with a cache
+// fallback when the network throws. Cache key is unversioned so it
+// survives across SW deploys — the underlying scripture data doesn't
+// change between app versions.
+const BIBLE_CACHE = "bible-iu-scripture-v4";
+const READ_PATH_RE = new RegExp(
+  "^/api/(?:" +
+    "bible/[^/]+/\\d+/multi|" +
+    "bible/[^/]+/\\d+/strongs|" +
+    "bible/books|" +
+    "bible/translations|" +
+    "auth/me|" +
+    "auth/bookmarks|" +
+    "auth/annotations|" +
+    "notes/all|" +
+    "notes/search|" +
+    "rooms(?:$|\\?|/[^/]+(?:/chat)?$|/[^/]+/chat\\?)|" +
+    "reading-plans" +
+    ")",
+);
+// The bundled iOS Capacitor build runs at `capacitor://localhost` and
+// hits the remote API at https://bible.access-term.com. Treat both
+// same-origin AND that remote API host as "ours" for caching.
+const API_ORIGINS = new Set([
+  self.location.origin,
+  "https://bible.access-term.com",
+]);
 self.addEventListener("fetch", (event) => {
   if (event.request.method !== "GET") return;
   const url = new URL(event.request.url);
-  // Only target the multi-translation chapter endpoint — that's
-  // what the BibleView component requests. Books list + verse-level
-  // endpoints stay network-only to keep the cache tame.
-  if (!/^\/bible\/[^/]+\/\d+\/multi/.test(url.pathname)) return;
+  if (!API_ORIGINS.has(url.origin)) return;
+  if (!READ_PATH_RE.test(url.pathname)) return;
   event.respondWith(
     (async () => {
       try {
         const fresh = await fetch(event.request);
+        // Cache 200s only — don't poison the offline copy with 401s
+        // or 5xx errors.
         if (fresh.ok) {
           const cache = await caches.open(BIBLE_CACHE);
           cache.put(event.request, fresh.clone());
@@ -116,10 +144,10 @@ self.addEventListener("fetch", (event) => {
         const cache = await caches.open(BIBLE_CACHE);
         const cached = await cache.match(event.request);
         if (cached) return cached;
-        // No cached copy + offline → standard error response so the
-        // app's loading state resolves to "Couldn't load" cleanly.
+        // No cached copy + offline → 503 so callers resolve to a
+        // graceful "Couldn't load" state instead of hanging.
         return new Response(
-          JSON.stringify({ error: "offline and no cached chapter" }),
+          JSON.stringify({ error: "offline and no cached copy" }),
           {
             status: 503,
             headers: { "Content-Type": "application/json" },

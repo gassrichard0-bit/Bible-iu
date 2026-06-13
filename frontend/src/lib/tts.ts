@@ -183,6 +183,10 @@ export function speak(
     _ttsLog("empty-after-strip");
     return null;
   }
+  if (!isLikelyEnglish(trimmed)) {
+    _ttsLog("skipped-non-english");
+    return null;
+  }
   _ttsLog("speak-start", `${trimmed.length} chars`);
   let stopped = false;
   let audio: HTMLAudioElement | null = null;
@@ -199,7 +203,7 @@ export function speak(
     _ttsLog("fetching", { hasPassword: !!password });
     let resp: Response;
     try {
-      resp = await fetch("/api/tts/speak", {
+      resp = await fetch(`${(import.meta.env.VITE_API_BASE as string | undefined) ?? ""}/api/tts/speak`, {
         method: "POST",
         headers,
         body: JSON.stringify({
@@ -370,6 +374,10 @@ function _speakWebSpeech(
 ): SpeakHandle | null {
   const synth = window.speechSynthesis;
   if (!synth || typeof SpeechSynthesisUtterance !== "function") return null;
+  if (!isLikelyEnglish(text)) {
+    _ttsLog("webspeech-skipped-non-english");
+    return null;
+  }
   const language = opts?.language ?? "en-US";
   try {
     synth.cancel();
@@ -633,6 +641,52 @@ export function ttsSupported(): boolean {
  * usually wrap it lets the English narration flow naturally. The
  * transliteration ("agape" before "(ἀγάπη)") stays since it's Latin.
  */
+/**
+ * Returns true if the text is predominantly English/Latin script.
+ * Used to gate TTS — we only speak English. Deepgram (and the Web
+ * Speech voices) mangle Hebrew, Greek, Cyrillic, CJK, Hangul, Thai,
+ * etc., so the reader silently skips verses whose underlying
+ * translation isn't English.
+ *
+ * Counts letters only (digits, punctuation, whitespace ignored). Text
+ * with no letters at all is treated as English so a verse like "1."
+ * doesn't break the sequence.
+ */
+export function isLikelyEnglish(text: string): boolean {
+  if (!text) return true;
+  for (const ch of text) {
+    const code = ch.codePointAt(0) ?? 0;
+    // Non-English Latin diacritics (Spanish ñ/é, French ç/à, German
+    // ä/ö/ü/ß, Portuguese ã/õ, Polish ą/ł, Vietnamese ơ/ư + tone
+    // marks, Scandinavian å/æ/ø). Public-domain English Bibles
+    // render in pure ASCII — any character here means it isn't
+    // English.
+    if (
+      (code >= 0x00c0 && code <= 0x024f) ||
+      (code >= 0x1e00 && code <= 0x1eff)
+    ) {
+      return false;
+    }
+    // Non-Latin scripts: Greek, Cyrillic, Hebrew, Arabic, Thai,
+    // Greek Extended, Kana, CJK, Hangul.
+    if (
+      (code >= 0x0370 && code <= 0x03ff) ||
+      (code >= 0x0400 && code <= 0x04ff) ||
+      (code >= 0x0590 && code <= 0x05ff) ||
+      (code >= 0x0600 && code <= 0x06ff) ||
+      (code >= 0x0e00 && code <= 0x0e7f) ||
+      (code >= 0x1f00 && code <= 0x1fff) ||
+      (code >= 0x3040 && code <= 0x30ff) ||
+      (code >= 0x3400 && code <= 0x4dbf) ||
+      (code >= 0x4e00 && code <= 0x9fff) ||
+      (code >= 0xac00 && code <= 0xd7af)
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
 export function stripForTTS(text: string): string {
   if (!text) return "";
   return (
@@ -767,13 +821,14 @@ export function speakSequence(
     if (i < 0 || i >= items.length) return null;
     const cleanText = stripForTTS(items[i].text);
     if (!cleanText) return null;
+    if (!isLikelyEnglish(cleanText)) return null;
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
     };
     const password = _getPassword();
     if (password) headers["X-App-Password"] = password;
     try {
-      const resp = await fetch("/api/tts/speak", {
+      const resp = await fetch(`${(import.meta.env.VITE_API_BASE as string | undefined) ?? ""}/api/tts/speak`, {
         method: "POST",
         headers,
         body: JSON.stringify({
@@ -829,6 +884,11 @@ export function speakSequence(
     const cleanText = stripForTTS(items[i].text);
     if (!cleanText) {
       _ttsLog("empty-after-strip", items[i].id);
+      speakAt(i + 1);
+      return;
+    }
+    if (!isLikelyEnglish(cleanText)) {
+      _ttsLog("skipped-non-english", items[i].id);
       speakAt(i + 1);
       return;
     }

@@ -2,22 +2,20 @@
 
 One row per translation = where to find it + what the license requires
 us to show. `source="local"` translations live in the SQLite seed and
-need no loader. `source="api_bible"` and `source="esv"` route through
-the corresponding loader modules.
+need no loader. `source="api_bible"` routes through the corresponding
+loader module.
 
 To enable a new licensed translation:
 
   1. Add an entry below with the publisher's required attribution string
-     and the source's lookup id (API.Bible's `bibleId`, ESV's just "esv").
-  2. Set the env var the loader reads — `API_BIBLE_KEY` or `ESV_API_KEY`.
+     and the source's lookup id (API.Bible's `bibleId`).
+  2. Set the env var the loader reads — `API_BIBLE_KEY`.
   3. (Optional) flag it `enabled=False` while you wait on the license
      signing — the chapter endpoint will refuse it with a clear error
      instead of pretending.
 
 We do NOT ship any licensed text in the seed db. Cached rows are
-treated as a soft cache subject to the publisher's terms (e.g. ESV's
-"don't cache more than half a chapter" rule — enforced by the loader,
-not by trust in the registry).
+treated as a soft cache subject to the publisher's terms.
 """
 from __future__ import annotations
 
@@ -25,23 +23,21 @@ from dataclasses import dataclass
 from typing import Literal, Optional
 
 
-Source = Literal["local", "api_bible", "esv"]
+Source = Literal["local", "api_bible"]
 
 
 @dataclass(frozen=True)
 class TranslationSpec:
     name: str  # canonical name used in the `translations` table + UI
     source: Source
-    # API.Bible: the Bible Id (UUID-ish). ESV: ignored — only one API.
-    # Local: ignored.
+    # API.Bible: the Bible Id (UUID-ish). Local: ignored.
     source_id: Optional[str]
     # Long-form copyright string the publisher requires on display.
     # Stored verbatim in `Translation.license` and surfaced as
     # `attribution` in the chapter response.
     attribution: str
     # How aggressively we may cache the loaded text. The chapter loader
-    # honors this — e.g. ESV's free API requires we not store more than
-    # ~half a chapter at a time.
+    # honors this.
     cache_policy: Literal["full", "half_chapter", "no_cache"] = "full"
     # Set False to mark a translation that's defined for documentation
     # but not yet licensed. Requests get a 402 (Payment Required) with
@@ -448,50 +444,6 @@ _REGISTRY: dict[str, TranslationSpec] = {
             ),
             display_label="NIV",
             enabled=True,
-        ),
-        TranslationSpec(
-            name="NLT",
-            source="api_bible",
-            source_id="placeholder-nlt-bibleid",
-            attribution=(
-                "Scripture quotations are taken from the Holy Bible, New "
-                "Living Translation, copyright © 1996, 2004, 2015 by "
-                "Tyndale House Foundation. Used by permission of Tyndale "
-                "House Publishers, Carol Stream, Illinois 60188. All "
-                "rights reserved."
-            ),
-            enabled=False,
-        ),
-        TranslationSpec(
-            name="CSB",
-            source="api_bible",
-            source_id="placeholder-csb-bibleid",
-            attribution=(
-                "Scripture quotations marked CSB® are taken from the "
-                "Christian Standard Bible®, Copyright © 2017 by Holman "
-                "Bible Publishers. Used by permission. Christian Standard "
-                "Bible® and CSB® are federally registered trademarks of "
-                "Holman Bible Publishers."
-            ),
-            enabled=False,
-        ),
-        # --------- ESV (Crossway direct API) ----------
-        TranslationSpec(
-            name="ESV",
-            source="esv",
-            source_id="esv",
-            attribution=(
-                "Scripture quotations are from the ESV® Bible (The Holy "
-                "Bible, English Standard Version®), copyright © 2001 by "
-                "Crossway, a publishing ministry of Good News Publishers. "
-                "Used by permission. All rights reserved."
-            ),
-            # Crossway's free terms forbid persistent caching. Keep
-            # ESV as live-fetch every request — the daily quota
-            # (500 requests on the free tier) is the actual cap to
-            # watch. A paid agreement can flip this to "full".
-            cache_policy="no_cache",
-            enabled=False,
         ),
     ]
 }

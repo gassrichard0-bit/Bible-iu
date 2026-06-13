@@ -89,7 +89,8 @@ type SettingsPage =
   | "notes-reading"
   | "notifications"
   | "advanced"
-  | "admin-other";
+  | "admin-other"
+  | "about";
 
 /** When the sheet opens straight into a detail page (e.g. the avatar
  *  taps right into Profile), the back chevron should close instead of
@@ -157,6 +158,7 @@ export function SettingsModal({
     "notifications": "Notifications",
     "advanced": "Advanced",
     "admin-other": `Admin in ${otherAdminRooms.length} other room${otherAdminRooms.length === 1 ? "" : "s"}`,
+    "about": "About",
   };
   const title = page ? PAGE_TITLES[page] : "Settings";
 
@@ -220,6 +222,11 @@ export function SettingsModal({
               label="Advanced"
               hint="Debug + engine bypass + audit"
               onClick={() => setPage("advanced")}
+            />
+            <PageRow
+              label="About"
+              hint="Version · Support · Privacy · Licenses"
+              onClick={() => setPage("about")}
             />
             {otherAdminRooms.length > 0 && (
               <PageRow
@@ -817,10 +824,100 @@ export function SettingsModal({
               </Section>
             </>
           )}
+
+          {page === "about" && <AboutPage />}
           </div>
         )}
       </div>
     </BottomSheet>
+  );
+}
+
+function AboutPage() {
+  const appVersion =
+    (import.meta.env.VITE_APP_VERSION as string | undefined) || "1.0";
+  return (
+    <>
+      <Section title="App">
+        <Row>
+          <span className="flex-1 text-sm font-medium">Bible IU</span>
+          <span className="text-[12px] text-neutral-500 dark:text-neutral-400">
+            v{appVersion}
+          </span>
+        </Row>
+        <Row>
+          <span className="flex-1 text-sm">Build</span>
+          <span className="text-[12px] text-neutral-500 dark:text-neutral-400">
+            iOS bundled · {new Date().getFullYear()}
+          </span>
+        </Row>
+      </Section>
+
+      <Section title="Help & contact">
+        <a
+          href="mailto:gassrichard0@gmail.com?subject=Bible%20IU%20Support"
+          className="flex items-center justify-between rounded-xl border border-neutral-200 bg-paper p-3 transition active:scale-[0.98] dark:border-neutral-700 dark:bg-neutral-800"
+        >
+          <span className="flex-1 text-sm font-medium">Email support</span>
+          <span className="text-[12px] text-amber-700 dark:text-amber-300">
+            gassrichard0@gmail.com
+          </span>
+        </a>
+      </Section>
+
+      <Section title="Legal">
+        <a
+          href="https://bible.access-term.com/privacy"
+          target="_blank"
+          rel="noreferrer"
+          className="flex items-center justify-between rounded-xl border border-neutral-200 bg-paper p-3 transition active:scale-[0.98] dark:border-neutral-700 dark:bg-neutral-800"
+        >
+          <span className="flex-1 text-sm">Privacy policy</span>
+          <span className="text-neutral-400" aria-hidden>›</span>
+        </a>
+        <a
+          href="https://bible.access-term.com/terms"
+          target="_blank"
+          rel="noreferrer"
+          className="mt-2 flex items-center justify-between rounded-xl border border-neutral-200 bg-paper p-3 transition active:scale-[0.98] dark:border-neutral-700 dark:bg-neutral-800"
+        >
+          <span className="flex-1 text-sm">Terms of use</span>
+          <span className="text-neutral-400" aria-hidden>›</span>
+        </a>
+      </Section>
+
+      <Section title="Bibles">
+        <p className="px-1 text-[11px] leading-relaxed text-neutral-500 dark:text-neutral-400">
+          Bundled English translations are all in the public domain or
+          released under a free license, and ship inside the app for
+          fully-offline reading:
+        </p>
+        <ul className="mt-2 space-y-1.5 px-1 text-[12px] text-neutral-700 dark:text-neutral-300">
+          <li>King James Version (1611) — public domain.</li>
+          <li>World English Bible — public domain.</li>
+          <li>Berean Standard Bible — public domain.</li>
+          <li>Young's Literal Translation (1862) — public domain.</li>
+          <li>Darby Bible (1890) — public domain.</li>
+        </ul>
+        <p className="mt-3 px-1 text-[11px] leading-relaxed text-neutral-500 dark:text-neutral-400">
+          Licensed translations served over the network (the New
+          International Version and New King James Version) appear
+          courtesy of their publishers under our paid API.Bible
+          Starter Plan. Required attribution is displayed at the
+          bottom of every licensed chapter.
+        </p>
+      </Section>
+
+      <Section title="Open source">
+        <p className="px-1 text-[11px] leading-relaxed text-neutral-500 dark:text-neutral-400">
+          Bible IU is built with React, Vite, Capacitor, FastAPI,
+          SQLAlchemy, Yjs, and a handful of small public-domain
+          datasets (OSHB, MorphGNT, OpenScriptures Strong's
+          dictionaries — CC-BY-SA). Full dependency list in the
+          repository.
+        </p>
+      </Section>
+    </>
   );
 }
 

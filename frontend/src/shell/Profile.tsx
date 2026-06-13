@@ -10,6 +10,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   api,
+  API_BASE,
   getPassword,
   getSessionToken,
   type UserProfile,
@@ -650,11 +651,12 @@ function Field({
  *  URLs and data URIs are returned untouched. */
 function withApiPrefix(path: string): string {
   if (/^(?:https?:|data:|blob:)/i.test(path)) return path;
-  let base = path;
-  if (!base.startsWith("/api")) {
-    if (base.startsWith("/")) base = `/api${base}`;
+  let apiPath = path;
+  if (!apiPath.startsWith("/api")) {
+    if (apiPath.startsWith("/")) apiPath = `/api${apiPath}`;
     else return path;
   }
+  const base = `${API_BASE}${apiPath}`;
   const sep = base.includes("?") ? "&" : "?";
   const auth: string[] = [];
   const pw = getPassword();

@@ -9,7 +9,7 @@
  * The VAPID public key is fetched from the backend at subscribe time
  * (not bundled) so rotating the keypair doesn't require a redeploy.
  */
-import { getPassword, getSessionToken } from "./api";
+import { API_BASE, getPassword, getSessionToken } from "./api";
 
 const SUBSCRIBED_KEY = "bible-iu:push-subscribed";
 // Set once we've made the auto-enable attempt — success OR failure
@@ -104,7 +104,7 @@ export async function subscribeToPush(): Promise<PushStatus> {
 
   // Fetch VAPID key fresh — rotating keys server-side shouldn't
   // require a rebuild. Backend returns { public_key: string | null }.
-  const keyRes = await fetch(`/api/push/vapid-key`, {
+  const keyRes = await fetch(`${API_BASE}/api/push/vapid-key`, {
     headers: {
       "X-App-Password": getPassword(),
       "X-Session-Token": getSessionToken(),
@@ -135,7 +135,7 @@ export async function subscribeToPush(): Promise<PushStatus> {
   const auth =
     subJson.keys?.auth || arrayBufferToBase64Url(sub.getKey("auth"));
 
-  const r = await fetch(`/api/push/subscribe`, {
+  const r = await fetch(`${API_BASE}/api/push/subscribe`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -165,7 +165,7 @@ export async function unsubscribeFromPush(): Promise<void> {
     // best-effort — even if the browser side fails, drop the row
     // server-side so future sends skip this device.
   }
-  await fetch(`/api/push/unsubscribe`, {
+  await fetch(`${API_BASE}/api/push/unsubscribe`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",

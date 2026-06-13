@@ -2,7 +2,7 @@
 
 `load_chapter()` is the only entry point the API layer should call.
 It checks the SQLite cache first; on miss, it routes to the matching
-provider (api.bible / ESV) and persists the result back into the
+provider (api.bible) and persists the result back into the
 `translations` table (subject to the registry's cache policy).
 """
 from __future__ import annotations
@@ -83,11 +83,10 @@ def _persist(
         return 0
 
     verses_list = list(verses)
-    # Half-chapter cache policy (ESV free-tier rule): persist only the
-    # first half of the chapter so we never exceed the publisher's cap.
-    # The caller still receives the full chapter for display — only
-    # disk persistence is trimmed. Next chapter open: re-fetch the
-    # second half on the fly.
+    # Half-chapter cache policy: persist only the first half of the
+    # chapter so we never exceed a publisher's cap when that's part
+    # of their terms. The caller still receives the full chapter for
+    # display — only disk persistence is trimmed.
     if spec.cache_policy == "half_chapter":
         half = max(1, len(verses_list) // 2)
         verses_list = verses_list[:half]
@@ -172,9 +171,6 @@ def load_chapter(
     if spec.source == "api_bible":
         from .api_bible import fetch_chapter as fetch_api_bible
         verses = fetch_api_bible(spec, book, chapter)
-    elif spec.source == "esv":
-        from .esv import fetch_chapter as fetch_esv
-        verses = fetch_esv(spec, book, chapter)
     else:  # pragma: no cover — exhaustive over Source literal
         raise TranslationFetchError(f"No loader for source: {spec.source!r}")
 

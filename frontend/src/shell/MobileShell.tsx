@@ -15,6 +15,7 @@ import type { Theme } from "../lib/theme";
 import type { Settings } from "../lib/settings";
 import {
   api,
+  API_BASE,
   getPassword,
   getSessionToken,
   OSIS_TO_BOOK_NAME,
@@ -27,6 +28,7 @@ import {
   type RoomOut,
 } from "../lib/api";
 import { shareVerseCard } from "../lib/shareVerse";
+import { hapticLight } from "../lib/haptics";
 import { AdminPanel } from "./AdminPanel";
 import { ChatStatusStrip } from "./ChatStatusStrip";
 import { ChatStatusComposer } from "./ChatStatusComposer";
@@ -351,6 +353,52 @@ export function MobileShell({
     } catch {
       // Quiet on failure — share is non-essential. Future: surface a
       // toast.
+    }
+  }
+  /** Copy the active verse to the clipboard in a portable
+   *  "<text> — <Book Chapter:Verse> (<TranslationLabel>)" format.
+   *  Pulls verse text from the active translation when available so
+   *  the copied wording matches what the user is reading on screen. */
+  async function copyVerse(verseId: string): Promise<void> {
+    const parsed = parseVerseRef(verseId);
+    if (!parsed) return;
+    try {
+      // Pull text in KJV — matches the share card so the two
+      // surfaces stay consistent. (Future: use the user's active
+      // translation once that state reaches MobileShell.)
+      const translation = "King James Version";
+      const chapter = await api.bibleChapter(
+        parsed.book,
+        parsed.chapter,
+        translation,
+      );
+      const verseRow = chapter.verses.find((v) => v.verse === parsed.verse);
+      if (!verseRow) return;
+      const bookName = OSIS_TO_BOOK_NAME[parsed.book] ?? parsed.book;
+      const label = `${bookName} ${parsed.chapter}:${parsed.verse}`;
+      const payload = `${verseRow.text.trim()} — ${label} (KJV)`;
+      try {
+        await navigator.clipboard.writeText(payload);
+        void hapticLight();
+      } catch {
+        // Some WKWebView builds reject clipboard.writeText without a
+        // user-activation chain (we have one — the toolbar tap) — fall
+        // back to a hidden textarea + execCommand("copy").
+        const ta = document.createElement("textarea");
+        ta.value = payload;
+        ta.style.position = "fixed";
+        ta.style.left = "-9999px";
+        document.body.appendChild(ta);
+        ta.select();
+        try {
+          document.execCommand("copy");
+          void hapticLight();
+        } finally {
+          ta.remove();
+        }
+      }
+    } catch {
+      // Network failure or chapter not loaded — best-effort.
     }
   }
   /**
@@ -881,7 +929,7 @@ export function MobileShell({
         className="relative z-30 flex items-center justify-between gap-2 px-2 py-2"
         style={{
           paddingTop:
-            "calc(env(safe-area-inset-top, 0px) + 0.5rem)",
+            "calc(env(safe-area-inset-top, 0px) + 0.125rem)",
           paddingLeft:
             "calc(env(safe-area-inset-left, 0px) + 0.5rem)",
           paddingRight:
@@ -1225,6 +1273,40 @@ export function MobileShell({
                 selfUserId={selfUserId}
                 socialNotesEnabled={settings.socialNotesEnabled}
                 onScopeChange={setAgentScope}
+                reasoningHeaderSlot={
+                  agentScope ? (
+                    <button
+                      onClick={() => workspaceRef.current?.widenScope()}
+                      className="inline-flex items-center gap-1 rounded-full border border-white/40 bg-paper/70 px-2 py-0.5 text-[10px] font-medium text-neutral-800 shadow-[0_2px_6px_rgba(0,0,0,0.10),inset_0_1px_0_rgba(255,255,255,0.45)] backdrop-blur-2xl backdrop-saturate-200 dark:border-white/10 dark:bg-neutral-900/55 dark:text-neutral-100 dark:shadow-[0_2px_6px_rgba(0,0,0,0.45),inset_0_1px_0_rgba(255,255,255,0.06)]"
+                      title={`Asking about ${agentScope.label}. Tap to widen.`}
+                      aria-label={`Agent scope: ${agentScope.label}. Tap to widen.`}
+                    >
+                      <span className="text-[9px] font-semibold uppercase tracking-wide text-neutral-600 dark:text-neutral-300">
+                        {agentScope.kind}
+                      </span>
+                      {roomQuota &&
+                        roomQuota.limit != null &&
+                        roomQuota.remaining != null && (
+                          <span
+                            className={`rounded-full px-1 text-[8px] font-semibold ${
+                              roomQuota.remaining <= 1
+                                ? "bg-amber-200 text-amber-900 dark:bg-amber-700/60 dark:text-amber-100"
+                                : "bg-neutral-900/10 text-neutral-600 dark:bg-white/15 dark:text-neutral-300"
+                            }`}
+                            aria-label={`${roomQuota.remaining} of ${roomQuota.limit} questions left today`}
+                            title={`${roomQuota.remaining} of ${roomQuota.limit} questions left today`}
+                          >
+                            {roomQuota.remaining}
+                          </span>
+                        )}
+                      {agentScope.kind !== "bible" && (
+                        <span className="text-neutral-400" aria-hidden>
+                          ⤺
+                        </span>
+                      )}
+                    </button>
+                  ) : null
+                }
                 annotations={annotations}
                 onApplyAnnotation={applyAnnotation}
                 onClearAnnotationKind={clearAnnotationKind}
@@ -1393,7 +1475,7 @@ export function MobileShell({
             className="pointer-events-none fixed right-3 z-40 flex flex-col items-end gap-2 pt-2"
             style={{
               bottom: keyboardInset,
-              paddingBottom: "calc(env(safe-area-inset-bottom) + 40px)",
+              paddingBottom: "calc(env(safe-area-inset-bottom) + 20px)",
               opacity: panelHidden ? 0 : 1,
               transform: panelHidden ? "translateY(20px)" : "translateY(0)",
               transition: "opacity 260ms ease-out, transform 260ms ease-out",
@@ -1523,13 +1605,9 @@ export function MobileShell({
                 // bottom rim + dark hairline) replaces the lifted drop
                 // shadow on Bible. Other tabs keep the floating look.
                 boxShadow:
-                  tab === "bible"
-                    ? theme === "dark"
-                      ? "inset 0 8px 18px rgba(0,0,0,0.75), inset 0 3px 8px rgba(0,0,0,0.50), inset 0 -2px 0 rgba(255,255,255,0.12), 0 0 0 1px rgba(0,0,0,0.55)"
-                      : "inset 0 8px 18px rgba(0,0,0,0.35), inset 0 3px 8px rgba(0,0,0,0.20), inset 0 -2px 0 rgba(255,255,255,0.70), 0 0 0 1px rgba(0,0,0,0.18)"
-                    : theme === "dark"
-                      ? "0 6px 18px rgba(0,0,0,0.45), inset 0 1.5px 0 rgba(255,255,255,0.10), 0 0 0 1px rgba(255,255,255,0.06), inset 0 -1px 0 rgba(0,0,0,0.25)"
-                      : "0 6px 18px rgba(0,0,0,0.18), inset 0 1.5px 0 rgba(255,255,255,0.55), 0 0 0 1px rgba(0,0,0,0.04), inset 0 -1px 0 rgba(0,0,0,0.06)",
+                  theme === "dark"
+                    ? "0 6px 18px rgba(0,0,0,0.45), inset 0 1.5px 0 rgba(255,255,255,0.10), 0 0 0 1px rgba(255,255,255,0.06), inset 0 -1px 0 rgba(0,0,0,0.25)"
+                    : "0 6px 18px rgba(0,0,0,0.18), inset 0 1.5px 0 rgba(255,255,255,0.55), 0 0 0 1px rgba(0,0,0,0.04), inset 0 -1px 0 rgba(0,0,0,0.06)",
                 // Lean the pill toward the active drag direction so
                 // the user feels the gesture taking hold.
                 transform:
@@ -1541,11 +1619,7 @@ export function MobileShell({
                   : "transform 180ms cubic-bezier(0.32, 0.72, 0.0, 1)",
                 touchAction: "none",
               }}
-              className={`pointer-events-auto grid h-[64px] w-[64px] place-items-center rounded-[28px] backdrop-blur-2xl backdrop-saturate-[1.8] active:scale-[0.97] ${
-                tab === "bible"
-                  ? "bg-neutral-200/70 dark:bg-black/55"
-                  : "glass-specular bg-paper/55 dark:bg-neutral-900/45"
-              } ${
+              className={`pointer-events-auto grid h-[64px] w-[64px] place-items-center rounded-[28px] backdrop-blur-2xl backdrop-saturate-[1.8] active:scale-[0.97] glass-specular bg-paper/55 dark:bg-neutral-900/45 ${
                 open
                   ? "text-neutral-900 dark:text-neutral-50"
                   : "text-neutral-700 dark:text-neutral-200"
@@ -1560,49 +1634,9 @@ export function MobileShell({
         );
       })()}
 
-      {/* Floating scope chip — visible only on the Bible tab while
-          the AI composer is open. Spells out what scope the next
-          /ask will use so the user can't be surprised by an answer
-          about a verse when they meant the chapter. Tap to widen
-          one level (verse → chapter → testament → bible). */}
-      {tab === "bible" && composerOpen && agentScope && (
-        <div
-          className="pointer-events-none fixed inset-x-0 z-40 flex justify-center"
-          style={{
-            bottom: "calc(env(safe-area-inset-bottom, 0px) + 76px)",
-          }}
-        >
-          <button
-            onClick={() => workspaceRef.current?.widenScope()}
-            className="pointer-events-auto inline-flex items-center gap-1.5 rounded-full border border-white/40 bg-paper/70 px-3 py-1 text-[11px] font-medium text-neutral-800 shadow-[0_4px_14px_rgba(0,0,0,0.10),inset_0_1px_0_rgba(255,255,255,0.45)] backdrop-blur-2xl backdrop-saturate-200 dark:border-white/10 dark:bg-neutral-900/55 dark:text-neutral-100 dark:shadow-[0_4px_14px_rgba(0,0,0,0.45),inset_0_1px_0_rgba(255,255,255,0.06)]"
-            title="Tap to widen the scope"
-            aria-label={`Agent scope: ${agentScope.label}. Tap to widen.`}
-          >
-            <span className="rounded-full bg-neutral-900/10 px-1.5 text-[9px] font-semibold uppercase tracking-wide text-neutral-600 dark:bg-white/15 dark:text-neutral-300">
-              {agentScope.kind}
-            </span>
-            <span className="truncate">Asking about {agentScope.label}</span>
-            {roomQuota && roomQuota.limit != null && roomQuota.remaining != null && (
-              <span
-                className={`ml-1 rounded-full px-1.5 text-[9px] font-semibold ${
-                  roomQuota.remaining <= 1
-                    ? "bg-amber-200 text-amber-900 dark:bg-amber-700/60 dark:text-amber-100"
-                    : "bg-neutral-900/10 text-neutral-600 dark:bg-white/15 dark:text-neutral-300"
-                }`}
-                aria-label={`${roomQuota.remaining} of ${roomQuota.limit} questions left today`}
-                title={`${roomQuota.remaining} of ${roomQuota.limit} questions left today`}
-              >
-                {roomQuota.remaining} left
-              </span>
-            )}
-            {agentScope.kind !== "bible" && (
-              <span className="text-neutral-400" aria-hidden>
-                ⤺
-              </span>
-            )}
-          </button>
-        </div>
-      )}
+      {/* Scope chip now rides in the ReasoningStream header (next to
+       *  "Original language") — see the `reasoningHeaderSlot` prop
+       *  passed into <Workspace> below. */}
 
       {/* Apple "liquid glass" detached tab bar — floats over the
        *  scripture/content rather than bolting to the bottom edge.
@@ -1616,7 +1650,7 @@ export function MobileShell({
           // Match the standalone AI pill — both wrappers sit lifted
           // by env(safe-area-inset-bottom) so the main tab bar and
           // the AI pill share the same floating baseline.
-          paddingBottom: "calc(env(safe-area-inset-bottom) + 40px)",
+          paddingBottom: "calc(env(safe-area-inset-bottom) + 20px)",
           opacity: panelHidden ? 0 : 1,
           transform: panelHidden ? "translateY(20px)" : "translateY(0)",
           transition: "opacity 260ms ease-out, transform 260ms ease-out",
@@ -1637,6 +1671,9 @@ export function MobileShell({
             onClose={() => setAnnotationTarget(null)}
             onShare={(verseId) => {
               void shareVerse(verseId);
+            }}
+            onCopy={(verseId) => {
+              void copyVerse(verseId);
             }}
           />
         ) : composerOpen ? (
@@ -1696,18 +1733,10 @@ export function MobileShell({
             // INTO the page. Other tabs keep the floating look since
             // their composers are for outbound posting, not a hidden
             // layer.
-            className={`pointer-events-auto relative flex h-[64px] w-full items-stretch gap-1 rounded-[28px] border px-1 py-1 backdrop-blur-2xl backdrop-saturate-[1.8] ${
-              tab === "bible"
-                ? "border-black/20 bg-neutral-200/70 dark:border-white/5 dark:bg-black/55"
-                : "glass-specular border-white/40 bg-paper/55 dark:border-white/10 dark:bg-neutral-900/45"
-            }`}
+            className={`pointer-events-auto relative flex h-[64px] w-full items-stretch gap-1 rounded-[28px] border px-1 py-1 backdrop-blur-2xl backdrop-saturate-[1.8] glass-specular border-white/40 bg-paper/55 dark:border-white/10 dark:bg-neutral-900/45`}
             style={{
               boxShadow:
-                tab === "bible"
-                  ? theme === "dark"
-                    ? "inset 0 8px 18px rgba(0,0,0,0.75), inset 0 3px 8px rgba(0,0,0,0.50), inset 0 -2px 0 rgba(255,255,255,0.12), 0 0 0 1px rgba(0,0,0,0.55)"
-                    : "inset 0 8px 18px rgba(0,0,0,0.35), inset 0 3px 8px rgba(0,0,0,0.20), inset 0 -2px 0 rgba(255,255,255,0.70), 0 0 0 1px rgba(0,0,0,0.18)"
-                  : theme === "dark"
+                theme === "dark"
                     ? "0 6px 18px rgba(0,0,0,0.45), inset 0 1.5px 0 rgba(255,255,255,0.10), 0 0 0 1px rgba(255,255,255,0.06), inset 0 -1px 0 rgba(0,0,0,0.25)"
                     : "0 6px 18px rgba(0,0,0,0.18), inset 0 1.5px 0 rgba(255,255,255,0.55), 0 0 0 1px rgba(0,0,0,0.04), inset 0 -1px 0 rgba(0,0,0,0.06)",
               // Same contact-push as the tab nav: when the pill is
@@ -2630,13 +2659,16 @@ function BookmarkFilled() {
   );
 }
 
-/** Prefix server-relative chat image URLs with `/api` and append the
- *  deployment password + session token in the query string so the
- *  browser's <img> loader (which can't send custom headers) gets the
- *  same auth as jsonFetch. Same pattern as RoomAvatar. */
+/** Prefix server-relative chat image URLs with `${API_BASE}/api` and
+ *  append the deployment password + session token in the query
+ *  string so the browser's <img> loader (which can't send custom
+ *  headers) gets the same auth as jsonFetch. In the bundled iOS
+ *  build API_BASE is `https://bible.access-term.com`; the PWA
+ *  leaves it empty so the URL stays same-origin. */
 function chatImageWithAuth(path: string): string {
   if (/^https?:\/\//i.test(path)) return path;
-  const base = path.startsWith("/api") ? path : `/api${path}`;
+  const apiPath = path.startsWith("/api") ? path : `/api${path}`;
+  const base = `${API_BASE}${apiPath}`;
   const sep = base.includes("?") ? "&" : "?";
   const auth: string[] = [];
   const pw = getPassword();
@@ -3991,8 +4023,10 @@ function ChatPanel({
     let closed = false;
     let backoff = 1000;
     const connect = () => {
-      const proto = location.protocol === "https:" ? "wss:" : "ws:";
-      const url = new URL(`${proto}//${location.host}/ws/chat/${roomId}`);
+      const wsBase =
+        (import.meta.env.VITE_WS_BASE as string | undefined) ||
+        `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}`;
+      const url = new URL(`${wsBase}/ws/chat/${roomId}`);
       url.searchParams.set("password", getPassword());
       url.searchParams.set("session", getSessionToken());
       ws = new WebSocket(url.toString());

@@ -55,8 +55,10 @@ function buildHandle(handle: string, roomId: string) {
   // Local IndexedDB persistence — survives network drop + tab close.
   const persistence = new IndexeddbPersistence(docName, doc);
 
-  const proto = location.protocol === "https:" ? "wss:" : "ws:";
-  const url = `${proto}//${location.host}/ws/yjs`;
+  const wsBase =
+    (import.meta.env.VITE_WS_BASE as string | undefined) ||
+    `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}`;
+  const url = `${wsBase}/ws/yjs`;
   const provider = new WebsocketProvider(url, docName, doc, {
     params: {
       password: getPassword(),

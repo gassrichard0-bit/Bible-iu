@@ -16,6 +16,7 @@ import {
   useImperativeHandle,
   useRef,
   useState,
+  type ReactNode,
 } from "react";
 import { Panel, PanelGroup } from "react-resizable-panels";
 import { ResourcesPanel } from "./ResourcesPanel/ResourcesPanel";
@@ -155,6 +156,11 @@ interface Props {
   /** Live notification whenever the resolved agent scope changes —
    *  the floating scope chip above the composer subscribes to this. */
   onScopeChange?: (scope: WorkspaceScope) => void;
+  /** Optional chip injected into the ReasoningStream header (next to
+   *  "Original language"). MobileShell uses this to surface the
+   *  scope-widen control in the panel chrome instead of floating over
+   *  the composer. */
+  reasoningHeaderSlot?: ReactNode;
   /** All of the user's verse annotations (highlight/underline/strike).
    *  Threaded through BibleView so the long-press toolbar can mark up
    *  scripture without round-tripping to a parent for state. */
@@ -232,6 +238,7 @@ export const Workspace = forwardRef<WorkspaceHandle, Props>(function Workspace(
     selfUserId,
     socialNotesEnabled,
     onScopeChange,
+    reasoningHeaderSlot,
     annotations,
     onApplyAnnotation,
     onClearAnnotationKind,
@@ -388,6 +395,40 @@ export const Workspace = forwardRef<WorkspaceHandle, Props>(function Workspace(
 
   function ask(question: string) {
     if (!question.trim()) return;
+    // AI requires the server (model + citation engine + Hebrew/Greek
+    // index). When the device is offline the WebSocket never
+    // connects and the user is left staring at a "thinking..."
+    // spinner. Refuse the ask up-front with a one-shot toast so the
+    // intent is clear and the question can be retried after
+    // reconnect.
+    if (typeof navigator !== "undefined" && navigator.onLine === false) {
+      // Capture the failure as a visible turn so the user sees their
+      // question landed and gets a clear reason it didn't run. They
+      // can retry verbatim once they reconnect.
+      const offlineTurn: ConversationTurn = {
+        id: `t-${Date.now()}-offline`,
+        question: question.trim(),
+        verse_ref: "GEN.1.1",
+        scope_label: "",
+        scope_kind: "verse",
+        reasoning: "",
+        rawCot: "",
+        stages: [],
+        response: {
+          decision: "refuse",
+          reasoning: "",
+          answer:
+            "AI Assistant is unavailable offline. Reconnect to the network and ask again.",
+          claims: [],
+          dropped: [],
+          revision_hints: [],
+          refusal_reason: "offline",
+        },
+        pending: false,
+      };
+      conversation.add(offlineTurn);
+      return;
+    }
     // ask() runs inside the user's tap-Send gesture — the closest
     // gesture context we have to when the agent's answer will arrive.
     // Use this moment to (re-)arm the audio session so the auto-speak
@@ -629,6 +670,7 @@ export const Workspace = forwardRef<WorkspaceHandle, Props>(function Workspace(
               onAnnotationTargetChange={onAnnotationTargetChange}
               bottomInset={bottomInset}
               accentKey={accentKey}
+              reasoningHeaderSlot={reasoningHeaderSlot}
             />
           </Panel>
         </PanelGroup>
@@ -683,6 +725,7 @@ export const Workspace = forwardRef<WorkspaceHandle, Props>(function Workspace(
               onAnnotationTargetChange={onAnnotationTargetChange}
               accentKey={accentKey}
               bottomInset={bottomInset}
+              reasoningHeaderSlot={reasoningHeaderSlot}
           />
           {/* Mobile slide-over for Resources */}
           {resourcesOpen && (
@@ -765,6 +808,7 @@ function CenterColumn(props: {
   onAnnotationTargetChange?: (t: AnnotationTarget | null) => void;
   bottomInset?: boolean;
   accentKey?: AccentKey;
+  reasoningHeaderSlot?: ReactNode;
 }) {
   const {
     book,
@@ -808,6 +852,7 @@ function CenterColumn(props: {
     onAnnotationTargetChange,
     bottomInset,
     accentKey,
+    reasoningHeaderSlot,
   } = props;
 
   // The Bible panel renders one of three views depending on zoom:
@@ -874,6 +919,7 @@ function CenterColumn(props: {
               onToggleOriginal={onToggleOriginal}
               onJumpToCitation={onJumpToCitation}
               debugMode={debugMode}
+              headerSlot={reasoningHeaderSlot}
             />
           </Panel>
         </PanelGroup>
@@ -886,6 +932,7 @@ function CenterColumn(props: {
             onToggleOriginal={onToggleOriginal}
             onJumpToCitation={onJumpToCitation}
             debugMode={debugMode}
+            headerSlot={reasoningHeaderSlot}
           />
         </div>
       ) : mobilePanel === "bible" ? (
@@ -906,6 +953,7 @@ function CenterColumn(props: {
               onToggleOriginal={onToggleOriginal}
               onJumpToCitation={onJumpToCitation}
               debugMode={debugMode}
+              headerSlot={reasoningHeaderSlot}
             />
           </Panel>
         </PanelGroup>

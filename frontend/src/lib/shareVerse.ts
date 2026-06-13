@@ -221,38 +221,92 @@ function withAlpha(hex: string, a: number): string {
 }
 
 /** Build the card and trigger the platform's native share sheet.
- *  Falls back to download on platforms without `navigator.share`
- *  (most desktops) or `canShare` for files (some browsers). */
+ *  Order of preference:
+ *    1. Capacitor's Share plugin (native UIActivityViewController on
+ *       iOS — full set of apps + AirDrop + Save to Files. Wins when
+ *       running inside the Capacitor app.)
+ *    2. `navigator.share` with file (modern Safari + Chrome PWAs).
+ *    3. `navigator.share` with text only (older PWAs — no image, but
+ *       at least the verse + reference can be sent to iMessage).
+ *    4. Desktop download (write the PNG to the user's Downloads).
+ */
 export async function shareVerseCard(
   args: BuildCardArgs,
 ): Promise<"shared" | "downloaded"> {
   const blob = await buildCard(args);
   const filename = `${args.verseId.replaceAll(".", "-")}.png`;
   const file = new File([blob], filename, { type: "image/png" });
+  const shareText = `${args.text} — ${args.verseLabel}`;
 
-  const nav = navigator as Navigator & {
-    canShare?: (data: { files?: File[] }) => boolean;
-    share?: (data: { files?: File[]; title?: string; text?: string }) => Promise<void>;
-  };
-  if (
-    typeof nav.share === "function" &&
-    typeof nav.canShare === "function" &&
-    nav.canShare({ files: [file] })
-  ) {
-    try {
-      await nav.share({
-        files: [file],
+  // Path 1: Capacitor native share. Inside the iOS app the plugin
+  // bridges to UIActivityViewController, giving the user every
+  // installed share target (Messages, Mail, Notes, AirDrop, etc.).
+  // We need to write the image to a temp file first because the
+  // plugin's `files` field expects file:// URIs.
+  try {
+    const isCapacitor =
+      typeof (window as unknown as { Capacitor?: { isNativePlatform?: () => boolean } })
+        .Capacitor?.isNativePlatform === "function" &&
+      (
+        (window as unknown as { Capacitor: { isNativePlatform: () => boolean } })
+          .Capacitor.isNativePlatform()
+      );
+    if (isCapacitor) {
+      const [{ Share }, { Filesystem, Directory }] = await Promise.all([
+        import("@capacitor/share"),
+        import("@capacitor/filesystem"),
+      ]);
+      const base64 = await blobToBase64(blob);
+      const writeRes = await Filesystem.writeFile({
+        path: filename,
+        data: base64,
+        directory: Directory.Cache,
+      });
+      await Share.share({
         title: args.verseLabel,
-        text: `${args.text} — ${args.verseLabel}`,
+        text: shareText,
+        url: writeRes.uri,
+        dialogTitle: "Share verse",
       });
       return "shared";
-    } catch (err) {
-      // User cancelled or share failed — fall through to download.
-      if ((err as DOMException).name === "AbortError") return "shared";
+    }
+  } catch (err) {
+    // Plugin not available OR user cancelled. AbortError → user
+    // hit Cancel, treat as success. Anything else falls through.
+    if ((err as DOMException)?.name === "AbortError") return "shared";
+  }
+
+  // Path 2/3: Web Share API on PWA browsers.
+  const nav = navigator as Navigator & {
+    canShare?: (data: { files?: File[] }) => boolean;
+    share?: (data: {
+      files?: File[];
+      title?: string;
+      text?: string;
+    }) => Promise<void>;
+  };
+  if (typeof nav.share === "function") {
+    if (
+      typeof nav.canShare === "function" &&
+      nav.canShare({ files: [file] })
+    ) {
+      try {
+        await nav.share({ files: [file], title: args.verseLabel, text: shareText });
+        return "shared";
+      } catch (err) {
+        if ((err as DOMException).name === "AbortError") return "shared";
+      }
+    } else {
+      try {
+        await nav.share({ title: args.verseLabel, text: shareText });
+        return "shared";
+      } catch (err) {
+        if ((err as DOMException).name === "AbortError") return "shared";
+      }
     }
   }
 
-  // Desktop fallback: trigger a download.
+  // Path 4: Desktop fallback — trigger a download.
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
@@ -262,4 +316,19 @@ export async function shareVerseCard(
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
   return "downloaded";
+}
+
+async function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onerror = () => reject(fr.error);
+    fr.onload = () => {
+      const result = fr.result as string;
+      // FileReader returns `data:image/png;base64,<...>` — strip the
+      // prefix; Capacitor's Filesystem expects bare base64.
+      const comma = result.indexOf(",");
+      resolve(comma >= 0 ? result.slice(comma + 1) : result);
+    };
+    fr.readAsDataURL(blob);
+  });
 }

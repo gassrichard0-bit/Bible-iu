@@ -213,8 +213,10 @@ function buildHandle(
     };
   }
 
-  const proto = location.protocol === "https:" ? "wss:" : "ws:";
-  const wsUrl = `${proto}//${location.host}/ws/yjs`;
+  const wsBase =
+    (import.meta.env.VITE_WS_BASE as string | undefined) ||
+    `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}`;
+  const wsUrl = `${wsBase}/ws/yjs`;
   const wsParams = {
     password: getPassword(),
     session: getSessionToken(),

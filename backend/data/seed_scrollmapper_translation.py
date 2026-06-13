@@ -22,8 +22,8 @@ JSON shape (Format A):
 
 Roman-numeral books ("I Samuel", "II Kings", "III John") are normalized
 to Arabic before OSIS lookup. The book-name → OSIS map is built off
-the ESV loader's reverse table — every Protestant-canon book is
-represented there.
+the canonical OSIS → English table below — every Protestant-canon
+book is represented there.
 
 Usage:
     python -m backend.data.seed_scrollmapper_translation Darby
@@ -48,11 +48,39 @@ from sqlalchemy.orm import Session
 
 from .db import engine, init_db
 from .models import Translation, Verse
-# The ESV loader carries the canonical OSIS → English book-name table
-# for the Protestant canon. Reverse it for our lookup. Deuterocanonical
-# books — if a scrollmapper translation includes them — fall through
-# the normalizer and get skipped with a warning.
-from ..bible_loaders.esv import _OSIS_TO_ESV
+
+# Canonical OSIS → English book-name table for the Protestant canon.
+# Reversed by `_english_to_osis()` below. Deuterocanonical books
+# (Tobit, Judith, Sirach, etc.) intentionally not listed — if a
+# scrollmapper source includes them, the seeder skips them with a
+# warning instead of guessing.
+_OSIS_TO_ESV: dict[str, str] = {
+    # Old Testament
+    "GEN": "Genesis", "EXO": "Exodus", "LEV": "Leviticus",
+    "NUM": "Numbers", "DEU": "Deuteronomy", "JOS": "Joshua",
+    "JDG": "Judges", "RUT": "Ruth", "1SA": "1 Samuel",
+    "2SA": "2 Samuel", "1KI": "1 Kings", "2KI": "2 Kings",
+    "1CH": "1 Chronicles", "2CH": "2 Chronicles", "EZR": "Ezra",
+    "NEH": "Nehemiah", "EST": "Esther", "JOB": "Job",
+    "PSA": "Psalms", "PRO": "Proverbs", "ECC": "Ecclesiastes",
+    "SNG": "Song of Solomon", "ISA": "Isaiah", "JER": "Jeremiah",
+    "LAM": "Lamentations", "EZK": "Ezekiel", "DAN": "Daniel",
+    "HOS": "Hosea", "JOL": "Joel", "AMO": "Amos",
+    "OBA": "Obadiah", "JON": "Jonah", "MIC": "Micah",
+    "NAM": "Nahum", "HAB": "Habakkuk", "ZEP": "Zephaniah",
+    "HAG": "Haggai", "ZEC": "Zechariah", "MAL": "Malachi",
+    # New Testament
+    "MAT": "Matthew", "MRK": "Mark", "LUK": "Luke", "JHN": "John",
+    "ACT": "Acts", "ROM": "Romans", "1CO": "1 Corinthians",
+    "2CO": "2 Corinthians", "GAL": "Galatians", "EPH": "Ephesians",
+    "PHP": "Philippians", "COL": "Colossians",
+    "1TH": "1 Thessalonians", "2TH": "2 Thessalonians",
+    "1TI": "1 Timothy", "2TI": "2 Timothy", "TIT": "Titus",
+    "PHM": "Philemon", "HEB": "Hebrews", "JAS": "James",
+    "1PE": "1 Peter", "2PE": "2 Peter", "1JN": "1 John",
+    "2JN": "2 John", "3JN": "3 John", "JUD": "Jude",
+    "REV": "Revelation",
+}
 
 
 # Known translations on scrollmapper that are free or public-domain.
@@ -204,7 +232,7 @@ def _book_name_to_arabic(name: str) -> str:
 
 
 _ALIASES: dict[str, str] = {
-    # Common alternate names → canonical English form used in _OSIS_TO_ESV
+    # Common alternate names → canonical English form used in the OSIS table
     "Song of Songs": "Song of Solomon",
     "Canticles": "Song of Solomon",
     "Revelation of John": "Revelation",

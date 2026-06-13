@@ -338,7 +338,7 @@ class AvatarImageOut(BaseModel):
     dependencies=[Depends(require_password)],
 )
 async def upload_my_avatar(
-    file: UploadFile = File(...),
+    request: Request,
     s: Session = Depends(_db_session),
     x_session_token: Optional[str] = Header(default=None),
 ) -> AvatarImageOut:
@@ -348,7 +348,8 @@ async def upload_my_avatar(
     user = _resolve_session(s, x_session_token)
     if user is None:
         raise HTTPException(401, "not signed in")
-    raw = await file.read()
+    from .main import _read_image_bytes
+    raw, _ = await _read_image_bytes(request)
     if len(raw) > _USER_IMAGE_MAX_BYTES:
         raise HTTPException(413, "Image too large (max 20MB).")
     from io import BytesIO

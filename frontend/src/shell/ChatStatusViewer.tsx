@@ -8,7 +8,7 @@
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, type StatusOut } from "../lib/api";
-import { getPassword, getSessionToken } from "../lib/api";
+import { API_BASE, getPassword, getSessionToken } from "../lib/api";
 import { Avatar } from "./Profile";
 
 /** Local copy of the auth-cred-injecting URL helper used by avatars.
@@ -16,11 +16,12 @@ import { Avatar } from "./Profile";
  *  duplicating it is cheaper than a refactor right now. */
 function withApiPrefix(path: string): string {
   if (/^(?:https?:|data:|blob:)/i.test(path)) return path;
-  let base = path;
-  if (!base.startsWith("/api")) {
-    if (base.startsWith("/")) base = `/api${base}`;
+  let apiPath = path;
+  if (!apiPath.startsWith("/api")) {
+    if (apiPath.startsWith("/")) apiPath = `/api${apiPath}`;
     else return path;
   }
+  const base = `${API_BASE}${apiPath}`;
   const sep = base.includes("?") ? "&" : "?";
   const auth: string[] = [];
   const pw = getPassword();

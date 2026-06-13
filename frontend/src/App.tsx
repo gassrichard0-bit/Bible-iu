@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { JoinRoom } from "./shell/JoinRoom";
 import { Login } from "./shell/Login";
 import { MobileShell } from "./shell/MobileShell";
+import { OfflineIndicator } from "./shell/OfflineIndicator";
 import { PasswordGate } from "./shell/PasswordGate";
 import { ResetPasswordSheet } from "./shell/ResetPasswordSheet";
 import { SocialShell } from "./shell/SocialShell";
@@ -313,6 +314,7 @@ export function App() {
         onPendingRoomConsumed={() => setJoinedRoomId(null)}
       />
       <UpdateAvailableBanner />
+      <OfflineIndicator />
       <ConfirmDialogHost />
       {resetToken && (
         <ResetPasswordSheet

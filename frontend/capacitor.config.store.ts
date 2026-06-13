@@ -8,12 +8,16 @@ const config: CapacitorConfig = {
   appName: "Bible IU",
   webDir: "dist",
   ios: {
-    contentInset: "always",
+    contentInset: "never",
+    backgroundColor: "#171717",
     preferredContentMode: "mobile",
     allowsLinkPreview: true,
     scrollEnabled: true,
   },
   plugins: {
+    CapacitorHttp: {
+      enabled: true,
+    },
     SplashScreen: {
       launchShowDuration: 1000,
       backgroundColor: "#171717",

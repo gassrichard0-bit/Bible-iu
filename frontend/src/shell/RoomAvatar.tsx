@@ -5,7 +5,7 @@
  * placeholder without the upload plumbing.
  */
 import { useMemo, useState } from "react";
-import { getPassword, getSessionToken } from "../lib/api";
+import { API_BASE, getPassword, getSessionToken } from "../lib/api";
 
 function hueFromId(id: string): number {
   // Cheap, stable hash. djb2 variant — we just need the value to be
@@ -36,7 +36,8 @@ function initials(name: string): string {
 function withApiPrefix(path: string | null | undefined): string | null {
   if (!path) return null;
   if (/^https?:\/\//i.test(path)) return path;
-  const base = path.startsWith("/api") ? path : `/api${path}`;
+  const apiPath = path.startsWith("/api") ? path : `/api${path}`;
+  const base = `${API_BASE}${apiPath}`;
   // jsonFetch's auth handles cookies via headers; image src doesn't,
   // so duplicate the credentials into the URL.
   const sep = base.includes("?") ? "&" : "?";

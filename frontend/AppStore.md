@@ -19,7 +19,7 @@ Fill in the **TODO** lines before clicking *Submit for Review*.
 
 ## 2. App description (4 000 chars max)
 
-> **Bible IU** is a clean, modern Bible reader and small-group study companion. Read scripture in 50+ translations — including KJV, NKJV, NIV, ESV (coming soon), and a dozen languages — and bring your group along with shared notes, chat, and an AI study assistant.
+> **Bible IU** is a clean, modern Bible reader and small-group study companion. Read scripture in 50+ translations — including KJV, NKJV, NIV, and a dozen languages — and bring your group along with shared notes, chat, and an AI study assistant.
 >
 > **Features**
 > - 50+ Bible translations including King James, New King James, New International, Russian Synodal, Reina-Valera, Bíblia Livre, 和合本, 개역한글, and more.
@@ -54,7 +54,7 @@ Already declared via `frontend/ios/App/App/PrivacyInfo.xcprivacy`. Apple still a
 - **Linked to user?** Yes (handle, email if provided, notes, bookmarks, highlights, chat messages).
 - **Used for tracking?** No.
 - **Used for advertising?** No.
-- **Third-party SDKs that collect data?** None. (Capacitor, API.Bible, Crossway ESV API are first-party server calls — none of them embed advertising SDKs.)
+- **Third-party SDKs that collect data?** None. (Capacitor and API.Bible are first-party server calls — none of them embed advertising SDKs.)
 
 ## 6. Screenshots required
 

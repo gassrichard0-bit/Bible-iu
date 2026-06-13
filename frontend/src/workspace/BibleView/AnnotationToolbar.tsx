@@ -64,6 +64,10 @@ interface Props {
    *  supplied so the strip can stay annotation-only in contexts that
    *  haven't wired sharing yet (the SocialShell desktop, e.g.). */
   onShare?: (verseId: string) => void;
+  /** Writes the verse text + reference + translation label to the
+   *  clipboard ("For God so loved the world… — John 3:16 (KJV)").
+   *  Hidden when not supplied. */
+  onCopy?: (verseId: string) => void;
 }
 
 interface ToolSection {
@@ -89,6 +93,7 @@ export function AnnotationToolbar({
   onClearAll,
   onClose,
   onShare,
+  onCopy,
 }: Props) {
   if (!target) return null;
 
@@ -223,6 +228,16 @@ export function AnnotationToolbar({
       >
         <EraserIcon />
       </button>
+      {onCopy && (
+        <button
+          onClick={() => onCopy(target.verseId)}
+          className="grid h-10 w-10 shrink-0 place-items-center rounded-full border border-neutral-200 bg-paper text-neutral-700 hover:bg-paper-soft dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-200 dark:hover:bg-neutral-700"
+          aria-label="Copy verse with reference"
+          title="Copy"
+        >
+          <CopyIcon />
+        </button>
+      )}
       {onShare && (
         <button
           onClick={() => onShare(target.verseId)}
@@ -234,6 +249,26 @@ export function AnnotationToolbar({
         </button>
       )}
     </div>
+  );
+}
+
+function CopyIcon() {
+  // Two stacked rounded rects — the canonical iOS Copy glyph.
+  return (
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <rect x="9" y="9" width="11" height="11" rx="2.5" />
+      <path d="M5 15V6.5A2.5 2.5 0 0 1 7.5 4H15" />
+    </svg>
   );
 }
 

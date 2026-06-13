@@ -135,6 +135,56 @@ interface Props {
   accentKey?: AccentKey;
 }
 
+/**
+ * Translation names the voice reader is allowed to speak. Anything
+ * outside this set — Russian Synodal, Reina-Valera, Vulgata, Chinese
+ * Union, etc. — is silently refused. The Deepgram + Web Speech voices
+ * butcher non-English text (and pronounce Romance/Germanic words with
+ * an English accent), so the reader simply no-ops on those
+ * translations.
+ *
+ * Keep in sync with backend/bible_loaders/registry.py — when a new
+ * English translation is added there, add its exact `name` here too.
+ */
+const ENGLISH_TRANSLATION_NAMES: ReadonlySet<string> = new Set([
+  "King James Version",
+  "World English Bible",
+  "Berean Standard Bible",
+  "Young's Literal Translation",
+  "Geneva Bible (1599)",
+  "Douay-Rheims Bible",
+  "New English Translation",
+  "Darby Bible",
+  "Webster's Bible",
+  "Rotherham's Emphasized Bible",
+  "Tyndale Bible",
+  "JPS 1917",
+  "New Heart English Bible",
+  "Open English Bible",
+  "Catholic Public Domain Version",
+  "American King James Version",
+  "Modern King James Version",
+  "Literal Translation of the Holy Bible",
+  "Jubilee Bible 2000",
+  "Updated King James Version",
+  "A Conservative Version",
+  "Restored Name King James Version",
+  "Revised Literal Translation",
+  "Revised Webster's Bible",
+  "Bible in Basic English",
+  "Anderson's New Testament",
+  "Noyes' New Testament",
+  "Haweis' New Testament",
+  "Twentieth Century New Testament",
+  "New King James Version",
+  "New International Version",
+]);
+
+function isEnglishTranslation(name: string | undefined | null): boolean {
+  if (!name) return true; // empty → falls back to KJV downstream
+  return ENGLISH_TRANSLATION_NAMES.has(name);
+}
+
 /** Dropdown of every translation the backend has enabled. Pulled live
  *  from /bible/translations so a newly-seeded translation appears the
  *  next time someone opens the Bible page — no frontend rebuild
@@ -157,7 +207,7 @@ function TranslationPicker({
       value={value}
       onChange={(e) => onChange(e.target.value)}
       className="shrink-0 w-[150px] truncate rounded-full border border-neutral-200 bg-paper px-2.5 py-1.5 text-center font-medium shadow-[0_1px_2px_rgba(0,0,0,0.05),inset_0_1px_0_rgba(255,255,255,0.5)] outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-200/40 dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100 dark:shadow-[0_1px_2px_rgba(0,0,0,0.4),inset_0_1px_0_rgba(255,255,255,0.05)] dark:focus:border-amber-700 dark:focus:ring-amber-800/40"
-      title="Public-domain + freely-licensed translations served by the backend. Licensed remotes (NLT/CSB/ESV) appear here once their API key is configured."
+      title="Public-domain + freely-licensed translations served by the backend."
     >
       {/* Option text = full translation name so the dropdown popup
        *  reads clearly ("King James Version", "New International
@@ -533,6 +583,19 @@ export function BibleView({
   }, [voicePlaying, voicePaused, voiceCurrentVerseId, voiceStartFrom]);
 
   function startVoiceReader() {
+    // English-only gate. The Deepgram voice and Web Speech voices
+    // mangle non-English scripts (and even Romance/Germanic Latin
+    // languages — they pronounce the letters with an English
+    // accent). Refuse to start unless the active translation is in
+    // the known-English set.
+    if (!isEnglishTranslation(translation)) {
+      window.dispatchEvent(
+        new CustomEvent("bible:voice-blocked", {
+          detail: { reason: "non-english", translation },
+        }),
+      );
+      return;
+    }
     // CRITICAL for iOS Safari: arm the AudioContext synchronously
     // inside the tap handler. We rely on BufferSource for chained
     // playback (HTMLAudio gets killed at natural silences mid-verse,
@@ -950,7 +1013,12 @@ export function BibleView({
 
   const currentBook = books.find((b) => b.code === book);
   const chapterCount = currentBook?.chapters ?? 1;
-  const bookName = currentBook?.name ?? book;
+  // Prefer the live books list, then the static OSIS-to-English table,
+  // and only fall back to the short OSIS code if neither has answered
+  // yet. The static table guarantees "Genesis" instead of "GEN" on
+  // first paint while the /bible/books endpoint is still in flight.
+  const bookName =
+    currentBook?.name ?? OSIS_TO_BOOK_NAME[book] ?? book;
 
   // Horizontal swipe = previous / next chapter. Wraps across books at
   // the boundaries (Gen 1 ↤ stays put; Rev 22 ↦ stays put). The
@@ -1217,7 +1285,7 @@ export function BibleView({
         onTouchEnd={onChapterSwipeEnd}
         onScroll={onScrollerScroll}
         onPointerUp={onScrollerDoubleTapDismiss}
-        className="flex-1 overflow-y-auto overflow-x-hidden px-3 pb-4 pt-6"
+        className="flex-1 overflow-y-auto overflow-x-hidden px-3 pb-4 pt-10"
         // Mirror ChatPanel + the notes list: when the floating glass
         // composer + 64px AI pill sit on top of this scroller, lift
         // the last verse above them so reading isn't cut off.
@@ -1403,7 +1471,7 @@ export function BibleView({
                    *    - the notes-count chip (when notes exist)
                    *  Width is fixed at ~36px so the right-hand verse
                    *  text wraps cleanly without being shifted around. */}
-                  <div className="flex w-9 shrink-0 flex-col items-center gap-1 pt-0.5">
+                  <div className="flex w-9 shrink-0 flex-col items-center gap-2.5 pt-0.5">
                     <button
                       onPointerUp={(e) => {
                         if (e.button !== 0 && e.pointerType === "mouse") return;

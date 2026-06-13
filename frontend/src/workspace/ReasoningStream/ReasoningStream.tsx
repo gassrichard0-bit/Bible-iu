@@ -9,7 +9,7 @@
  * conversational context for the model, not implicit fact carriers
  * (citation-engine.MD §10).
  */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { ClaimOut } from "../../lib/api";
 import { RichText } from "../../lib/RichText";
 import type { ConversationTurn } from "../Workspace";
@@ -37,6 +37,11 @@ interface Props {
   onToggleOriginal: () => void;
   onJumpToCitation: (source_id: string) => void;
   debugMode: boolean;
+  /** Optional chip rendered into the right side of the header, next
+   *  to the "Original language" toggle. Lets the parent inject the
+   *  agent-scope widen button so it lives in the panel chrome
+   *  instead of floating over the composer. */
+  headerSlot?: ReactNode;
 }
 
 export function ReasoningStream({
@@ -45,6 +50,7 @@ export function ReasoningStream({
   onToggleOriginal,
   onJumpToCitation,
   debugMode,
+  headerSlot,
 }: Props) {
   const latest = turns[turns.length - 1];
   const scroller = useRef<HTMLDivElement | null>(null);
@@ -106,17 +112,20 @@ export function ReasoningStream({
             </span>
           )}
         </div>
-        <label
-          className="flex shrink-0 items-center gap-1 text-[10px] font-normal normal-case text-neutral-500 dark:text-neutral-400"
-          title="RTL-aware (CLAUDE.md §4.9). Hebrew + Greek + Arabic."
-        >
-          <input
-            type="checkbox"
-            checked={showOriginal}
-            onChange={onToggleOriginal}
-          />
-          Original language
-        </label>
+        <div className="flex shrink-0 items-center gap-2">
+          {headerSlot}
+          <label
+            className="flex shrink-0 items-center gap-1 text-[10px] font-normal normal-case text-neutral-500 dark:text-neutral-400"
+            title="RTL-aware (CLAUDE.md §4.9). Hebrew + Greek + Arabic."
+          >
+            <input
+              type="checkbox"
+              checked={showOriginal}
+              onChange={onToggleOriginal}
+            />
+            Original language
+          </label>
+        </div>
       </div>
 
       <div

@@ -31,7 +31,7 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect,
 )
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
@@ -181,6 +181,67 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="Bible IU API", lifespan=lifespan)
+
+
+async def _read_image_bytes(request: Request) -> tuple[bytes, dict[str, str]]:
+    """Read an image upload from EITHER multipart/form-data OR a
+    JSON `{filename, mime, data_base64, ...}` body.
+
+    Why both: the iOS Capacitor build routes `fetch()` through native
+    URLSession (CapacitorHttp plugin) which mangles multipart binary
+    payloads, so the frontend sends base64 JSON. The PWA still sends
+    multipart, so this helper accepts whichever shows up.
+
+    Returns (raw_bytes, extra_string_fields). Extra fields lift any
+    additional form values (chat caption + reply_to_id, etc.) so the
+    individual endpoints don't need to re-parse the body.
+    """
+    import base64
+
+    content_type = request.headers.get("content-type", "")
+    if content_type.startswith("application/json"):
+        body = await request.json()
+        b64 = body.get("data_base64", "")
+        if not isinstance(b64, str) or not b64:
+            raise HTTPException(400, "missing data_base64")
+        try:
+            raw = base64.b64decode(b64, validate=True)
+        except Exception as exc:  # pragma: no cover — bad client input
+            raise HTTPException(400, f"invalid base64: {exc}") from exc
+        extras = {
+            k: str(v)
+            for k, v in body.items()
+            if k not in ("filename", "mime", "data_base64") and v is not None
+        }
+        return raw, extras
+
+    form = await request.form()
+    file = form.get("file")
+    if file is None or not hasattr(file, "read"):
+        raise HTTPException(400, "missing file")
+    raw = await file.read()  # type: ignore[union-attr]
+    extras = {
+        k: str(v)
+        for k, v in form.items()
+        if k != "file" and v is not None
+    }
+    return raw, extras
+
+# CORS for the bundled iOS Capacitor app. When the App Store / sideload
+# build runs, the WebView's origin is `capacitor://localhost`; without
+# this middleware every cross-origin fetch to bible.access-term.com
+# would fail at the preflight stage. The PWA at bible.access-term.com
+# itself is same-origin and doesn't need a CORS allowance.
+from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["capacitor://localhost", "ionic://localhost"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["*"],
+)
 app.include_router(auth_router)
 
 
@@ -259,6 +320,199 @@ def current_user_id(user: User = Depends(require_user)) -> str:
 @app.get("/health", response_model=HealthResponse)
 def health() -> HealthResponse:
     return HealthResponse()
+
+
+# ---------------------------------------------------------------------
+# Static legal pages — surfaced from the iOS app's Settings → About
+# screen and required for App Store review. Inlined as HTML so they
+# don't depend on a static-file host and so updates ship with the
+# normal backend deploy. Keep the styling tight so they render the
+# same on the iPhone WebView and a normal browser.
+# ---------------------------------------------------------------------
+
+_LEGAL_PAGE_STYLE = """
+:root {
+  color-scheme: light dark;
+}
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, system-ui,
+    "Segoe UI", Roboto, sans-serif;
+  background: #f7f3ea;
+  color: #171717;
+  line-height: 1.6;
+  font-size: 16px;
+  -webkit-text-size-adjust: 100%;
+}
+@media (prefers-color-scheme: dark) {
+  body { background: #0a0a0a; color: #e5e5e5; }
+  a { color: #fbbf24; }
+}
+main {
+  max-width: 680px;
+  margin: 0 auto;
+  padding: 32px 20px 64px;
+}
+h1 {
+  font-size: 28px;
+  margin: 0 0 6px;
+  letter-spacing: -0.01em;
+}
+h2 {
+  font-size: 18px;
+  margin: 32px 0 8px;
+  letter-spacing: -0.005em;
+}
+.muted {
+  color: #737373;
+  font-size: 13px;
+}
+@media (prefers-color-scheme: dark) {
+  .muted { color: #a3a3a3; }
+}
+a { color: #b45309; }
+ul { padding-left: 22px; }
+li { margin-bottom: 6px; }
+""".strip()
+
+
+def _legal_page(title: str, body_html: str) -> HTMLResponse:
+    page = f"""<!doctype html>
+<html lang=\"en\">
+<head>
+<meta charset=\"utf-8\" />
+<title>{title} — Bible IU</title>
+<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
+<meta name=\"color-scheme\" content=\"light dark\" />
+<style>{_LEGAL_PAGE_STYLE}</style>
+</head>
+<body><main>{body_html}</main></body>
+</html>"""
+    return HTMLResponse(content=page)
+
+
+@app.get("/privacy", include_in_schema=False)
+def privacy_policy() -> HTMLResponse:
+    body = """
+<h1>Privacy policy</h1>
+<p class="muted">Last updated 2026-06-13.</p>
+
+<p>Bible IU is a Bible reader and small-group study app built and
+operated by Richard Gass. This page explains what we collect, why we
+collect it, and what we do not collect.</p>
+
+<h2>What we collect</h2>
+<ul>
+  <li><strong>Account data</strong> — the handle, password hash, and
+      optional email you provide at sign-up. Email is only used for
+      password recovery and account-related notifications.</li>
+  <li><strong>Your content</strong> — verses you highlight or bookmark,
+      personal notes you write, reading-plan progress, room chat
+      messages, group notes, and AI assistant questions. This content
+      is stored on a private server so it syncs across your devices
+      and so groups you join can share notes and chat with each other.</li>
+  <li><strong>Device push token</strong> — when you opt in to push
+      notifications, we store the Apple push token so chat and group
+      notes can wake your phone.</li>
+  <li><strong>Operational logs</strong> — request timestamps, error
+      traces, and aggregate usage counts that help us diagnose
+      problems. These are retained for 30 days and contain no
+      message content.</li>
+</ul>
+
+<h2>What we do not collect</h2>
+<ul>
+  <li>Advertising identifiers, device fingerprints, or anything used
+      to track you across apps or websites.</li>
+  <li>Contacts, location, microphone, camera, or photos — unless you
+      explicitly attach a picture to a message.</li>
+  <li>Your reading or note content is never sold or shared with third
+      parties for marketing.</li>
+</ul>
+
+<h2>Where data lives</h2>
+<p>Bible IU's primary backend runs on a personal server owned by the
+developer. Communication is encrypted in transit (TLS). Database
+backups are local-only.</p>
+
+<h2>Third parties</h2>
+<ul>
+  <li><strong>API.Bible</strong> serves licensed translations (NIV,
+      NKJV) — the API request includes your translation choice and the
+      requested chapter; no account data is shared.</li>
+  <li><strong>DeepSeek</strong> powers the AI assistant — your question
+      text is forwarded to the model provider so it can produce a
+      reply. Questions and answers are stored alongside your room
+      history.</li>
+  <li><strong>Apple Push Notification service</strong> delivers
+      notifications when you opt in. The push token is the only
+      identifier transmitted.</li>
+</ul>
+
+<h2>Account deletion</h2>
+<p>Open <em>Settings → Profile → Delete account</em> at any time. The
+account row and every note, bookmark, annotation, chat message, and
+push subscription tied to it is removed within 7 days. Group rooms
+you authored are preserved but reassigned to the next admin; if there
+is none, the room is deleted with the account.</p>
+
+<h2>Children</h2>
+<p>Bible IU is rated 4+ and contains no objectionable content, but it
+is not designed for children under 13. We do not knowingly collect
+data from anyone under 13.</p>
+
+<h2>Contact</h2>
+<p>Questions, requests for data export, or anything else: email
+<a href="mailto:gassrichard0@gmail.com">gassrichard0@gmail.com</a>.</p>
+"""
+    return _legal_page("Privacy policy", body)
+
+
+@app.get("/terms", include_in_schema=False)
+def terms_of_use() -> HTMLResponse:
+    body = """
+<h1>Terms of use</h1>
+<p class="muted">Last updated 2026-06-13.</p>
+
+<p>By using Bible IU you agree to these terms. They are intentionally
+short and written in plain language.</p>
+
+<h2>What Bible IU is</h2>
+<p>Bible IU is a small, independent Bible reader and group-study app.
+The app is provided as-is, without warranty. We aim for high
+availability but make no uptime guarantee.</p>
+
+<h2>Acceptable use</h2>
+<ul>
+  <li>Don't post content that is illegal where you live, or that
+      harasses, threatens, defames, or harms other users.</li>
+  <li>Don't try to bypass authentication, scrape large amounts of
+      content, or interfere with other people's accounts.</li>
+  <li>Bible translations that are licensed (NIV, NKJV) are served
+      under the publishers' terms. Do not copy or republish licensed
+      text outside the app.</li>
+</ul>
+
+<h2>Your content</h2>
+<p>You retain ownership of notes, messages, and bookmarks you create.
+You grant Bible IU a limited license to store and display that
+content so the app's group features work. We won't use your content
+for any other purpose without your consent.</p>
+
+<h2>Termination</h2>
+<p>You can delete your account anytime via Settings. We can suspend
+accounts that violate the acceptable-use rules above; we'll try to
+notify you first whenever practical.</p>
+
+<h2>Changes</h2>
+<p>These terms may be updated. Material changes will be highlighted
+in the app's release notes. Continued use after a change indicates
+acceptance.</p>
+
+<h2>Contact</h2>
+<p>Questions: <a href="mailto:gassrichard0@gmail.com">gassrichard0@gmail.com</a>.</p>
+"""
+    return _legal_page("Terms of use", body)
 
 
 @app.get("/healthz")
@@ -1191,7 +1445,7 @@ class RoomImageOut(BaseModel):
 )
 async def upload_room_image(
     room_id: str,
-    file: UploadFile = File(...),
+    request: Request,
     session: Session = Depends(db),
     user_id: str = Depends(current_user_id),
 ) -> RoomImageOut:
@@ -1199,7 +1453,7 @@ async def upload_room_image(
     WebP at ≤512px on the longest side. The token bump invalidates
     the browser cache for every member viewing the room list."""
     room = _require_admin(session, room_id, user_id)
-    raw = await file.read()
+    raw, _ = await _read_image_bytes(request)
     if len(raw) > _ROOM_IMAGE_MAX_BYTES:
         raise HTTPException(413, "Image too large (max 4MB).")
     # Lazy import — Pillow isn't needed by the rest of the API and
@@ -2223,7 +2477,7 @@ class NoteImageOut(BaseModel):
 )
 async def post_note_image(
     room_id: str,
-    file: UploadFile = File(...),
+    request: Request,
     session: Session = Depends(db),
     user_id: str = Depends(current_user_id),
 ) -> NoteImageOut:
@@ -2235,7 +2489,7 @@ async def post_note_image(
     lifecycle for now (orphan cleanup is a future sweep), which is
     acceptable on a single-instance deploy."""
     _require_member(session, room_id, user_id)
-    raw = await file.read()
+    raw, _ = await _read_image_bytes(request)
     if len(raw) > _NOTE_IMAGE_MAX_BYTES:
         raise HTTPException(413, "Image too large (max 20MB).")
     from io import BytesIO
@@ -2300,17 +2554,17 @@ def get_note_image(
 )
 async def post_chat_image(
     room_id: str,
-    file: UploadFile = File(...),
-    body: str = Form(""),
-    reply_to_id: str = Form(""),
+    request: Request,
     session: Session = Depends(db),
     user_id: str = Depends(current_user_id),
 ) -> ChatMessageRead:
     """Member-only. Sends a chat message with an image attachment.
-    `body` is an optional caption; `reply_to_id` is an optional parent
-    message id when this is a reply. The image is re-encoded to webp."""
+    Body (caption) and reply_to_id ride alongside the image as form
+    fields or JSON properties. The image is re-encoded to webp."""
     _require_member(session, room_id, user_id)
-    raw = await file.read()
+    raw, extras = await _read_image_bytes(request)
+    body = extras.get("body", "")
+    reply_to_id = extras.get("reply_to_id", "")
     if len(raw) > _CHAT_IMAGE_MAX_BYTES:
         raise HTTPException(413, "Image too large (max 20MB).")
     parent: ChatMessage | None = None
@@ -2440,7 +2694,7 @@ def _serialize_status(
 )
 async def post_status_image(
     room_id: str,
-    file: UploadFile = File(...),
+    request: Request,
     session: Session = Depends(db),
     user_id: str = Depends(current_user_id),
 ) -> StatusImageToken:
@@ -2449,7 +2703,7 @@ async def post_status_image(
     create endpoint pure JSON. The token doubles as the storage file
     name + the cache-bust value embedded in `image_url`."""
     _require_member(session, room_id, user_id)
-    raw = await file.read()
+    raw, _ = await _read_image_bytes(request)
     if len(raw) > _STATUS_IMAGE_MAX_BYTES:
         raise HTTPException(413, "Image too large (max 15MB).")
     from io import BytesIO
@@ -3434,7 +3688,7 @@ _BOOK_ORDER: list[str] = list(_BOOK_NAMES.keys())
 )
 def list_translations() -> list[TranslationAttribution]:
     """Every translation the backend knows about — public-domain
-    bundled ones plus licensed remotes (api.bible / ESV). The frontend
+    bundled ones plus licensed remotes (api.bible). The frontend
     picker uses this to render the dropdown; disabled rows are shown
     greyed out so the user can see them coming."""
     from ..bible_loaders.registry import all_specs
@@ -3594,9 +3848,9 @@ def get_chapter_multi(
         raise HTTPException(400, "translations query param required")
 
     # Any requested translation we don't already have rows for goes
-    # through the loader pipeline (api.bible / ESV / etc.). Local
-    # public-domain translations skip the network — the loader just
-    # confirms the seed has them. See backend/bible_loaders/.
+    # through the loader pipeline (api.bible). Local public-domain
+    # translations skip the network — the loader just confirms the
+    # seed has them. See backend/bible_loaders/.
     from ..bible_loaders.loader import (
         load_chapter,
         TranslationNotEnabled,

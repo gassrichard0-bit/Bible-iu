@@ -1,10 +1,10 @@
 """On-demand loaders for licensed Bible translations.
 
 Public-domain translations (KJV, ASV, WLC, etc.) ship in the SQLite
-seed and never touch these loaders. Licensed translations (ESV, NLT,
-CSB, NIV, NASB…) are fetched from publisher / aggregator APIs and
-cached into the same `translations` table when the user picks them
-from the translation dropdown.
+seed and never touch these loaders. Licensed translations (NIV,
+NKJV…) are fetched from publisher / aggregator APIs and cached into
+the same `translations` table when the user picks them from the
+translation dropdown.
 
 The boundary between "shipped" and "loaded" is the [`Registry`] in
 `registry.py`: a translation with `source != "local"` triggers the

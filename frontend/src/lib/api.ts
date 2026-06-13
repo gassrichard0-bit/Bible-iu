@@ -1,5 +1,72 @@
 /** Thin HTTP client targeting the FastAPI backend through Vite's proxy. */
 
+import { enqueueOp } from "./offlineQueue";
+import { getLocalChapter, searchLocalBible } from "./localBible";
+import { hapticLight, hapticMedium, hapticSuccess } from "./haptics";
+import { uploadFile } from "./uploadFile";
+
+/** Absolute API base. When the app is bundled (iOS Capacitor build),
+ *  the WebView origin is `capacitor://localhost` and `/api/...` has
+ *  nowhere to resolve, so requests must go directly to the remote
+ *  backend. In the PWA at bible.access-term.com the variable is
+ *  empty and requests stay same-origin. Vite injects the value at
+ *  build time via VITE_API_BASE. */
+export const API_BASE =
+  (import.meta.env.VITE_API_BASE as string | undefined) ?? "";
+
+/** Absolute WebSocket base. Mirrors API_BASE for ws/wss endpoints. */
+export const WS_BASE =
+  (import.meta.env.VITE_WS_BASE as string | undefined) ?? "";
+
+/** Same cache name the service worker writes Bible + auth reads into.
+ *  Kept in sync with `public/sw.js` BIBLE_CACHE. */
+const SW_CACHE = "bible-iu-scripture-v4";
+
+/** Patch a previously-cached GET response so optimistic offline writes
+ *  show up immediately on the next read. No-ops if the cache or the
+ *  response isn't present (the SW may not have run yet, or the user
+ *  may not have visited the list page online). */
+async function patchCachedJson<T>(
+  path: string,
+  mutator: (current: T) => T,
+): Promise<void> {
+  if (typeof caches === "undefined") return;
+  try {
+    const cache = await caches.open(SW_CACHE);
+    // Match exactly the URL the SW stored. When API_BASE is set
+    // (bundled app), that's https://bible.access-term.com/api/...
+    // otherwise it's same-origin /api/....
+    const url = API_BASE
+      ? `${API_BASE}/api${path}`
+      : new URL(`/api${path}`, self.location.origin).toString();
+    const cached = await cache.match(url);
+    if (!cached) return;
+    const json = (await cached.clone().json()) as T;
+    const next = mutator(json);
+    await cache.put(
+      url,
+      new Response(JSON.stringify(next), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+  } catch {
+    // Cache patch is best-effort — failure here doesn't affect the
+    // queued op, which still replays on reconnect.
+  }
+}
+
+function isNetworkError(e: unknown): boolean {
+  // Browsers throw TypeError for network failures. Capacitor's iOS
+  // shell does the same. We match on instance + name to stay robust
+  // against polyfilled fetch implementations.
+  return (
+    e instanceof TypeError ||
+    (e instanceof Error && e.name === "TypeError") ||
+    (typeof navigator !== "undefined" && navigator.onLine === false)
+  );
+}
+
 export type Decision = "pass" | "revise" | "refuse";
 
 export interface CitationOut {
@@ -74,7 +141,7 @@ export function setSessionExpiredHandler(fn: () => void): void {
 }
 
 async function jsonFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const r = await fetch(`/api${path}`, {
+  const r = await fetch(`${API_BASE}/api${path}`, {
     ...init,
     headers: {
       "Content-Type": "application/json",
@@ -115,7 +182,7 @@ export interface BibleBookOut {
 export interface TranslationOption {
   name: string;
   attribution: string;
-  source: "local" | "api_bible" | "esv" | string;
+  source: "local" | "api_bible" | string;
   enabled: boolean;
   /** Short label shown in the compact picker pill (KJV / NIV / RST).
    *  Frontend falls back to `name` when null. */
@@ -400,51 +467,205 @@ export const api = {
     jsonFetch<BackupCodesStatus>("/auth/backup-codes/status"),
   authBookmarksList: () =>
     jsonFetch<BookmarkOut[]>("/auth/bookmarks"),
-  authBookmarkSet: (book: string, chapter: number, verse: number) =>
-    jsonFetch<BookmarkOut>(`/auth/bookmarks/${book}`, {
-      method: "PUT",
-      body: JSON.stringify({ chapter, verse }),
-    }),
-  authBookmarkRemove: (book: string) =>
-    jsonFetch<{ ok: boolean }>(`/auth/bookmarks/${book}`, {
-      method: "DELETE",
-    }),
-  authBookmarkRemoveAt: (book: string, chapter: number, verse: number) =>
-    jsonFetch<{ ok: boolean }>(
-      `/auth/bookmarks/${book}/${chapter}/${verse}`,
-      { method: "DELETE" },
-    ),
+  authBookmarkSet: async (book: string, chapter: number, verse: number) => {
+    const path = `/auth/bookmarks/${book}`;
+    const body = JSON.stringify({ chapter, verse });
+    void hapticLight();
+    try {
+      return await jsonFetch<BookmarkOut>(path, { method: "PUT", body });
+    } catch (e) {
+      if (!isNetworkError(e)) throw e;
+      const optimistic: BookmarkOut = {
+        book,
+        chapter,
+        verse,
+        updated_at: new Date().toISOString(),
+      };
+      await patchCachedJson<BookmarkOut[]>("/auth/bookmarks", (list) => {
+        const others = (list || []).filter((b) => b.book !== book);
+        return [...others, optimistic];
+      });
+      await enqueueOp({
+        method: "PUT",
+        path,
+        body,
+        headers: {
+          "Content-Type": "application/json",
+          "X-App-Password": getPassword(),
+          "X-Session-Token": getSessionToken(),
+        },
+      });
+      return optimistic;
+    }
+  },
+  authBookmarkRemove: async (book: string) => {
+    const path = `/auth/bookmarks/${book}`;
+    try {
+      return await jsonFetch<{ ok: boolean }>(path, { method: "DELETE" });
+    } catch (e) {
+      if (!isNetworkError(e)) throw e;
+      await patchCachedJson<BookmarkOut[]>("/auth/bookmarks", (list) =>
+        (list || []).filter((b) => b.book !== book),
+      );
+      await enqueueOp({
+        method: "DELETE",
+        path,
+        headers: {
+          "X-App-Password": getPassword(),
+          "X-Session-Token": getSessionToken(),
+        },
+      });
+      return { ok: true };
+    }
+  },
+  authBookmarkRemoveAt: async (
+    book: string,
+    chapter: number,
+    verse: number,
+  ) => {
+    const path = `/auth/bookmarks/${book}/${chapter}/${verse}`;
+    try {
+      return await jsonFetch<{ ok: boolean }>(path, { method: "DELETE" });
+    } catch (e) {
+      if (!isNetworkError(e)) throw e;
+      await patchCachedJson<BookmarkOut[]>("/auth/bookmarks", (list) =>
+        (list || []).filter(
+          (b) => !(b.book === book && b.chapter === chapter && b.verse === verse),
+        ),
+      );
+      await enqueueOp({
+        method: "DELETE",
+        path,
+        headers: {
+          "X-App-Password": getPassword(),
+          "X-Session-Token": getSessionToken(),
+        },
+      });
+      return { ok: true };
+    }
+  },
   authAnnotationsList: () =>
     jsonFetch<AnnotationOut[]>("/auth/annotations"),
   /** Whole-verse or sub-verse upsert. Pass start/end to mark a
    *  character range; omit them for the v1 whole-verse semantics. */
-  authAnnotationSet: (
+  authAnnotationSet: async (
     verse_id: string,
     kind: AnnotationKind,
     color: AnnotationColor,
     range?: { start: number; end: number } | null,
-  ) =>
-    jsonFetch<AnnotationOut>(`/auth/annotations/${verse_id}/${kind}`, {
-      method: "PUT",
-      body: JSON.stringify(
-        range
-          ? { color, start_offset: range.start, end_offset: range.end }
-          : { color },
-      ),
-    }),
-  authAnnotationRemoveKind: (verse_id: string, kind: AnnotationKind) =>
-    jsonFetch<{ ok: boolean }>(`/auth/annotations/${verse_id}/${kind}`, {
-      method: "DELETE",
-    }),
-  authAnnotationRemoveById: (annotation_id: string) =>
-    jsonFetch<{ ok: boolean }>(
-      `/auth/annotations/by-id/${annotation_id}`,
-      { method: "DELETE" },
-    ),
-  authAnnotationClear: (verse_id: string) =>
-    jsonFetch<{ ok: boolean }>(`/auth/annotations/${verse_id}`, {
-      method: "DELETE",
-    }),
+  ) => {
+    const path = `/auth/annotations/${verse_id}/${kind}`;
+    const payload = range
+      ? { color, start_offset: range.start, end_offset: range.end }
+      : { color };
+    const body = JSON.stringify(payload);
+    void hapticLight();
+    try {
+      return await jsonFetch<AnnotationOut>(path, { method: "PUT", body });
+    } catch (e) {
+      if (!isNetworkError(e)) throw e;
+      const optimistic: AnnotationOut = {
+        id: `local-${crypto.randomUUID()}`,
+        verse_id,
+        kind,
+        color,
+        start_offset: range?.start ?? null,
+        end_offset: range?.end ?? null,
+        updated_at: new Date().toISOString(),
+      };
+      await patchCachedJson<AnnotationOut[]>("/auth/annotations", (list) => {
+        // Drop any prior local-optimistic copy for the same
+        // (verse_id, kind, range) so repeated taps don't stack up.
+        const without = (list || []).filter(
+          (a) =>
+            !(
+              a.verse_id === verse_id &&
+              a.kind === kind &&
+              (a.start_offset ?? null) === (range?.start ?? null) &&
+              (a.end_offset ?? null) === (range?.end ?? null)
+            ),
+        );
+        return [...without, optimistic];
+      });
+      await enqueueOp({
+        method: "PUT",
+        path,
+        body,
+        headers: {
+          "Content-Type": "application/json",
+          "X-App-Password": getPassword(),
+          "X-Session-Token": getSessionToken(),
+        },
+      });
+      return optimistic;
+    }
+  },
+  authAnnotationRemoveKind: async (verse_id: string, kind: AnnotationKind) => {
+    const path = `/auth/annotations/${verse_id}/${kind}`;
+    try {
+      return await jsonFetch<{ ok: boolean }>(path, { method: "DELETE" });
+    } catch (e) {
+      if (!isNetworkError(e)) throw e;
+      await patchCachedJson<AnnotationOut[]>("/auth/annotations", (list) =>
+        (list || []).filter(
+          (a) => !(a.verse_id === verse_id && a.kind === kind),
+        ),
+      );
+      await enqueueOp({
+        method: "DELETE",
+        path,
+        headers: {
+          "X-App-Password": getPassword(),
+          "X-Session-Token": getSessionToken(),
+        },
+      });
+      return { ok: true };
+    }
+  },
+  authAnnotationRemoveById: async (annotation_id: string) => {
+    const path = `/auth/annotations/by-id/${annotation_id}`;
+    try {
+      return await jsonFetch<{ ok: boolean }>(path, { method: "DELETE" });
+    } catch (e) {
+      if (!isNetworkError(e)) throw e;
+      await patchCachedJson<AnnotationOut[]>("/auth/annotations", (list) =>
+        (list || []).filter((a) => a.id !== annotation_id),
+      );
+      // Don't enqueue replays for local-only ids — they never made
+      // it to the server, so there's nothing to delete remotely.
+      if (!annotation_id.startsWith("local-")) {
+        await enqueueOp({
+          method: "DELETE",
+          path,
+          headers: {
+            "X-App-Password": getPassword(),
+            "X-Session-Token": getSessionToken(),
+          },
+        });
+      }
+      return { ok: true };
+    }
+  },
+  authAnnotationClear: async (verse_id: string) => {
+    const path = `/auth/annotations/${verse_id}`;
+    try {
+      return await jsonFetch<{ ok: boolean }>(path, { method: "DELETE" });
+    } catch (e) {
+      if (!isNetworkError(e)) throw e;
+      await patchCachedJson<AnnotationOut[]>("/auth/annotations", (list) =>
+        (list || []).filter((a) => a.verse_id !== verse_id),
+      );
+      await enqueueOp({
+        method: "DELETE",
+        path,
+        headers: {
+          "X-App-Password": getPassword(),
+          "X-Session-Token": getSessionToken(),
+        },
+      });
+      return { ok: true };
+    }
+  },
   authRecover: (handle: string, backup_code: string, new_password: string) =>
     jsonFetch<SessionResponse>("/auth/recover", {
       method: "POST",
@@ -525,17 +746,24 @@ export const api = {
           ? `?translation=${encodeURIComponent(translation)}`
           : ""),
     ),
-  bibleChapterMulti: (
+  bibleChapterMulti: async (
     book: string,
     chapter: number,
     translations: string[],
-  ) =>
-    jsonFetch<BibleChapterMulti>(
+  ) => {
+    // Offline-first: try the bundled local KJV before touching the
+    // network. Falls through to the server for any non-KJV request
+    // or when the local bundle hasn't loaded yet (e.g. PWA over a
+    // very cold cache).
+    const local = await getLocalChapter(book, chapter, translations);
+    if (local) return local;
+    return jsonFetch<BibleChapterMulti>(
       // Join with `|` not `,` so translation names containing commas
       // (e.g. "Some Bible (Region, Variant)") aren't truncated by the
       // backend's split. Pipes don't appear in any registered name.
       `/bible/${book}/${chapter}/multi?translations=${encodeURIComponent(translations.join("|"))}`,
-    ),
+    );
+  },
   /** Hebrew/Greek per-word study data for one verse. Returns an
    *  empty array if the verse has no token rows. */
   bibleVerseTokens: (book: string, chapter: number, verse: number) =>
@@ -555,30 +783,34 @@ export const api = {
     jsonFetch<{ ok: boolean }>(`/rooms/${room_id}`, { method: "DELETE" }),
   /** Upload an image to use inside a note body. Returns the serve
    *  URL the client embeds as `<img src=…>`. */
-  noteUploadImage: async (room_id: string, file: File) => {
-    const fd = new FormData();
-    fd.append("file", file);
-    const r = await fetch(`/api/rooms/${room_id}/notes/image`, {
-      method: "POST",
-      headers: {
-        "X-App-Password": getPassword(),
-        "X-Session-Token": getSessionToken(),
+  noteUploadImage: (room_id: string, file: File) =>
+    uploadFile<{ token: string; serve_url: string }>(
+      `${API_BASE}/api/rooms/${room_id}/notes/image`,
+      file,
+      {
+        headers: {
+          "X-App-Password": getPassword(),
+          "X-Session-Token": getSessionToken(),
+        },
       },
-      body: fd,
-    });
-    if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
-    return (await r.json()) as { token: string; serve_url: string };
-  },
+    ),
   /** Most recent reasoning-engine audit-log rows. Used by the
    *  Settings → Advanced auditor when debug mode is on. */
   provenanceList: (limit = 50) =>
     jsonFetch<ProvenanceRow[]>(`/admin/provenance?limit=${limit}`),
-  bibleSearch: (q: string, translation?: string, limit = 50) =>
-    jsonFetch<BibleSearchHit[]>(
+  bibleSearch: async (q: string, translation?: string, limit = 50) => {
+    // Offline-first: search the bundled translation locally. Falls
+    // through to the server when the translation isn't bundled
+    // (NIV, NKJV, RST, Vulgata, etc.) so users still get
+    // multi-language search when online.
+    const local = await searchLocalBible(q, translation, limit);
+    if (local !== null) return local;
+    return jsonFetch<BibleSearchHit[]>(
       `/bible/search?q=${encodeURIComponent(q)}` +
         (translation ? `&translation=${encodeURIComponent(translation)}` : "") +
         `&limit=${limit}`,
-    ),
+    );
+  },
   bibleAdvancedSearch: (q: string, translation?: string) =>
     jsonFetch<AdvancedSearchHit[]>(`/bible/advanced_search`, {
       method: "POST",
@@ -618,11 +850,38 @@ export const api = {
     }),
   readingPlanToday: (plan_id: string) =>
     jsonFetch<ReadingPlanDayOut>(`/reading-plans/${plan_id}/today`),
-  readingPlanComplete: (plan_id: string, day_index: number) =>
-    jsonFetch<ReadingPlanDayOut>(
-      `/reading-plans/${plan_id}/days/${day_index}/complete`,
-      { method: "POST", body: "{}" },
-    ),
+  readingPlanComplete: async (plan_id: string, day_index: number) => {
+    const path = `/reading-plans/${plan_id}/days/${day_index}/complete`;
+    void hapticSuccess();
+    try {
+      return await jsonFetch<ReadingPlanDayOut>(path, {
+        method: "POST",
+        body: "{}",
+      });
+    } catch (e) {
+      if (!isNetworkError(e)) throw e;
+      // The day-row shape includes server-stamped progress that we
+      // can't fabricate exactly. Return a minimal optimistic record
+      // so the UI flips to "completed" — the next online refresh
+      // reconciles with the real server state.
+      const optimistic = {
+        day_index,
+        completed: true,
+        completed_at: new Date().toISOString(),
+      } as unknown as ReadingPlanDayOut;
+      await enqueueOp({
+        method: "POST",
+        path,
+        body: "{}",
+        headers: {
+          "Content-Type": "application/json",
+          "X-App-Password": getPassword(),
+          "X-Session-Token": getSessionToken(),
+        },
+      });
+      return optimistic;
+    }
+  },
   chatList: (room_id: string, limit = 100) =>
     jsonFetch<ChatMessageOut[]>(
       `/rooms/${room_id}/chat?limit=${limit}`,
@@ -632,11 +891,13 @@ export const api = {
     body: string,
     language?: string,
     reply_to_id?: string,
-  ) =>
-    jsonFetch<ChatMessageOut>(`/rooms/${room_id}/chat`, {
+  ) => {
+    void hapticMedium();
+    return jsonFetch<ChatMessageOut>(`/rooms/${room_id}/chat`, {
       method: "POST",
       body: JSON.stringify({ body, language, reply_to_id }),
-    }),
+    });
+  },
   /** Admin-only toggle of a message's pinned state. Returns the
    *  updated message; the WS hub also re-broadcasts so other tabs
    *  refresh automatically. */
@@ -660,28 +921,24 @@ export const api = {
     jsonFetch<void>(`/rooms/${room_id}/chat/${message_id}`, {
       method: "DELETE",
     }),
-  chatPostImage: async (
+  chatPostImage: (
     room_id: string,
     file: File,
     caption = "",
     reply_to_id = "",
   ) => {
-    const form = new FormData();
-    form.append("file", file);
-    form.append("body", caption);
-    if (reply_to_id) form.append("reply_to_id", reply_to_id);
     const headers: Record<string, string> = {};
     const pw = getPassword();
     if (pw) headers["X-App-Password"] = pw;
     const tok = getSessionToken();
     if (tok) headers["X-Session-Token"] = tok;
-    const r = await fetch(`/api/rooms/${room_id}/chat/image`, {
-      method: "POST",
-      headers,
-      body: form,
-    });
-    if (!r.ok) throw new Error(`Upload failed (${r.status})`);
-    return (await r.json()) as ChatMessageOut;
+    const fields: Record<string, string> = { body: caption };
+    if (reply_to_id) fields.reply_to_id = reply_to_id;
+    return uploadFile<ChatMessageOut>(
+      `${API_BASE}/api/rooms/${room_id}/chat/image`,
+      file,
+      { headers, fields },
+    );
   },
   // ── Room statuses (24h "stories" panel above chat) ───────────
   statusList: (room_id: string) =>
@@ -707,21 +964,17 @@ export const api = {
       method: "POST",
       body: "{}",
     }),
-  statusUploadImage: async (room_id: string, file: File) => {
-    const form = new FormData();
-    form.append("file", file);
+  statusUploadImage: (room_id: string, file: File) => {
     const headers: Record<string, string> = {};
     const pw = getPassword();
     if (pw) headers["X-App-Password"] = pw;
     const tok = getSessionToken();
     if (tok) headers["X-Session-Token"] = tok;
-    const r = await fetch(`/api/rooms/${room_id}/statuses/image`, {
-      method: "POST",
-      headers,
-      body: form,
-    });
-    if (!r.ok) throw new Error(`Upload failed (${r.status})`);
-    return (await r.json()) as { attachment_image_token: string };
+    return uploadFile<{ attachment_image_token: string }>(
+      `${API_BASE}/api/rooms/${room_id}/statuses/image`,
+      file,
+      { headers },
+    );
   },
   bibleXrefs: (verse_id: string, limit = 25) =>
     jsonFetch<CrossRefOut[]>(
@@ -778,23 +1031,17 @@ export const api = {
     jsonFetch<AgentSettingsOut>(`/rooms/${room_id}/agent_settings`),
   roomQuota: (room_id: string) =>
     jsonFetch<QuotaStatus>(`/rooms/${room_id}/quota`),
-  roomImageUpload: async (room_id: string, file: File) => {
-    const form = new FormData();
-    form.append("file", file);
-    // jsonFetch sets Content-Type to application/json, which kills the
-    // multipart boundary. Drop down to raw fetch here.
+  roomImageUpload: (room_id: string, file: File) => {
     const headers: Record<string, string> = {};
     const pw = getPassword();
     if (pw) headers["X-App-Password"] = pw;
     const tok = getSessionToken();
     if (tok) headers["X-Session-Token"] = tok;
-    const r = await fetch(`/api/rooms/${room_id}/image`, {
-      method: "POST",
-      headers,
-      body: form,
-    });
-    if (!r.ok) throw new Error(`Upload failed (${r.status})`);
-    return (await r.json()) as { image_url: string | null };
+    return uploadFile<{ image_url: string | null }>(
+      `${API_BASE}/api/rooms/${room_id}/image`,
+      file,
+      { headers },
+    );
   },
   roomImageDelete: (room_id: string) =>
     jsonFetch<{ image_url: string | null }>(`/rooms/${room_id}/image`, {
@@ -843,21 +1090,17 @@ export const api = {
     jsonFetch<ContactView[]>(
       roomId ? `/contacts?room_id=${encodeURIComponent(roomId)}` : `/contacts`,
     ),
-  authImageUpload: async (file: File) => {
-    const form = new FormData();
-    form.append("file", file);
+  authImageUpload: (file: File) => {
     const headers: Record<string, string> = {};
     const pw = getPassword();
     if (pw) headers["X-App-Password"] = pw;
     const tok = getSessionToken();
     if (tok) headers["X-Session-Token"] = tok;
-    const r = await fetch(`/api/auth/me/image`, {
-      method: "POST",
-      headers,
-      body: form,
-    });
-    if (!r.ok) throw new Error(`Upload failed (${r.status})`);
-    return (await r.json()) as { avatar_url: string | null };
+    return uploadFile<{ avatar_url: string | null }>(
+      `${API_BASE}/api/auth/me/image`,
+      file,
+      { headers },
+    );
   },
   authImageDelete: () =>
     jsonFetch<{ avatar_url: string | null }>(`/auth/me/image`, {
@@ -1072,12 +1315,11 @@ export function streamReason(
 ): { close: () => void } {
   const pw = encodeURIComponent(getPassword());
   const tok = encodeURIComponent(getSessionToken());
-  // Vite proxies /ws to the backend so this URL works in dev + prod.
-  const url =
-    (location.protocol === "https:" ? "wss:" : "ws:") +
-    "//" +
-    location.host +
-    `/ws/reason?password=${pw}&session=${tok}`;
+  // In the bundled iOS app WS_BASE points at wss://bible.access-term.com;
+  // in the PWA it's empty so we fall back to the page's own origin.
+  const sameOrigin =
+    (location.protocol === "https:" ? "wss:" : "ws:") + "//" + location.host;
+  const url = `${WS_BASE || sameOrigin}/ws/reason?password=${pw}&session=${tok}`;
   const ws = new WebSocket(url);
   ws.onopen = () => ws.send(JSON.stringify(body));
   ws.onmessage = (e) => {

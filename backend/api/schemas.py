@@ -192,9 +192,9 @@ class TranslationAttribution(BaseModel):
     notice in the same field — the UI doesn't have to special-case."""
     name: str
     attribution: str
-    # "local" for public-domain bundled translations; "api_bible" or
-    # "esv" for licensed remote fetches. Useful for the picker to
-    # badge remote vs local.
+    # "local" for public-domain bundled translations; "api_bible"
+    # for licensed remote fetches. Useful for the picker to badge
+    # remote vs local.
     source: str
     # False when the translation is registered but the license/key
     # isn't in place yet. Picker should grey it out.
