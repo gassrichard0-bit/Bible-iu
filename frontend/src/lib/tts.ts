@@ -647,20 +647,13 @@ export function ttsSupported(): boolean {
  * Speech voices) mangle Hebrew, Greek, Cyrillic, CJK, Hangul, Thai,
  * etc., so the reader silently skips verses whose underlying
  * translation isn't English.
- *
- * Counts letters only (digits, punctuation, whitespace ignored). Text
- * with no letters at all is treated as English so a verse like "1."
- * doesn't break the sequence.
  */
 export function isLikelyEnglish(text: string): boolean {
   if (!text) return true;
   for (const ch of text) {
     const code = ch.codePointAt(0) ?? 0;
-    // Non-English Latin diacritics (Spanish ñ/é, French ç/à, German
-    // ä/ö/ü/ß, Portuguese ã/õ, Polish ą/ł, Vietnamese ơ/ư + tone
-    // marks, Scandinavian å/æ/ø). Public-domain English Bibles
-    // render in pure ASCII — any character here means it isn't
-    // English.
+    // Non-English Latin diacritics (Spanish, French, German, Polish,
+    // Vietnamese, Scandinavian, etc.).
     if (
       (code >= 0x00c0 && code <= 0x024f) ||
       (code >= 0x1e00 && code <= 0x1eff)

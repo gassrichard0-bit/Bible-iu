@@ -135,17 +135,10 @@ interface Props {
   accentKey?: AccentKey;
 }
 
-/**
- * Translation names the voice reader is allowed to speak. Anything
- * outside this set — Russian Synodal, Reina-Valera, Vulgata, Chinese
- * Union, etc. — is silently refused. The Deepgram + Web Speech voices
- * butcher non-English text (and pronounce Romance/Germanic words with
- * an English accent), so the reader simply no-ops on those
- * translations.
- *
- * Keep in sync with backend/bible_loaders/registry.py — when a new
- * English translation is added there, add its exact `name` here too.
- */
+/** Translation names the voice reader is allowed to speak. Anything
+ *  outside this set — Russian Synodal, Reina-Valera, Chinese Union,
+ *  etc. — is silently refused since Deepgram + Web Speech butcher
+ *  those scripts. */
 const ENGLISH_TRANSLATION_NAMES: ReadonlySet<string> = new Set([
   "King James Version",
   "World English Bible",
@@ -181,7 +174,7 @@ const ENGLISH_TRANSLATION_NAMES: ReadonlySet<string> = new Set([
 ]);
 
 function isEnglishTranslation(name: string | undefined | null): boolean {
-  if (!name) return true; // empty → falls back to KJV downstream
+  if (!name) return true;
   return ENGLISH_TRANSLATION_NAMES.has(name);
 }
 
@@ -583,11 +576,9 @@ export function BibleView({
   }, [voicePlaying, voicePaused, voiceCurrentVerseId, voiceStartFrom]);
 
   function startVoiceReader() {
-    // English-only gate. The Deepgram voice and Web Speech voices
-    // mangle non-English scripts (and even Romance/Germanic Latin
-    // languages — they pronounce the letters with an English
-    // accent). Refuse to start unless the active translation is in
-    // the known-English set.
+    // English-only gate. Refuse to start unless the active
+    // translation is in the known-English set so Deepgram doesn't
+    // try to butcher Russian/Chinese/Hebrew/etc.
     if (!isEnglishTranslation(translation)) {
       window.dispatchEvent(
         new CustomEvent("bible:voice-blocked", {

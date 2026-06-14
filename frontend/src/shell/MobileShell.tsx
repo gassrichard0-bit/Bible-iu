@@ -1273,6 +1273,7 @@ export function MobileShell({
                 selfUserId={selfUserId}
                 socialNotesEnabled={settings.socialNotesEnabled}
                 onScopeChange={setAgentScope}
+                onAgentSheetClose={() => setComposerOpen(false)}
                 reasoningHeaderSlot={
                   agentScope ? (
                     <button

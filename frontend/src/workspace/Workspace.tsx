@@ -19,6 +19,7 @@ import {
   type ReactNode,
 } from "react";
 import { Panel, PanelGroup } from "react-resizable-panels";
+import { BottomSheet } from "../shell/BottomSheet";
 import { ResourcesPanel } from "./ResourcesPanel/ResourcesPanel";
 import { BibleView } from "./BibleView/BibleView";
 import type { AnnotationTarget } from "./BibleView/AnnotationToolbar";
@@ -161,6 +162,10 @@ interface Props {
    *  scope-widen control in the panel chrome instead of floating over
    *  the composer. */
   reasoningHeaderSlot?: ReactNode;
+  /** Fired when the user drags the agent BottomSheet down to dismiss
+   *  (mobile only). MobileShell uses this to flip composerOpen off
+   *  so the floating composer + the sheet stay in lockstep. */
+  onAgentSheetClose?: () => void;
   /** All of the user's verse annotations (highlight/underline/strike).
    *  Threaded through BibleView so the long-press toolbar can mark up
    *  scripture without round-tripping to a parent for state. */
@@ -239,6 +244,7 @@ export const Workspace = forwardRef<WorkspaceHandle, Props>(function Workspace(
     socialNotesEnabled,
     onScopeChange,
     reasoningHeaderSlot,
+    onAgentSheetClose,
     annotations,
     onApplyAnnotation,
     onClearAnnotationKind,
@@ -671,6 +677,7 @@ export const Workspace = forwardRef<WorkspaceHandle, Props>(function Workspace(
               bottomInset={bottomInset}
               accentKey={accentKey}
               reasoningHeaderSlot={reasoningHeaderSlot}
+              onAgentSheetClose={onAgentSheetClose}
             />
           </Panel>
         </PanelGroup>
@@ -726,6 +733,7 @@ export const Workspace = forwardRef<WorkspaceHandle, Props>(function Workspace(
               accentKey={accentKey}
               bottomInset={bottomInset}
               reasoningHeaderSlot={reasoningHeaderSlot}
+              onAgentSheetClose={onAgentSheetClose}
           />
           {/* Mobile slide-over for Resources */}
           {resourcesOpen && (
@@ -809,6 +817,7 @@ function CenterColumn(props: {
   bottomInset?: boolean;
   accentKey?: AccentKey;
   reasoningHeaderSlot?: ReactNode;
+  onAgentSheetClose?: () => void;
 }) {
   const {
     book,
@@ -853,6 +862,7 @@ function CenterColumn(props: {
     bottomInset,
     accentKey,
     reasoningHeaderSlot,
+    onAgentSheetClose,
   } = props;
 
   // The Bible panel renders one of three views depending on zoom:
@@ -939,24 +949,31 @@ function CenterColumn(props: {
         // Mobile Bible tab: scripture takes the whole column.
         <div className="min-h-0 flex-1">{bibleOrGrid}</div>
       ) : (
-        // Mobile (legacy combined view, unused once MobileShell is wired):
-        // stack Bible above Reasoning with a draggable Grip.
-        <PanelGroup direction="vertical" className="flex-1">
-          <Panel defaultSize={60} minSize={20}>
-            {bibleOrGrid}
-          </Panel>
-          <Grip horizontal />
-          <Panel defaultSize={40} minSize={15}>
-            <ReasoningStream
+        // Mobile + agent open: Bible fills the column; the agent
+        // reasoning stream rides in a BottomSheet that slides up
+        // from below — same half-sheet treatment the Bible search
+        // uses, so the agent reads as a peer surface rather than
+        // a stacked panel.
+        <>
+          <div className="min-h-0 flex-1">{bibleOrGrid}</div>
+          <BottomSheet
+            open
+            onClose={() => onAgentSheetClose?.()}
+            snapPoints={[0.5, 0.92]}
+            initialSnap={0}
+          >
+            <AgentSheetBody
               turns={turns}
               showOriginal={showOriginal}
               onToggleOriginal={onToggleOriginal}
               onJumpToCitation={onJumpToCitation}
               debugMode={debugMode}
               headerSlot={reasoningHeaderSlot}
+              onAsk={onAsk}
+              anyPending={anyPending}
             />
-          </Panel>
-        </PanelGroup>
+          </BottomSheet>
+        </>
       )}
       {/* PromptBar is part of the agent UI. Suppressed in two cases:
        *  - mobilePanel="bible": Bible-only mobile view (AI off).
@@ -975,6 +992,68 @@ function CenterColumn(props: {
           roomId={roomId}
         />
       )}
+    </div>
+  );
+}
+
+/** Body rendered inside the mobile Agent BottomSheet: a chat-style
+ *  input at the top (matches the BibleSearch sheet's input recipe)
+ *  plus the reasoning stream below. Submitting fires the same `ask`
+ *  pipeline the floating composer used. */
+function AgentSheetBody({
+  turns,
+  showOriginal,
+  onToggleOriginal,
+  onJumpToCitation,
+  debugMode,
+  headerSlot,
+  onAsk,
+  anyPending,
+}: {
+  turns: ConversationTurn[];
+  showOriginal: boolean;
+  onToggleOriginal: () => void;
+  onJumpToCitation: (source_id: string) => void;
+  debugMode: boolean;
+  headerSlot?: ReactNode;
+  onAsk: (q: string) => void;
+  anyPending: boolean;
+}) {
+  const [draft, setDraft] = useState("");
+  function submit() {
+    const q = draft.trim();
+    if (!q || anyPending) return;
+    onAsk(q);
+    setDraft("");
+  }
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="min-h-0 flex-1">
+        <ReasoningStream
+          turns={turns}
+          showOriginal={showOriginal}
+          onToggleOriginal={onToggleOriginal}
+          onJumpToCitation={onJumpToCitation}
+          debugMode={debugMode}
+          headerSlot={headerSlot}
+        />
+      </div>
+      <div className="flex flex-col gap-3 px-4 py-3">
+        <input
+          type="text"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              submit();
+            }
+          }}
+          placeholder="Ask the agent…"
+          aria-label="Ask the agent"
+          className="w-full rounded-full border border-neutral-200 bg-paper px-4 py-2.5 text-[15px] outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-200/40 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100 dark:focus:border-amber-700 dark:focus:ring-amber-800/40"
+        />
+      </div>
     </div>
   );
 }
